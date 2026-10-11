@@ -134,15 +134,19 @@ replaced by measured use after a run.
 ### Several machines (peers)
 
 Each machine runs its own Hangar; peering lets one dashboard, CLI and MCP server see and control all of them — say a
-Windows PC with CUDA and a Mac with MLX. Add a machine from **Overview → Machines → + Add machine** (or the machine
-switcher in the top bar): its name, the address this machine reaches it at (`macbook` or `100.101.102.103` is
-enough; `http://` and port 9000 are filled in, and an address whose `//` got lost is repaired; Tailscale names work
-well), and its token (`data/token.txt` on that machine). Pasting its dashboard link (`...:9000/?token=...`) fills in
-both. Ticking *Also add this machine there* pairs both ways in
-one go.
+Windows PC with CUDA and a Mac with MLX.
+
+**Pairing takes one copy and one paste.** On the machine you want to add, open **Overview → Machines** and press
+**Copy code**. On the machine that should see it, paste that into the same panel (or **+ Add machine**) and press **Add
+machine**. The code holds the machine's name, every address it may be reached at (Tailscale name and IP, LAN, PC name)
+and its token; Hangar tries them all at once and keeps the first that answers, and with *also add this machine there*
+the other side does the same with this machine's code, so each keeps an address it can actually reach. Because the
+code contains the token, share it only between your own machines. Typing an address and token still works under *Or
+type its address and token*.
 
 ```
-hangar peer add macbook http://macbook:9000 <its token> --both http://my-pc:9000
+hangar pair-code                             # this machine's code (on the machine to add)
+hangar peer add hangar-pair:... --both       # paste it on the other one
 hangar machines                              # every machine: online, what runs and how fast, memory
 hangar --on macbook status                   # any command on a peer: start, stop, logs -f, connect, ...
 ```

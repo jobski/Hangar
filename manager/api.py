@@ -16,7 +16,7 @@ from . import autostart, clients
 from . import config as config_mod
 from .core import Manager
 from .mcp_server import build as build_mcp
-from .peers import Peers, machine_info, normalize_url, summary
+from .peers import Peers, machine_info, make_code, normalize_url, summary
 
 WEB = Path(__file__).parent / "web"
 OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
@@ -306,17 +306,38 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     def peers_list():
         return {"self": {**machine_info(mgr.cfg), "summary": summary(mgr.status())}, "peers": peers.public()}
 
+    def my_code() -> dict:
+        """This machine's pairing code: its name, every address another machine may reach it at, and its token."""
+        port = int(mgr.cfg["manager"]["port"])
+        hosts = [h for h in clients.hosts() if h["host"] != "127.0.0.1"]
+        # fastest to try first; the bare PC name last: Windows can take 15 s+ to look one up (127.0.0.1 is refused at
+        # once on another machine and lets two Hangars on one machine pair)
+        order = {"Tailscale name": 0, "Tailscale IP": 1}
+        hosts.sort(key=lambda h: order.get(h["label"], 2 if h["label"].startswith("LAN") else 4))
+        pcs = [h for h in hosts if h["label"] == "PC name"]
+        urls = ([f"http://{h['host']}:{port}" for h in hosts if h not in pcs] + [f"http://127.0.0.1:{port}"]
+                + [f"http://{h['host']}:{port}" for h in pcs])
+        name = machine_info(mgr.cfg)["name"]
+        return {"code": make_code(name, urls, token), "name": name, "urls": urls}
+
+    @app.get("/api/pairing-code")
+    def pairing_code():
+        return my_code()
+
     @app.post("/api/peers")
-    def peers_add(name: str | None = Body(None, embed=True), url: str = Body(..., embed=True), token_: str = Body("", alias="token", embed=True),
-                  reciprocal_url: str | None = Body(None, embed=True)):
-        """Add a peer (checked first). reciprocal_url: how that peer reaches this machine - then it gets this one too."""
-        res = guard(peers.add, name, url, token_)
-        if reciprocal_url:
-            reciprocal_url = guard(normalize_url, reciprocal_url)[0]
-            token_ = peers.get(res["name"])["token"]           # the one actually saved (may have come from a pasted link)
+    def peers_add(name: str | None = Body(None, embed=True), url: str | None = Body(None, embed=True),
+                  token_: str = Body("", alias="token", embed=True), code: str | None = Body(None, embed=True),
+                  both: bool = Body(False, embed=True), reciprocal_url: str | None = Body(None, embed=True)):
+        """Add a peer from its pairing code (or an address and token), checked first. both: the peer gets this
+        machine too (it is sent this machine's pairing code and keeps whichever address it can reach)."""
+        res = guard(peers.add, name, url, token_, True, code)
+        if both or reciprocal_url:
+            token_ = peers.get(res["name"])["token"]           # the one actually saved (may have come from a code)
+            body = ({"name": machine_info(mgr.cfg)["name"], "url": guard(normalize_url, reciprocal_url)[0], "token": token}
+                    if reciprocal_url else {"code": my_code()["code"]})
             try:
-                r = httpx.post(res["url"] + "/api/peers", headers={"Authorization": f"Bearer {token_}"}, timeout=15,
-                               json={"name": machine_info(mgr.cfg)["name"], "url": reciprocal_url, "token": token})
+                r = httpx.post(res["url"] + "/api/peers", headers={"Authorization": f"Bearer {token_}"}, timeout=30,
+                               json=body)
                 res["reciprocal"] = "added" if r.status_code == 200 else f"failed: {r.json().get('detail', r.status_code)}"
             except (httpx.HTTPError, ValueError) as e:
                 res["reciprocal"] = f"failed: {e}"

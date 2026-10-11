@@ -7,12 +7,15 @@ exactly as on this machine.
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 import socket
 import sys
 import threading
 import time
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 
 import httpx
@@ -47,6 +50,28 @@ def normalize_url(raw: str) -> tuple[str, str | None]:
     if not re.search(r":\d+$", host) and not host.endswith("]"):
         host += ":9000"
     return f"{scheme.lower()}://{host}", token
+
+
+PAIR = "hangar-pair:"
+
+
+def make_code(name: str, urls: list[str], token: str) -> str:
+    """A pairing code: one line with a machine's name, every address it may be reached at, and its token."""
+    raw = json.dumps({"v": 1, "name": name, "urls": urls, "token": token}, separators=(",", ":"))
+    return PAIR + base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+
+def parse_code(text: str | None) -> dict | None:
+    """The pairing code in text (it may be pasted with other words around it); None when there is none."""
+    m = re.search(re.escape(PAIR) + r"([A-Za-z0-9_-]+)", text or "")
+    if not m:
+        return None
+    try:
+        b = m.group(1)
+        d = json.loads(base64.urlsafe_b64decode(b + "=" * (-len(b) % 4)))
+        return d if isinstance(d, dict) and d.get("urls") and d.get("token") else None
+    except (ValueError, TypeError):
+        return None
 
 
 def machine_name(cfg: dict) -> str:
@@ -87,13 +112,24 @@ class Peers:
             raise KeyError(f"no peer called {name}")
         return p
 
-    def add(self, name: str | None, url: str, token: str, check: bool = True) -> dict:
-        """Add a peer. Any name is tidied into a peer name (none: the machine's own name, as it reports it)."""
-        url, pasted = normalize_url(url)
-        token = (token or "").strip() or pasted or ""
+    def add(self, name: str | None, url: str | None, token: str | None, check: bool = True, code: str | None = None) -> dict:
+        """Add a peer from a pairing code (its addresses are tried in order, the first that answers is kept) or from an
+        address and token. Any name is tidied into a peer name (none: the machine's own name, as it reports it)."""
+        pair = parse_code(code) or parse_code(url) or parse_code(token)
+        if pair:
+            candidates = [normalize_url(u)[0] for u in pair["urls"]]
+            token = pair["token"]
+            name = name or pair.get("name")
+        else:
+            if not (url or "").strip():
+                raise ValueError("paste the other machine's pairing code (Overview > Machines > Share this machine there), "
+                                 "or give its address and token")
+            u, pasted = normalize_url(url)
+            candidates = [u]
+            token = (token or "").strip() or pasted or ""
         if not token:
-            raise ValueError("the machine's token is needed (data/token.txt there, or paste its dashboard link)")
-        info = self.probe(url, token) if check else None
+            raise ValueError("the machine's token is needed (data/token.txt there, or paste its pairing code)")
+        url, info = self.probe_any(candidates, token) if check else (candidates[0], None)
         name = slug_name(name or "") or slug_name(((info or {}).get("machine") or {}).get("name", ""))
         if not name:
             raise ValueError("give the machine a name, e.g. macbook")
@@ -117,11 +153,39 @@ class Peers:
         with self.lock:
             self.state.pop(name, None)
 
+    @classmethod
+    def probe_any(cls, urls: list[str], token: str) -> tuple[str, dict]:
+        """The first address (in the given order) where the peer answers with that token, tried all at once."""
+        if len(urls) == 1:
+            return urls[0], cls.probe(urls[0], token)
+        # all at once, with one deadline: a Windows PC name can take 15 s+ just to fail its lookup, and the HTTP
+        # timeout does not cover that. The earliest address in the list that has answered by then wins.
+        ex = ThreadPoolExecutor(max_workers=min(8, len(urls)))
+        futures = [ex.submit(cls.probe, u, token, 5) for u in urls]
+        deadline, errors = time.time() + 6, []
+        try:
+            for u, f in zip(urls, futures):
+                try:
+                    return u, f.result(timeout=max(0.0, deadline - time.time()))
+                except ValueError as e:
+                    errors.append(f"{u}: {str(e).split('. ')[0]}")
+                except (FutureTimeout, TimeoutError):
+                    errors.append(f"{u}: no answer within 6 s")
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
+        refused = [e for e in errors if "refused the token" in e]
+        if refused:
+            raise ValueError("the machine answered but refused the token; copy a fresh pairing code from it")
+        raise ValueError("none of its addresses answered from here (" + "; ".join(errors) + "). Is Hangar running there, "
+                         "listening on every interface (manager.host: 0.0.0.0), and does its firewall let Python accept "
+                         "connections (macOS: System Settings > Network > Firewall; SentinelOne can block it too)? Being "
+                         "on the same Tailscale network as it is the surest way.")
+
     @staticmethod
-    def probe(url: str, token: str) -> dict:
+    def probe(url: str, token: str, timeout: float = 8) -> dict:
         """Check a peer answers with that token; its status, or a ValueError saying what is wrong."""
         try:
-            r = httpx.get(url + "/api/status", headers={"Authorization": f"Bearer {token}"}, timeout=8)
+            r = httpx.get(url + "/api/status", headers={"Authorization": f"Bearer {token}"}, timeout=timeout)
         except httpx.HTTPError as e:
             raise ValueError(f"cannot reach {url} ({type(e).__name__}). Is Hangar running there, and does it listen on "
                              "every interface (manager.host: 0.0.0.0)? Its firewall must let Python accept connections "

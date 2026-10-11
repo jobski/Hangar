@@ -31,7 +31,9 @@
 
   other machines (peers: other Hangars, e.g. a Mac running MLX)
     hangar machines                                 this machine and its peers: online, what runs, memory
-    hangar peer add <name> <url> <token> [--both <url-of-this-machine>]   --both adds this machine there too
+    hangar pair-code                                this machine's pairing code, to paste into another Hangar
+    hangar peer add <pairing-code> [--both] [--name N]   add a machine from its code; --both adds this one there too
+    hangar peer add <name> <url> <token> [--both]   the same with an address and token
     hangar peer remove <name>
     hangar --on <machine> <command> ...             run any command on a peer, e.g. hangar --on macbook status
 """
@@ -376,17 +378,28 @@ def cmd_machines(_):
         print(f"{m.get('name', name):{w}s} {state:14s} {(m.get('machine') or m).get('os', ''):8s} {mem:22s} {run or 'idle'}")
 
 
+def cmd_pair_code(_):
+    c = _call("GET", "/api/pairing-code")
+    print(c["code"])
+    print(f"\n# {c['name']}, reachable at: {', '.join(c['urls'])}", file=sys.stderr)
+    print("# paste it into Add machine on the other Hangar, or there: hangar peer add <code> --both", file=sys.stderr)
+
+
 def cmd_peer(a):
-    pl = [x for x in a if not x.startswith("--")]
-    if pl[:1] == ["add"] and len(pl) >= 4:
-        both = a[a.index("--both") + 1] if "--both" in a and a.index("--both") + 1 < len(a) else None
-        res = _call("POST", "/api/peers", json={"name": pl[1], "url": pl[2], "token": pl[3], "reciprocal_url": both})
+    named = a[a.index("--name") + 1] if "--name" in a and a.index("--name") + 1 < len(a) else None
+    pl = [x for i, x in enumerate(a) if not x.startswith("--") and not (i and a[i - 1] == "--name")]
+    if pl[:1] == ["add"] and len(pl) >= 2 and "hangar-pair:" in pl[1]:
+        res = _call("POST", "/api/peers", json={"code": pl[1], "name": named, "both": "--both" in a})
+        print(f"added {res['name']} ({res['url']})" + (f"; on {res['name']}: {res['reciprocal']}" if res.get("reciprocal") else ""))
+    elif pl[:1] == ["add"] and len(pl) >= 4:
+        res = _call("POST", "/api/peers", json={"name": pl[1], "url": pl[2], "token": pl[3], "both": "--both" in a})
         print(f"added {res['name']} ({res['url']})" + (f"; on {res['name']}: {res['reciprocal']}" if res.get("reciprocal") else ""))
     elif pl[:1] == ["remove"] and len(pl) >= 2:
         _call("DELETE", f"/api/peers/{pl[1]}")
         print(f"removed {pl[1]}")
     else:
-        sys.exit("usage: hangar peer add <name> <url> <token> [--both <url-of-this-machine>] | hangar peer remove <name>")
+        sys.exit("usage: hangar peer add <pairing-code> [--both] | hangar peer add <name> <url> <token> [--both] | "
+                 "hangar peer remove <name>   (hangar pair-code prints this machine's code)")
 
 
 def cmd_login(a):
@@ -402,7 +415,7 @@ COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "s
             "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
             "stats": cmd_stats, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
             "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom,
-            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines, "budget": cmd_budget,
+            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines, "pair-code": cmd_pair_code, "budget": cmd_budget,
             "peer": cmd_peer}
 NEEDS_ARG = {"plan", "start", "switch", "restart", "update", "rollback", "logs", "job", "search", "files", "download",
              "new-profile", "custom", "connect"}

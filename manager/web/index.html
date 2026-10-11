@@ -298,6 +298,19 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 .mcd .run .num { color: var(--accent); }
 .mcd.off { opacity: .7; }
 
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 1px; background: var(--line); }
+.pair .pc { background: var(--panel); padding: 16px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.pair .pt { display: flex; align-items: center; gap: 9px; font-weight: 650; }
+.pair .pt .n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 600 12px var(--mono); background: var(--accent-dim); color: var(--accent); flex: none; }
+.pair p { margin: 0; font-size: 12.5px; color: var(--muted); }
+.codebox { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border: 1px dashed var(--line2); border-radius: 8px; background: var(--bg2); min-width: 0; }
+.codebox .c { flex: 1; min-width: 0; font: 12px var(--mono); color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+textarea.input.code { min-height: 64px; height: 64px; font-size: 12px; resize: none; word-break: break-all; }
+.pairinfo { font-size: 12.5px; color: var(--ink2); }
+.pairinfo .tag { margin: 2px 4px 0 0; }
+details.more { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+
 .toasts { position: fixed; right: 18px; bottom: 18px; z-index: 50; display: grid; gap: 8px; }
 .toast { background: var(--panel2); color: var(--ink); border: 1px solid var(--line2); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 8px; font-size: 13px; max-width: min(420px, calc(100vw - 36px)); box-shadow: 0 12px 30px rgba(0,0,0,.35); animation: fade .2s ease; overflow-wrap: anywhere; }
 .toast.err { border-left-color: var(--bad); }
@@ -380,7 +393,7 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
   <!-- overview -->
   <section class="view" id="v-overview">
     <div class="vh"><div><h1>Overview</h1><p>Engines, the machine, and what is happening right now.</p></div><span class="sp"></span><label class="switch" id="autostartsw" title="Start Hangar when you sign in"><input type="checkbox" id="autostart" disabled><span class="track"></span><span id="autostartlbl">Start with Windows</span></label><button class="btn" id="chk"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Check updates</button></div>
-    <div class="panel" id="fleetsec" hidden><div class="ph"><h3>Machines</h3><span class="sp"></span><span class="meta" id="fleetmeta"></span><button class="btn ghost sm" data-act="maddshow">+ Add machine</button></div><div class="fleet" id="fleet"></div></div>
+    <div class="panel" id="fleetsec" hidden><div class="ph"><h3>Machines</h3><span class="sp"></span><span class="meta" id="fleetmeta"></span><button class="btn ghost sm" data-act="mshare" id="mshareb">Share this machine</button><button class="btn ghost sm" data-act="maddshow" id="maddb">+ Add machine</button></div><div class="fleet" id="fleet"></div></div>
     <div class="panel job" id="jobsec" hidden>
       <div class="ph"><span id="jobspin"></span><h3 style="color:var(--ink)" id="jobtitle"></h3><span class="sp"></span><span id="jobstate" class="tag"></span></div>
       <div class="pb"><pre class="term" id="joblog"></pre></div>
@@ -948,6 +961,9 @@ document.addEventListener("click", async ev => {
   const mb = ev.target.closest("[data-machine]");
   if (mb) { ev.preventDefault(); return switchMachine(mb.dataset.machine); }
   if (ev.target.closest("[data-act=maddshow]")) { ev.preventDefault(); return addMachineDialog(); }
+  if (ev.target.closest("[data-act=mshare]")) { ev.preventDefault(); return shareDialog(); }
+  if (ev.target.closest("[data-act=copycode]")) { ev.preventDefault(); const c = await loadMyCode(); return copyText(c.code); }
+  if (ev.target.closest("[data-act=pastego]")) { ev.preventDefault(); const c = $("#pastecode").value.trim(); if (!c) return toast("Paste the other machine's pairing code first", true); return addFromCode(c, $("#pasteboth").checked, ev.target.closest("button")); }
   const b = ev.target.closest("[data-act],[data-period],[data-bucket],[data-job],[data-cnkind],[data-cnclient],[data-view]");
   if (!b) return;
   ev.preventDefault();
@@ -1009,9 +1025,29 @@ async function renderMachines() {
       <span style="min-width:0"><b>${esc(name)}</b><span class="sub">${sub}</span></span><span class="os">${esc(OS[os] || os || "")}</span></button>`;
   $("#mswmenu").innerHTML = item(SELF.name, SELF.os, true, SELF.summary, "this machine · " + runline(SELF.summary), !MACHINE) +
     PEERS.map(p => item(p.name, (p.machine || {}).os, p.online, p.summary, p.online ? runline(p.summary) : esc(p.error || "offline"), MACHINE === p.name)).join("") +
-    `<hr><button class="mi" data-act="maddshow"><span></span><span>+ Add machine…</span><span></span></button>`;
+    `<hr><button class="mi" data-act="mshare"><span></span><span>Share this machine…</span><span></span></button><button class="mi" data-act="maddshow"><span></span><span>+ Add machine…</span><span></span></button>`;
   // the fleet panel shows every machine, whichever one is being viewed
-  $("#fleetsec").hidden = !PEERS.length;
+  $("#fleetsec").hidden = false;
+  $("#mshareb").hidden = $("#maddb").hidden = !PEERS.length;
+  if (!PEERS.length) {
+    $("#fleetmeta").textContent = "";
+    if (!$("#pairblock")) {
+      $("#fleet").innerHTML = `<div class="pair" id="pairblock" style="grid-column:1/-1">
+        <div class="pc"><div class="pt"><span class="n">1</span>On the machine you want to add</div>
+          <p>On that machine's dashboard, press <b>Copy code</b> in this same panel. This machine's own code is right here.</p>
+          <div class="codebox"><span class="c" id="mycode">…</span><button class="btn sm primary" data-act="copycode">${ICON.copy}Copy code</button></div>
+          <div class="pairinfo" id="mycodeinfo"></div></div>
+        <div class="pc"><div class="pt"><span class="n">2</span>On the machine that should see it</div>
+          <p>Paste that code here. Hangar tries each of its addresses and keeps the first one that answers.</p>
+          <textarea id="pastecode" class="input code" placeholder="hangar-pair:…" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+          <div class="pairinfo" id="pasteinfo"></div>
+          <div class="row"><label class="chk"><input type="checkbox" id="pasteboth" checked> also add this machine there</label><span class="sp"></span><button class="btn primary" data-act="pastego">Add machine</button></div></div>
+      </div>`;
+      $("#pastecode").oninput = () => { $("#pasteinfo").innerHTML = codeInfo($("#pastecode").value); };
+      loadMyCode().catch(() => { });
+    }
+    return;
+  }
   if (PEERS.length) {
     const card = (name, os, online, sm, err, isSelf, src) => {
       const vp = sm && sm.vram_total_mib ? sm.vram_used_mib / sm.vram_total_mib * 100 : 0;
@@ -1041,42 +1077,72 @@ function switchMachine(name) {
 }
 $("#mswbtn").onclick = e => { e.stopPropagation(); $("#mswmenu").hidden = !$("#mswmenu").hidden; };
 document.addEventListener("click", e => { if (!e.target.closest("#msw")) $("#mswmenu").hidden = true; });
+// ---- pairing codes: hangar-pair:<base64url of {name, urls, token}>
+let MYCODE = null;
+async function loadMyCode() {
+  if (!MYCODE) MYCODE = await fetch("/api/pairing-code", { headers: { "Authorization": "Bearer " + TOKEN } }).then(r => r.json());
+  if ($("#mycode")) {
+    $("#mycode").textContent = MYCODE.code.slice(0, 26) + "…";
+    $("#mycodeinfo").innerHTML = `<b>${esc(MYCODE.name)}</b>, reachable at ` + MYCODE.urls.filter(u => !u.includes("127.0.0.1")).map(u => `<span class="tag">${esc(u.replace("http://", ""))}</span>`).join("") +
+      `<div class="small faint" style="margin-top:6px">The code includes this machine's token: share it only with your own machines.</div>`;
+  }
+  return MYCODE;
+}
+function parseCode(text) {
+  const m = (text || "").match(/hangar-pair:([A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  try { const b = m[1].replace(/-/g, "+").replace(/_/g, "/"); const d = JSON.parse(atob(b + "===".slice((b.length + 3) % 4))); return d.urls && d.token ? d : null; } catch { return null; }
+}
+const codeInfo = text => {
+  if (!text.trim()) return "";
+  const d = parseCode(text);
+  if (!d) return `<span class="bad-t">That is not a pairing code. Copy it from the other machine: Machines → Share this machine.</span>`;
+  if (SELF && d.name === SELF.name) return `<span class="warn-t">That is this machine's own code; paste it on the other one.</span>`;
+  return `Adds <b>${esc(d.name)}</b> · tries ` + d.urls.filter(u => !u.includes("127.0.0.1")).map(u => `<span class="tag">${esc(u.replace("http://", ""))}</span>`).join("");
+};
+async function addFromCode(code, both, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/peers", { method: "POST", headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify({ code, both }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || j.error || r.statusText);
+    toast(`Added ${j.name} (${j.url.replace("http://", "")})` + (j.reciprocal ? ` · on ${j.name}: ${j.reciprocal}` : ""), j.reciprocal && j.reciprocal !== "added");
+    if ($("#dlg").open) $("#dlg").close();
+    await renderMachines();
+  } catch (e) { fail(e); }
+  finally { if (btn) btn.disabled = false; }
+}
+async function shareDialog() {
+  $("#mswmenu").hidden = true;
+  dialog("Share this machine", `<p class="small muted" style="margin:0 0 12px">Copy this code and paste it into <b>Add machine</b> on the other Hangar. It holds this machine's name, its addresses and its token, so share it only with your own machines.</p>
+    <div class="codebox"><span class="c" id="mycode">…</span><button class="btn sm primary" data-act="copycode">${ICON.copy}Copy code</button></div>
+    <div class="pairinfo" id="mycodeinfo" style="margin-top:10px"></div>`);
+  await loadMyCode();
+}
 async function addMachineDialog() {
   $("#mswmenu").hidden = true;
-  let hosts = [];
-  try { hosts = await fetch("/api/connect/hosts", { headers: { "Authorization": "Bearer " + TOKEN } }).then(r => r.json()); } catch { }
-  const port = location.port || 9000;
   dialog("Add a machine", `
-    <p class="small muted" style="margin:0 0 14px">Another Hangar this one can see and control, e.g. your Mac. Its token is in <span class="mono">data/token.txt</span> there (<span class="mono">cat ~/hangar/data/token.txt</span>).</p>
-    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
-      <label class="fld">Name <span class="faint">(optional)</span><input id="pmname" class="input" placeholder="its own name" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-      <label class="fld">Address<input id="pmurl" class="input mono" placeholder="macbook:9000" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-    </div>
-    <div class="small muted" id="pmprev" style="margin-top:6px">Its name or IP is enough; port 9000 is assumed. You can also paste its dashboard link (with ?token=).</div>
-    <label class="fld" style="margin-top:12px">Its token<input id="pmtok" class="input mono" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="filled in from a pasted dashboard link"></label>
-    <label class="chk" style="margin-top:14px"><input type="checkbox" id="pmboth" checked> Also add this machine there, reached at</label>
-    <select id="pmself" class="input" style="margin:6px 0 0 23px;max-width:calc(100% - 23px)">${hosts.filter(h => h.host !== "127.0.0.1").map(h => `<option value="http://${esc(h.host)}:${port}">http://${esc(h.host)}:${port} — ${esc(h.label)}</option>`).join("")}</select>
-    <div class="row" style="margin-top:16px"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="pmgo">Add</button></div>`);
-  // the same tidying the server does, shown before sending: http:/x and http:x get their slashes back, :9000 is assumed
-  const norm = raw => {
-    let u = (raw || "").trim().replace(/^['"<]+|['">]+$/g, "");
-    const t = (u.match(/[?&]token=([^&#\s]+)/) || [])[1];
-    u = u.replace(/^(https?):\/*/i, "$1://");
-    if (!/^https?:\/\//i.test(u)) u = "http://" + u.replace(/^\/+/, "");
-    let [scheme, rest] = u.split("://"); let host = rest.split(/[/?#]/)[0];
-    if (host && !/:\d+$/.test(host) && !host.endsWith("]")) host += ":9000";
-    return { url: host ? `${scheme.toLowerCase()}://${host}` : "", token: t };
-  };
-  $("#pmurl").oninput = () => {
-    const n = norm($("#pmurl").value);
-    if (n.token && !$("#pmtok").value) $("#pmtok").value = n.token;
-    $("#pmprev").innerHTML = n.url ? `Connects to <b class="mono">${esc(n.url)}</b>${n.token ? " · token taken from the link" : ""}` : "Its name or IP is enough; port 9000 is assumed.";
-  };
+    <p class="small muted" style="margin:0 0 10px">Paste the other Hangar's pairing code: on its dashboard, <b>Machines → Share this machine → Copy code</b> (or <span class="mono">hangar pair-code</span> there).</p>
+    <textarea id="pmcode" class="input code" placeholder="hangar-pair:…" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+    <div class="pairinfo" id="pminfo" style="margin-top:8px"></div>
+    <details class="more"><summary>Or type its address and token</summary>
+      <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-top:10px">
+        <label class="fld">Address<input id="pmurl" class="input mono" placeholder="macbook:9000" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+        <label class="fld">Its token<input id="pmtok" class="input mono" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="data/token.txt there"></label>
+      </div>
+      <label class="fld" style="margin-top:10px">Name <span class="faint">(optional)</span><input id="pmname" class="input" placeholder="its own name" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+    </details>
+    <label class="chk" style="margin-top:14px"><input type="checkbox" id="pmboth" checked> Also add this machine there</label>
+    <div class="row" style="margin-top:16px"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="pmgo">Add machine</button></div>`);
+  $("#pmcode").oninput = () => { $("#pminfo").innerHTML = codeInfo($("#pmcode").value); };
   $("#pmgo").onclick = async () => {
+    const code = $("#pmcode").value.trim(), both = $("#pmboth").checked;
+    if (code) return addFromCode(code, both, $("#pmgo"));
     $("#pmgo").disabled = true;
     try {
       const r = await fetch("/api/peers", { method: "POST", headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: $("#pmname").value.trim(), url: $("#pmurl").value.trim(), token: $("#pmtok").value.trim(), reciprocal_url: $("#pmboth").checked ? $("#pmself").value : null }) });
+        body: JSON.stringify({ name: $("#pmname").value.trim(), url: $("#pmurl").value.trim(), token: $("#pmtok").value.trim(), both }) });
       const j = await r.json();
       if (!r.ok) throw new Error(j.detail || j.error || r.statusText);
       $("#dlg").close();
@@ -1084,6 +1150,7 @@ async function addMachineDialog() {
       renderMachines().catch(() => { });
     } catch (e) { fail(e); $("#pmgo").disabled = false; }
   };
+  setTimeout(() => $("#pmcode").focus(), 50);
 }
 
 // ---- start with Windows

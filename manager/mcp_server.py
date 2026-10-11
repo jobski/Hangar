@@ -262,11 +262,13 @@ def build(mgr: Manager) -> MCPServer:
         me = {**machine_info(mgr.cfg), "this_machine": True, "summary": summary(await run(mgr.status))}
         return _j([me] + await run(mgr.peers.public))
 
-    @mcp.tool(description="Add a peer: another Hangar this one can see and control. url: how this machine reaches it "
-                          "(e.g. http://macbook:9000); token: that Hangar's token (its data/token.txt).")
-    async def add_machine(name: str, url: str, token: str) -> str:
+    @mcp.tool(description="Add a peer: another Hangar this one can see and control. Easiest: code = its pairing code "
+                          "(hangar-pair:..., from Share this machine on its dashboard or `hangar pair-code` there). Or "
+                          "url (how this machine reaches it, e.g. macbook:9000) and token (its data/token.txt).")
+    async def add_machine(code: str | None = None, url: str | None = None, token: str | None = None,
+                          name: str | None = None) -> str:
         try:
-            res = await run(mgr.peers.add, name, url, token)
+            res = await run(mgr.peers.add, name, url, token, True, code)
         except ValueError as e:
             return str(e)
         mgr.store.event("peer", f"added peer {res['name']} ({res['url']})")
