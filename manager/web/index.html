@@ -1048,12 +1048,28 @@ async function addMachineDialog() {
     <p class="small muted" style="margin:0 0 14px">Another Hangar this one can see and control, e.g. your Mac. Its token is in <span class="mono">data/token.txt</span> there (<span class="mono">cat ~/hangar/data/token.txt</span>).</p>
     <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
       <label class="fld">Name<input id="pmname" class="input" placeholder="macbook" autocomplete="off"></label>
-      <label class="fld">Address<input id="pmurl" class="input mono" placeholder="http://macbook:9000" autocomplete="off"></label>
+      <label class="fld">Address<input id="pmurl" class="input mono" placeholder="macbook:9000" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
     </div>
-    <label class="fld" style="margin-top:12px">Its token<input id="pmtok" class="input mono" type="password" autocomplete="off"></label>
+    <div class="small muted" id="pmprev" style="margin-top:6px">Its name or IP is enough; port 9000 is assumed. You can also paste its dashboard link (with ?token=).</div>
+    <label class="fld" style="margin-top:12px">Its token<input id="pmtok" class="input mono" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="filled in from a pasted dashboard link"></label>
     <label class="chk" style="margin-top:14px"><input type="checkbox" id="pmboth" checked> Also add this machine there, reached at</label>
     <select id="pmself" class="input" style="margin:6px 0 0 23px;max-width:calc(100% - 23px)">${hosts.filter(h => h.host !== "127.0.0.1").map(h => `<option value="http://${esc(h.host)}:${port}">http://${esc(h.host)}:${port} — ${esc(h.label)}</option>`).join("")}</select>
     <div class="row" style="margin-top:16px"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="pmgo">Add</button></div>`);
+  // the same tidying the server does, shown before sending: http:/x and http:x get their slashes back, :9000 is assumed
+  const norm = raw => {
+    let u = (raw || "").trim().replace(/^['"<]+|['">]+$/g, "");
+    const t = (u.match(/[?&]token=([^&#\s]+)/) || [])[1];
+    u = u.replace(/^(https?):\/*/i, "$1://");
+    if (!/^https?:\/\//i.test(u)) u = "http://" + u.replace(/^\/+/, "");
+    let [scheme, rest] = u.split("://"); let host = rest.split(/[/?#]/)[0];
+    if (host && !/:\d+$/.test(host) && !host.endsWith("]")) host += ":9000";
+    return { url: host ? `${scheme.toLowerCase()}://${host}` : "", token: t };
+  };
+  $("#pmurl").oninput = () => {
+    const n = norm($("#pmurl").value);
+    if (n.token && !$("#pmtok").value) $("#pmtok").value = n.token;
+    $("#pmprev").innerHTML = n.url ? `Connects to <b class="mono">${esc(n.url)}</b>${n.token ? " · token taken from the link" : ""}` : "Its name or IP is enough; port 9000 is assumed.";
+  };
   $("#pmgo").onclick = async () => {
     $("#pmgo").disabled = true;
     try {

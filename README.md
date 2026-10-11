@@ -135,8 +135,10 @@ replaced by measured use after a run.
 
 Each machine runs its own Hangar; peering lets one dashboard, CLI and MCP server see and control all of them — say a
 Windows PC with CUDA and a Mac with MLX. Add a machine from **Overview → Machines → + Add machine** (or the machine
-switcher in the top bar): its name, the address this machine reaches it at (`http://macbook:9000`; Tailscale names
-work well), and its token (`data/token.txt` on that machine). Ticking *Also add this machine there* pairs both ways in
+switcher in the top bar): its name, the address this machine reaches it at (`macbook` or `100.101.102.103` is
+enough; `http://` and port 9000 are filled in, and an address whose `//` got lost is repaired; Tailscale names work
+well), and its token (`data/token.txt` on that machine). Pasting its dashboard link (`...:9000/?token=...`) fills in
+both. Ticking *Also add this machine there* pairs both ways in
 one go.
 
 ```

@@ -20,6 +20,29 @@ import httpx
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 
+def normalize_url(raw: str) -> tuple[str, str | None]:
+    """How people type a peer's address, made into http(s)://host:port; and the token if they pasted a dashboard link.
+
+    "macbook" -> http://macbook:9000; "http:/macbook:9000" or "http:macbook" (a shell, a browser or autocorrect ate a
+    slash) -> http://macbook:9000; "http://macbook:9000/?token=abc#overview" -> (http://macbook:9000, "abc").
+    """
+    u = (raw or "").strip().strip("'\"<>")
+    token = None
+    m = re.search(r"[?&]token=([^&#\s]+)", u)
+    if m:
+        token = m.group(1)
+    u = re.sub(r"^(https?):/*", r"\1://", u, flags=re.I)          # http:/x, http:x, http:///x
+    if not re.match(r"^https?://", u, re.I):
+        u = "http://" + u.lstrip("/")
+    scheme, rest = u.split("://", 1)
+    host = re.split(r"[/?#]", rest, maxsplit=1)[0]                 # drop any path, query or fragment
+    if not host:
+        raise ValueError("give the machine's address, e.g. macbook:9000 or http://100.101.102.103:9000")
+    if not re.search(r":\d+$", host) and not host.endswith("]"):
+        host += ":9000"
+    return f"{scheme.lower()}://{host}", token
+
+
 def machine_name(cfg: dict) -> str:
     return str(cfg["manager"].get("name") or socket.gethostname()).lower()
 
@@ -66,9 +89,10 @@ class Peers:
             raise ValueError(f"{name} is this machine's own name")
         if name in (self.cfg.get("peers") or {}):
             raise ValueError(f"{name} is set in config.yaml; change it there")
-        url = url.strip().rstrip("/")
-        if not re.match(r"^https?://", url):
-            url = "http://" + url
+        url, pasted = normalize_url(url)
+        token = (token or "").strip() or pasted or ""
+        if not token:
+            raise ValueError("the machine's token is needed (data/token.txt there, or paste its dashboard link)")
         info = self.probe(url, token) if check else None
         saved = self._saved()
         saved[name] = {"url": url, "token": token}
@@ -91,7 +115,10 @@ class Peers:
         try:
             r = httpx.get(url + "/api/status", headers={"Authorization": f"Bearer {token}"}, timeout=8)
         except httpx.HTTPError as e:
-            raise ValueError(f"cannot reach {url}: {type(e).__name__}") from e
+            raise ValueError(f"cannot reach {url} ({type(e).__name__}). Is Hangar running there, and does it listen on "
+                             "every interface (manager.host: 0.0.0.0)? Its firewall must let Python accept connections "
+                             "(macOS: System Settings > Network > Firewall; endpoint tools like SentinelOne can block "
+                             "it too). Open the address in a browser from this machine to check.") from e
         if r.status_code == 401:
             raise ValueError(f"{url} refused the token")
         if r.status_code != 200 or "engines" not in r.text:

@@ -16,7 +16,7 @@ from . import autostart, clients
 from . import config as config_mod
 from .core import Manager
 from .mcp_server import build as build_mcp
-from .peers import Peers, machine_info, summary
+from .peers import Peers, machine_info, normalize_url, summary
 
 WEB = Path(__file__).parent / "web"
 OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
@@ -307,11 +307,13 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         return {"self": {**machine_info(mgr.cfg), "summary": summary(mgr.status())}, "peers": peers.public()}
 
     @app.post("/api/peers")
-    def peers_add(name: str = Body(..., embed=True), url: str = Body(..., embed=True), token_: str = Body(..., alias="token", embed=True),
+    def peers_add(name: str = Body(..., embed=True), url: str = Body(..., embed=True), token_: str = Body("", alias="token", embed=True),
                   reciprocal_url: str | None = Body(None, embed=True)):
         """Add a peer (checked first). reciprocal_url: how that peer reaches this machine - then it gets this one too."""
         res = guard(peers.add, name, url, token_)
         if reciprocal_url:
+            reciprocal_url = guard(normalize_url, reciprocal_url)[0]
+            token_ = peers.get(res["name"])["token"]           # the one actually saved (may have come from a pasted link)
             try:
                 r = httpx.post(res["url"] + "/api/peers", headers={"Authorization": f"Bearer {token_}"}, timeout=15,
                                json={"name": machine_info(mgr.cfg)["name"], "url": reciprocal_url, "token": token})
