@@ -27,6 +27,7 @@
 
   this PC
     hangar autostart [on|off]                       start Hangar when you sign in (no argument: show)
+    hangar budget [GB|off]                          memory Hangar's engines may use here (no argument: show)
 
   other machines (peers: other Hangars, e.g. a Mac running MLX)
     hangar machines                                 this machine and its peers: online, what runs, memory
@@ -342,6 +343,22 @@ def cmd_autostart(a):
         print("the shortcut points at another copy of Hangar; run: hangar autostart on")
 
 
+def cmd_budget(a):
+    if a and a[0] not in ("off", "none"):
+        try:
+            gb = float(a[0].lower().rstrip("gb"))
+        except ValueError:
+            sys.exit("usage: hangar budget [GB|off]   e.g. hangar budget 15")
+        b = _call("POST", "/api/budget", json={"gb": gb})
+    elif a:
+        b = _call("POST", "/api/budget", json={"gb": None})
+    else:
+        b = _call("GET", "/api/budget")
+    print((f"memory budget {b['budget_mib'] / 1024:.1f} GB" if b["budget_mib"] else "no memory budget")
+          + f"; engines use {b['used_mib'] / 1024:.1f} GB now"
+          + (f"; new profiles fit in {b['limit_mib'] / 1024:.1f} GB" if b.get("limit_mib") else ""))
+
+
 def cmd_machines(_):
     res = _call("GET", "/api/peers")
     rows = [{**res["self"], "online": True, "this": True}] + res["peers"]
@@ -380,7 +397,7 @@ COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "s
             "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
             "stats": cmd_stats, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
             "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom,
-            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines,
+            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines, "budget": cmd_budget,
             "peer": cmd_peer}
 NEEDS_ARG = {"plan", "start", "switch", "restart", "update", "rollback", "logs", "job", "search", "files", "download",
              "new-profile", "custom", "connect"}

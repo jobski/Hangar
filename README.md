@@ -120,6 +120,25 @@ from PyPI into the engine's Python (rollback reinstalls the one before). It is o
 than llama.cpp, but mlx-lm has no metrics page or API key, so Hangar shows it running, its memory and its log, not
 token counts, and anyone who can reach its port can use it (keep `host: 127.0.0.1` if only this Mac needs it).
 
+### Memory budget
+
+Tell Hangar how much of a machine its engines may use, VRAM and RAM together — say 15 GB on a Mac you also work on.
+Set it with the **Budget** button on the Overview's Machine panel, `hangar budget 15` (`hangar budget off` to clear),
+the MCP tool `memory_budget`, or `resources.memory_budget_gb` in `config.yaml`. Then:
+
+- starting a profile that would go over it (counting what keeps running next to it) is refused, with how much it
+  needs; force still starts it;
+- a profile made from a downloaded model gets the largest context that fits: Hangar reads the model's layers and KV
+  heads from the GGUF header, so it knows what each 1K tokens of context costs with the cache type in the template,
+  and it never goes above the template's `ctx` or the model's own maximum (the profile's description says what it
+  chose);
+- the Models page marks each quant **fits** or **over budget** (its files plus ~1.5 GB for an 8K context), and the
+  Profiles page tags profiles that need more than the budget.
+
+On a Mac without a budget, new profiles still fit what Metal lets the GPU use. Memory estimates for llama.cpp
+profiles use the same GGUF numbers (with sliding-window models such as Gemma they are on the high side), and are
+replaced by measured use after a run.
+
 ### Several machines (peers)
 
 Each machine runs its own Hangar; peering lets one dashboard, CLI and MCP server see and control all of them — say a
@@ -160,7 +179,7 @@ claude mcp add --transport http hangar http://<pc>:9000/mcp --header "Authorizat
 Tools: `status`, `list_profiles`, `plan`, `start`, `switch_model`, `stop`, `restart`, `run_custom`, `check_updates`,
 `update_engine`, `rollback_engine`, `job_status`, `logs`, `stats`, `stats_series`, `events`, `list_models`,
 `search_models`, `repo_files`, `download_model`, `downloads_status`, `cancel_download`, `create_profile_from_model`,
-`save_profile`, `copy_profile`, `delete_profile`, `client_config`, `autostart_windows`, `machines`, `add_machine`, `remove_machine`.
+`save_profile`, `copy_profile`, `delete_profile`, `client_config`, `autostart_windows`, `machines`, `add_machine`, `remove_machine`, `memory_budget`.
 
 ### Connecting coding agents and other apps
 

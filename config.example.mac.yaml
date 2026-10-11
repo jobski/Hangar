@@ -13,6 +13,7 @@ manager:
 
 resources:
   vram_reserve_mib: 2048       # leave room for macOS and apps sharing the same memory
+  memory_budget_gb: 15         # what Hangar's engines may use here; new profiles get the largest context that fits
   ram_reserve_mib: 4096
   vram_release_timeout_s: 30
   sample_interval_s: 5

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import httpx
 
+from .. import gguf
 from .base import Engine, Estimate, Launch, Profile, arg_value, file_mib
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -40,6 +41,14 @@ def _default_asset() -> str:
 
 def _norm(p: str) -> str:
     return os.path.normcase(os.path.normpath(p.strip('"')))
+
+
+def kv_mib(model: str, args: list[str], ctx: int) -> float:
+    """KV cache for ctx tokens, from the model's own layer/head numbers and the cache type in args (f16 by default);
+    40 MiB per 1K tokens when the header cannot be read."""
+    per_token = gguf.kv_bytes_per_token(gguf.metadata(model), arg_value(args, "-ctk", "--cache-type-k") or "f16",
+                                        arg_value(args, "-ctv", "--cache-type-v")) if model else None
+    return ctx * per_token / 2**20 if per_token else ctx / 1024 * 40
 
 
 class LlamaCppEngine(Engine):
@@ -104,14 +113,15 @@ class LlamaCppEngine(Engine):
         args = [str(a) for a in c.get("args", [])]
         files = file_mib(c.get("model"), c.get("mmproj"), arg_value(args, "-md", "--model-draft"))
         ctx = int(c.get("ctx") or arg_value(args, "-c", "--ctx-size") or 4096)
-        kv = ctx / 1024 * 40                                 # rough: ~40 MiB per 1K tokens of q8 KV cache on a 35B MoE
+        kv = kv_mib(str(c.get("model") or ""), args, ctx)
         ngl = arg_value(args, "-ngl", "--n-gpu-layers", "--gpu-layers")
         greedy = ngl in (None, "auto", "all") and ("--fit" in args or ngl in ("auto", "all"))
         if ngl == "0":
             return Estimate(500, files + kv, False, "CPU only (-ngl 0)")
         vram = min(files + kv, max(0.0, vram_total_mib)) if greedy or ngl in ("99", "999") else min(files, vram_total_mib)
         ram = max(0.0, files + kv - vram) + 1024
-        return Estimate(vram, ram, greedy, "estimated from file sizes and context; replaced by measured use after a run")
+        return Estimate(vram, ram, greedy, f"estimated from file sizes and a {ctx // 1024}K context ({kv:.0f} MiB of KV "
+                                           "cache); replaced by measured use after a run")
 
     # ---- updates
     def version(self) -> str | None:

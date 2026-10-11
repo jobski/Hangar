@@ -120,9 +120,32 @@ class Library:
         shutil.rmtree(f)
 
 
+CONTEXTS = (262144, 131072, 98304, 65536, 49152, 32768, 24576, 16384, 12288, 8192, 4096)
+OVERHEAD_MIB = 1024          # compute buffers and the server itself, on top of weights and KV cache
+
+
+def fit_context(model: Path, mmproj: str | None, args: list[str], limit_mib: float, want: int) -> tuple[int, str]:
+    """The largest context up to `want` (and the model's own maximum) whose weights + KV cache + overhead stay within
+    limit_mib; 4096 with a warning when not even that fits."""
+    from . import gguf
+    from .engines.llamacpp import kv_mib
+    shards = sorted(model.parent.glob(SHARD.match(model.name).group("stem") + "-*-of-*.gguf")) if SHARD.match(model.name) else [model]
+    weights = sum(f.stat().st_size for f in shards if f.exists()) / 2**20 + (Path(mmproj).stat().st_size / 2**20 if mmproj and Path(mmproj).exists() else 0)
+    top = min(want, gguf.max_context(gguf.metadata(model)) or want)
+    for c in [top] + [c for c in CONTEXTS if c < top]:
+        total = weights + kv_mib(str(model), args, c) + OVERHEAD_MIB
+        if total <= limit_mib:
+            return c, f"{c // 1024}K context: ~{total / 1024:.1f} GB with {weights / 1024:.1f} GB of weights, within {limit_mib / 1024:.1f} GB"
+    total = weights + kv_mib(str(model), args, 4096) + OVERHEAD_MIB
+    return 4096, f"needs ~{total / 1024:.1f} GB even at 4K context: more than the {limit_mib / 1024:.1f} GB allowed"
+
+
 def profile_from_model(model_path: str, cfg: dict, name: str | None = None, engine: str = "llamacpp",
-                       ctx: int | None = None, mmproj: str | None = None, extra: dict | None = None) -> tuple[str, dict]:
-    """A new llama.cpp-style profile for a GGUF, using the engine's template from config (templates.<engine>)."""
+                       ctx: int | None = None, mmproj: str | None = None, extra: dict | None = None,
+                       limit_mib: float | None = None) -> tuple[str, dict]:
+    """A new llama.cpp-style profile for a GGUF, using the engine's template from config (templates.<engine>). With
+    limit_mib (the memory budget, or what the GPU may use on a Mac) and no explicit ctx, the context is the largest
+    that fits."""
     mp = Path(model_path)
     if not mp.exists():
         raise ValueError(f"{mp} does not exist")
@@ -136,9 +159,13 @@ def profile_from_model(model_path: str, cfg: dict, name: str | None = None, engi
     if mmproj:
         prof["mmproj"] = str(mmproj)
     prof["alias"] = tmpl.pop("alias", None) or pid
-    prof["ctx"] = int(ctx or tmpl.pop("ctx", 32768))
+    want = int(ctx or tmpl.pop("ctx", 32768))
     tmpl.pop("ctx", None)
     prof["args"] = [str(a) for a in tmpl.pop("args", [])]
+    prof["ctx"] = want
+    if limit_mib and not ctx:
+        prof["ctx"], note = fit_context(mp, prof.get("mmproj"), prof["args"], limit_mib, want)
+        prof["description"] = f"{stem} · {note}"
     prof.update(tmpl)
     prof.update(extra or {})
     return pid, prof

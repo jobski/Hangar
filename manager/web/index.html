@@ -156,6 +156,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
 .bar { height: 6px; background: var(--track); border-radius: 99px; overflow: hidden; margin-top: 8px; position: relative; }
 .bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 99px; background: var(--s1); transition: width .5s cubic-bezier(.2,.8,.2,1); }
 .bar.ram > i { background: var(--s2); } .bar.cpu > i { background: var(--s3); }
+.bar.bud > i { background: var(--accent); }
 .bar.warn > i { background: var(--warn); } .bar.bad > i { background: var(--bad); }
 .bar.thin { height: 4px; margin-top: 5px; }
 .bar .mk { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); opacity: .55; border-radius: 2px; }
@@ -389,7 +390,7 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
         <div class="panel"><div class="ph"><h3>Engines</h3><span class="sp"></span><span class="meta" id="engmeta"></span></div><div id="engines"></div></div>
         <div class="panel"><div class="ph"><h3>Recent events</h3><span class="sp"></span><button class="btn ghost sm" data-view="activity">All activity →</button></div><div class="feed" id="ovevents"></div></div>
       </div>
-      <div class="panel"><div class="ph"><h3>Machine</h3><span class="sp"></span><span class="meta">live</span></div>
+      <div class="panel"><div class="ph"><h3>Machine</h3><span class="sp"></span><button class="btn ghost sm" data-act="budget" id="budgetbtn" title="How much memory Hangar's engines may use here">Budget</button></div>
         <div class="pb"><div id="machine"></div>
           <svg id="live" class="chart" style="margin-top:12px" aria-label="last hour"></svg>
           <div class="legend" style="margin-top:6px"><span><i style="background:var(--s1)"></i>VRAM</span><span><i style="background:var(--s2)"></i>RAM</span><span><i style="background:var(--s3)"></i>tokens out</span><span class="sp"></span><span class="faint">last hour</span></div>
@@ -543,6 +544,14 @@ function renderStatus(s) {
       <div class="gs"><span>available <b>${mib(r.ram_available_mib)}</b></span>${r.swap_used_mib > 512 ? `<span class="warn-t">swap <b class="warn-t">${mib(r.swap_used_mib)}</b></span>` : ""}</div></div>
     <div class="gauge"><div class="gh"><span class="gl">CPU</span><span class="gn">${r.cpu_count} threads</span><span class="gv">${r.cpu_percent.toFixed(0)}<small>%</small></span></div>
       <div class="bar cpu"><i style="width:${r.cpu_percent}%"></i></div></div>`;
+  const bg = s.budget || {};
+  if (bg.budget_mib) {
+    const bp = Math.min(100, bg.used_mib / bg.budget_mib * 100);
+    m += `<div class="gauge"><div class="gh"><span class="gl">Budget</span><span class="gn">Hangar's engines</span><span class="gv">${gb(bg.used_mib)}<small> / ${gb(bg.budget_mib)} GB</small></span></div>
+      <div class="bar ${pctCls(bp) || "bud"}"><i style="width:${bp}%"></i></div></div>`;
+  }
+  $("#budgetbtn").textContent = bg.budget_mib ? `Budget ${gb(bg.budget_mib)} GB` : "No budget";
+  BUDGET = bg;
   for (const w of s.warnings) m += `<div class="warnbox">${ICON.warn}<span>${esc(w)}</span></div>`;
   $("#machine").innerHTML = m;
 
@@ -626,7 +635,7 @@ async function renderProfiles() {
     const n = p.needs || {};
     return `<div class="lrow"><div class="main"><div class="t"><span class="dot ${p.running ? "ok" : ""}"></span>${esc(p.id)}</div>
         ${p.description ? `<div class="d">${esc(p.description)}</div>` : ""}
-        <div class="tags"><span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
+        <div class="tags">${BUDGET.budget_mib && (n.vram_mib || 0) + (n.ram_mib || 0) > BUDGET.budget_mib ? `<span class="tag bad" title="needs ~${gb((n.vram_mib || 0) + (n.ram_mib || 0))} GB">over budget</span>` : ""}<span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
       ${needBar("VRAM", n.vram_mib, vt)}${needBar("RAM", n.ram_mib, rt)}
       <div class="acts">
         ${p.editable ? `<button class="btn sm ghost" data-act="pedit" data-p="${esc(p.id)}">Edit</button>` : ""}
@@ -636,7 +645,21 @@ async function renderProfiles() {
         <button class="btn sm ${p.running ? "" : "primary"}" data-act="start" data-p="${esc(p.id)}">${p.running ? ICON.restart + "Restart" : ICON.play + "Start"}</button></div></div>`;
   }).join("") : `<div class="empty">No profiles yet. Add some to config.yaml, or download a model.</div>`;
 }
-let PROFILES = [];
+let PROFILES = [], BUDGET = {};
+function budgetDialog() {
+  const b = BUDGET || {};
+  dialog("Memory budget", `
+    <p class="small muted" style="margin:0 0 14px">How much of this machine's memory Hangar's engines may use, VRAM and RAM together${b.unified ? " (on this Mac they are the same memory)" : ""}. Starting something that would go over it is refused (force still can), and profiles made from a download get the largest context that fits.</p>
+    <label class="fld">Budget in GB<input id="bgv" class="input num" type="number" min="1" step="0.5" value="${b.budget_mib ? (b.budget_mib / 1024).toFixed(1) : ""}" placeholder="no limit"></label>
+    <div class="small muted" style="margin-top:8px">Engines use <b class="num">${gb(b.used_mib || 0)} GB</b> now.${b.limit_mib && !b.budget_mib ? ` Without a budget, new profiles fit what the GPU may use: ${gb(b.limit_mib)} GB.` : ""}</div>
+    <div class="row" style="margin-top:16px"><button class="btn ghost" id="bgoff">No budget</button><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="bgset">Save</button></div>`);
+  const save = async v => {
+    try { await post("/api/budget", { gb: v }); $("#dlg").close(); toast(v ? `Memory budget ${v} GB` : "No memory budget"); refreshFast(); renderProfiles(); }
+    catch (e) { fail(e); }
+  };
+  $("#bgset").onclick = () => { const v = parseFloat($("#bgv").value); save(v > 0 ? v : null); };
+  $("#bgoff").onclick = () => save(null);
+}
 
 // ---- models: search, pick a quant, download, library
 async function dlSearch() {
@@ -655,9 +678,16 @@ async function dlFiles(repo) {
   const mm = groups.filter(g => g.mmproj);
   $("#dlresults").innerHTML = `<div class="results"><div class="rh"><b class="mono" style="font-size:13px">${esc(repo)}</b><span class="sp"></span><span class="small muted">tick what to download</span></div>` +
     groups.map((g, i) => `<div class="rr"><label for="q${i}"><input type="checkbox" id="q${i}" data-files='${esc(JSON.stringify(g.files))}' ${(src === "ollama" || src === "url" || g.mmproj && mm.length === 1) ? "checked" : ""}>
-      ${g.quant ? `<span class="tag info">${esc(g.quant)}</span>` : g.mmproj ? `<span class="tag">mmproj</span>` : ""}<span class="mono small">${esc(g.key)}</span>${g.files.length > 1 ? `<span class="muted small">${g.files.length} files</span>` : ""}</label><span class="num small muted">${mib((g.size || 0) / 1048576)}</span></div>`).join("") +
+      ${g.quant ? `<span class="tag info">${esc(g.quant)}</span>` : g.mmproj ? `<span class="tag">mmproj</span>` : ""}${fitTag(g)}<span class="mono small">${esc(g.key)}</span>${g.files.length > 1 ? `<span class="muted small">${g.files.length} files</span>` : ""}</label><span class="num small muted">${mib((g.size || 0) / 1048576)}</span></div>`).join("") +
     `<div class="rf"><label class="chk"><input type="checkbox" id="dlprof" checked> make a llama.cpp profile when done</label><span class="sp"></span><button class="btn primary" data-act="dlgo" data-repo="${esc(repo)}">Download</button></div></div>`;
 }
+// a quant fits when its files plus ~1.5 GB (an 8K cache and the server) stay within the budget / what the GPU may use
+const fitTag = g => {
+  const lim = (BUDGET || {}).limit_mib;
+  if (!lim || g.mmproj || !g.size) return "";
+  const need = g.size / 1048576 + 1536;
+  return need <= lim ? `<span class="tag ok" title="~${gb(need)} GB with an 8K context">fits</span>` : `<span class="tag bad" title="~${gb(need)} GB with an 8K context; ${gb(lim)} GB allowed">over budget</span>`;
+};
 async function renderDownloads() {
   const res = await api("/api/downloads");
   const act = res.items.filter(d => ["queued", "running"].includes(d.state) || Date.now() / 1000 - (d.finished || 0) < 3600);
@@ -942,7 +972,8 @@ document.addEventListener("click", async ev => {
       $("#dlresults").innerHTML = ""; return pollDownloads();
     }
     if (act === "dlcancel") { await post(`/api/downloads/${b.dataset.id}/cancel`, {}); return renderDownloads(); }
-    if (act === "mprof") { const r = await post("/api/profiles/from-model", { model: b.dataset.model }); toast(`Profile ${r.id} created`); await renderProfiles(); return editProfile(PROFILES.find(x => x.id === r.id), false); }
+    if (act === "mprof") { const r = await post("/api/profiles/from-model", { model: b.dataset.model }); await renderProfiles(); const np = PROFILES.find(x => x.id === r.id); toast(`Profile ${r.id} created` + (np && np.description.includes(" · ") ? ": " + np.description.split(" · ")[1] : "")); return editProfile(np, false); }
+    if (act === "budget") return budgetDialog();
     if (act === "mdel") { if (!confirm(`Delete ${b.dataset.folder} and every file in it?`)) return; await api(`/api/models?folder=${encodeURIComponent(b.dataset.folder)}`, { method: "DELETE" }); return renderLibrary(); }
     if (act === "cncopy") return copyText(cnSnip.content);
     if (act === "cnapply") {

@@ -242,6 +242,21 @@ def build(mgr: Manager) -> MCPServer:
         snip["hosts"] = await run(clients.hosts)
         return _j(snip)
 
+    @mcp.tool(description="The memory budget: how much of the machine (VRAM + RAM together, GB) Hangar's engines may use. "
+                          "Starts that would go over it are refused (force overrides) and new profiles get the largest "
+                          "context that fits. gb: set it; clear=True: no budget; neither: just report.")
+    async def memory_budget(gb: float | None = None, clear: bool = False, machine: str | None = None) -> str:
+        if machine:
+            if gb is None and not clear:
+                return await peer(machine, "GET", "budget")
+            return await peer(machine, "POST", "budget", body={"gb": None if clear else gb})
+        if gb is None and not clear:
+            return _j(await run(mgr.budget_public))
+        try:
+            return _j(await run(mgr.set_budget, None if clear else gb))
+        except ValueError as e:
+            return str(e)
+
     @mcp.tool(description="This machine and its peers (other Hangars): name, OS, online, what runs and how fast, memory.")
     async def machines() -> str:
         me = {**machine_info(mgr.cfg), "this_machine": True, "summary": summary(await run(mgr.status))}

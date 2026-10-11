@@ -279,6 +279,15 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         mgr.store.event("connect", f"wrote {kind} settings to {res['file']}")
         return res
 
+    # ---- memory budget: how much of this machine (VRAM + RAM) Hangar's engines may use
+    @app.get("/api/budget")
+    def budget_get():
+        return mgr.budget_public()
+
+    @app.post("/api/budget")
+    def budget_set(gb: float | None = Body(None, embed=True)):
+        return guard(mgr.set_budget, gb)
+
     # ---- start with Windows
     @app.get("/api/autostart")
     def autostart_status():

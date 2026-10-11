@@ -328,7 +328,8 @@ class Manager:
 
     def profile_from_model(self, model: str, name: str | None = None, engine: str = "llamacpp",
                            ctx: int | None = None, mmproj: str | None = None, extra: dict | None = None) -> str:
-        pid, prof = models_mod.profile_from_model(model, self.cfg, name, engine, ctx, mmproj, extra)
+        pid, prof = models_mod.profile_from_model(model, self.cfg, name, engine, ctx, mmproj, extra,
+                                                  limit_mib=self.profile_limit_mib())
         base, n = pid, 2
         while pid in self.profiles:
             pid, n = f"{base}-{n}", n + 1
@@ -345,6 +346,44 @@ class Manager:
             return {}
         pid = self.profile_from_model(str(mains[0]), name=Path(d.folder).name)
         return {"profile": pid}
+
+    # ---- the memory budget: how much of this machine Hangar's engines may use (VRAM + RAM together)
+    def _settings(self) -> dict:
+        try:
+            return json.loads((self.data_dir / "settings.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def budget_mib(self) -> float | None:
+        s = self._settings()
+        if "memory_budget_mib" in s:
+            return s["memory_budget_mib"]
+        gb = self.cfg["resources"].get("memory_budget_gb")
+        return float(gb) * 1024 if gb else None
+
+    def set_budget(self, gb: float | None) -> dict:
+        if gb is not None and not 1 <= gb <= 4096:
+            raise ValueError("a memory budget is between 1 and 4096 GB (or none)")
+        s = self._settings()
+        s["memory_budget_mib"] = gb * 1024 if gb else None
+        (self.data_dir / "settings.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
+        self.store.event("budget", f"memory budget {gb:g} GB" if gb else "no memory budget")
+        return self.budget_public()
+
+    def budget_public(self) -> dict:
+        b = self.budget_mib()
+        used = sum((i.peak_vram or 0) + (i.ram_mib or 0) for i in self.instances.values())
+        return {"budget_mib": b, "used_mib": used, "unified": any(g.get("unified") for g in self.snap.get("gpus", [])),
+                "limit_mib": self.profile_limit_mib()}
+
+    def profile_limit_mib(self) -> float | None:
+        """What a new profile should fit in: the budget, capped on a Mac by what Metal lets the GPU use."""
+        b = self.budget_mib()
+        gpus = self.snap.get("gpus") or []
+        if any(g.get("unified") for g in gpus):
+            metal = sum(g["vram_total_mib"] for g in gpus) - self.cfg["resources"]["vram_reserve_mib"]
+            return min(b, metal) if b else metal
+        return b
 
     # ---- planning
     def needs(self, p: Profile) -> dict:
@@ -395,6 +434,19 @@ class Manager:
                 stop += list(others)
             else:
                 ok, reason = False, f"{p.id} only starts when nothing else runs ({', '.join(others)} running); use force"
+        # the memory budget counts what keeps running next to it
+        budget = self.budget_mib()
+        if ok and budget:
+            staying = sum((i.peak_vram or 0) + (i.ram_mib or 0) for n, i in others.items() if n not in stop)
+            total = need["vram_mib"] + need["ram_mib"] + staying
+            if total > budget:
+                msg = (f"{p.id} needs ~{(need['vram_mib'] + need['ram_mib']) / 1024:.1f} GB"
+                       + (f" (+{staying / 1024:.1f} GB already running)" if staying else "")
+                       + f": over the {budget / 1024:.1f} GB memory budget")
+                if force:
+                    warnings.append(msg + " (force)")
+                else:
+                    ok, reason = False, msg + ". Use a smaller context or quant, raise the budget, or force."
         # after stopping, is there enough? (other programs - games, ComfyUI, Ollama - also use the GPU)
         if ok:
             gone = [self.instances[n] for n in stop if n in self.instances]
@@ -410,7 +462,7 @@ class Manager:
                 warnings.append(f"only ~{m_after:.0f} MiB RAM will be free (needs ~{need['ram_mib']:.0f}): "
                                 "expect swapping")
         return {"profile": p.id, "engine": p.engine, "policy": p.policy, "ok": ok, "reason": reason,
-                "will_stop": sorted(set(stop)), "needs": need, "free_vram_mib": resources.vram_free(snap),
+                "will_stop": sorted(set(stop)), "needs": need, "budget_mib": budget, "free_vram_mib": resources.vram_free(snap),
                 "free_ram_mib": snap["ram_available_mib"], "warnings": warnings}
 
     # ---- the work
@@ -872,7 +924,8 @@ class Manager:
         warn = []
         if snap["ram_percent"] >= self.cfg["resources"]["warn_ram_percent"]:
             warn.append(f"RAM is {snap['ram_percent']:.0f}% used")
-        return {"time": time.time(), "machine": machine_info(self.cfg), "engines": engines, "resources": snap, "warnings": warn,
+        return {"time": time.time(), "machine": machine_info(self.cfg), "budget": self.budget_public(),
+                "engines": engines, "resources": snap, "warnings": warn,
                 "job": self.current_job.public(10) if self.current_job else None,
                 "queued": self.queue.qsize()}
 
