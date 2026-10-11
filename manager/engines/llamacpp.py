@@ -9,8 +9,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import platform
 import shutil
 import subprocess
+import sys
+import tarfile
 import time
 import zipfile
 from pathlib import Path
@@ -22,7 +25,17 @@ from .base import Engine, Estimate, Launch, Profile, arg_value, file_mib
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 GH = "https://api.github.com/repos/{repo}"
 RUNTIME_DLL = re.compile(r"^(cudart|cublas|cublasLt)64_\d+\.dll$", re.I)
-BINARY = re.compile(r"\.(exe|dll)$", re.I)
+BINARY = re.compile(r"\.(exe|dll|dylib|so|metallib)$", re.I)
+WINDOWS = os.name == "nt"
+
+
+def _default_asset() -> str:
+    """The release file for this machine: CUDA 13 on Windows, Metal (arm64) or CPU (x64) builds on macOS."""
+    if sys.platform == "darwin":
+        return r"^llama-b\d+-bin-macos-%s\.tar\.gz$" % ("arm64" if platform.machine() == "arm64" else "x64")
+    if sys.platform.startswith("linux"):
+        return r"^llama-b\d+-bin-ubuntu-x64\.(zip|tar\.gz)$"
+    return r"^llama-b\d+-bin-win-cuda-13\.\d+-x64\.zip$"
 
 
 def _norm(p: str) -> str:
@@ -38,12 +51,12 @@ class LlamaCppEngine(Engine):
     def __init__(self, name, cfg):
         super().__init__(name, cfg)
         self.dir = Path(cfg["dir"])
-        self.exe = self.dir / cfg.get("exe", "llama-server.exe")
+        self.exe = self.dir / cfg.get("exe", "llama-server.exe" if WINDOWS else "llama-server")
         self.startup_timeout_s = int(cfg.get("startup_timeout_s", 900))
         u = cfg.get("update") or {}
         self.repo = u.get("repo", "ggml-org/llama.cpp")
         self.channel = u.get("channel", "builds")            # builds = every bNNNN build, stable = releases/latest
-        self.asset_re = re.compile(u.get("asset", r"^llama-b\d+-bin-win-cuda-13\.\d+-x64\.zip$"))
+        self.asset_re = re.compile(u.get("asset", _default_asset()))
         self.runtime_re = re.compile(u.get("runtime_asset", r"^cudart-llama-bin-win-cuda-13\.\d+-x64\.zip$"))
         self.downloads = Path(cfg.get("_data_dir", ".")) / "downloads" / name
 
@@ -177,6 +190,8 @@ class LlamaCppEngine(Engine):
 
     @staticmethod
     def _extract(zf: Path, into: Path):
+        if zf.name.endswith((".tar.gz", ".tgz")):
+            return LlamaCppEngine._extract_tar(zf, into)
         with zipfile.ZipFile(zf) as z:
             names = z.namelist()
             tops = {n.split("/", 1)[0] for n in names}
@@ -189,6 +204,29 @@ class LlamaCppEngine(Engine):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with z.open(info) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
+                mode = info.external_attr >> 16
+                if mode & 0o111 and not WINDOWS:
+                    target.chmod(mode & 0o777)
+
+    @staticmethod
+    def _extract_tar(tf: Path, into: Path):
+        """macOS/Linux builds: a .tar.gz with one top folder, executable bits and relative dylib symlinks."""
+        tmp = into.with_name(into.name + ".unpack")
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        tmp.mkdir()
+        with tarfile.open(tf) as t:
+            t.extractall(tmp, filter="data")
+        tops = list(tmp.iterdir())
+        src = tops[0] if len(tops) == 1 and tops[0].is_dir() else tmp
+        for p in src.iterdir():
+            dest = into / p.name
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            elif dest.exists() or dest.is_symlink():
+                dest.unlink()
+            p.rename(dest)
+        shutil.rmtree(tmp, ignore_errors=True)
 
     def update(self, log):
         info = self.check_update(log)
@@ -210,14 +248,14 @@ class LlamaCppEngine(Engine):
         # no marker yet (installed by hand): fetch the runtime once, since the DLLs there may be an older CUDA minor
         if want and want != have:
             self._extract(self._download(runtime, log), new)
-        else:
+        elif self.dir.exists():
             for p in self.dir.iterdir():
                 if p.is_file() and RUNTIME_DLL.match(p.name) and not (new / p.name).exists():
                     shutil.copy2(p, new / p.name)
         if want:
             (new / marker.name).write_text(json.dumps(want))
         # files the user put in the folder (scripts, notes) come along; binaries never do
-        for p in self.dir.iterdir():
+        for p in (self.dir.iterdir() if self.dir.exists() else []):
             if p.is_file() and not BINARY.search(p.name) and not (new / p.name).exists():
                 shutil.copy2(p, new / p.name)
 
@@ -226,6 +264,10 @@ class LlamaCppEngine(Engine):
             shutil.rmtree(new, ignore_errors=True)
             raise RuntimeError("the new llama-server did not start (--version failed); kept the current one")
         log(f"  new build runs: b{built}")
+        if not self.dir.exists():               # first install (e.g. a new Mac): nothing to keep for rollback
+            new.rename(self.dir)
+            log(f"{self.name}: installed b{built} in {self.dir}")
+            return {**info, "updated": True, "current": f"b{built}"}
         if prev.exists():
             shutil.rmtree(prev)
         self.dir.rename(prev)

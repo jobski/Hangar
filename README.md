@@ -56,6 +56,27 @@ off and on again so the shortcut points at the new place (the page warns when it
 Open `http://<pc>:9000` and paste the token from `data\token.txt`. Opening `http://<pc>:9000/?token=<token>` once
 also signs a device in.
 
+### macOS (Apple Silicon)
+
+Hangar runs on a Mac too. On Apple Silicon the GPU shares the machine's memory, so Hangar shows what Metal may use
+(about 75% of RAM on 32 GB+ Macs, or `iogpu.wired_limit_mb` if you have raised it) as GPU memory, with the GPU load
+from macOS's own statistics (no sudo; there is no temperature reading).
+
+```sh
+git clone https://github.com/jobski/hangar.git ~/hangar && cd ~/hangar
+scripts/setup.sh                 # .venv, requirements, config.yaml from config.example.mac.yaml, prints the token
+open -e config.yaml              # paths, ports, profiles
+scripts/start.sh                 # runs in the background on port 9000 (--foreground to watch it)
+./hangar autostart on            # start it whenever you log in (a LaunchAgent; no admin)
+./hangar update llamacpp         # installs llama.cpp's Metal build into ~/llama.cpp, and keeps it updated
+```
+
+For a coding assistant, llama.cpp (`llama-server` with Metal) is the best fit: Hangar installs and updates it, reads
+its token counts and speeds, and agents get tool calling (`--jinja`) and prompt caching. `config.example.mac.yaml`
+has a Qwen3-Coder 30B-A3B profile; download the GGUF from the Models page (e.g. `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`,
+`Q4_K_M`, about 18 GB) and it suits a 32 GB+ Mac. Autostart on macOS writes
+`~/Library/LaunchAgents/dev.hangar.manager.plist`, which runs the manager at login with its output in `logs/`.
+
 ### Remote access
 
 Use [Tailscale](https://tailscale.com) (it is already installed on this PC): every device on your tailnet reaches

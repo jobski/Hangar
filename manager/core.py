@@ -9,6 +9,7 @@ import collections
 import json
 import os
 import queue
+import shlex
 import subprocess
 import threading
 import time
@@ -29,6 +30,7 @@ from .stats import CounterTracker, Store
 
 CREATE_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 BREAKAWAY = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+WINDOWS = os.name == "nt"
 
 
 class Refused(Exception):
@@ -466,18 +468,22 @@ class Manager:
         if log_path.exists() and log_path.stat().st_size > 50 * 2**20:
             log_path.replace(log_path.with_suffix(".old.log"))
         f = open(log_path, "a", encoding="utf-8", errors="replace")
-        f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} start {p.id}\n{subprocess.list2cmdline(launch.cmd)}\n")
+        shown = subprocess.list2cmdline(launch.cmd) if WINDOWS else shlex.join(launch.cmd)
+        f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} start {p.id}\n{shown}\n")
         f.flush()
         baseline = resources.vram_used()
         job.write(f"starting {p.id} on port {eng.port}")
         # Python engines block-buffer stdout into a file; unbuffered, their log follows live
         env = {**os.environ, "PYTHONUNBUFFERED": "1", **launch.env}
-        try:
-            proc = subprocess.Popen(launch.cmd, cwd=launch.cwd, env=env, stdin=subprocess.DEVNULL, stdout=f,
-                                    stderr=subprocess.STDOUT, creationflags=CREATE_FLAGS | BREAKAWAY)
-        except OSError:
-            proc = subprocess.Popen(launch.cmd, cwd=launch.cwd, env=env, stdin=subprocess.DEVNULL, stdout=f,
-                                    stderr=subprocess.STDOUT, creationflags=CREATE_FLAGS)
+        common = dict(cwd=launch.cwd, env=env, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT)
+        if not WINDOWS:
+            # own session: the engine outlives a manager restart, as the breakaway flag gives on Windows
+            proc = subprocess.Popen(launch.cmd, start_new_session=True, **common)
+        else:
+            try:
+                proc = subprocess.Popen(launch.cmd, creationflags=CREATE_FLAGS | BREAKAWAY, **common)
+            except OSError:
+                proc = subprocess.Popen(launch.cmd, creationflags=CREATE_FLAGS, **common)
         f.close()
         sid = self.store.session_start(eng.name, p.id)
         inst = Instance(engine=eng.name, profile=p.id, pid=proc.pid, create_time=psutil.Process(proc.pid).create_time(),

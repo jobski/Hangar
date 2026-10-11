@@ -43,9 +43,11 @@ def _merge(base: dict, over: dict) -> dict:
 
 
 def _expand(v):
-    """${VAR} in any string is replaced by that environment variable (handy for keys kept out of the file)."""
+    """${VAR} in any string is replaced by that environment variable (handy for keys kept out of the file), and a
+    leading ~/ is the home folder (macOS paths are mostly under it)."""
     if isinstance(v, str):
-        return _ENV.sub(lambda m: os.environ.get(m.group(1), ""), v)
+        v = _ENV.sub(lambda m: os.environ.get(m.group(1), ""), v)
+        return os.path.expanduser(v) if v.startswith(("~/", "~\\")) or v == "~" else v
     if isinstance(v, list):
         return [_expand(x) for x in v]
     if isinstance(v, dict):

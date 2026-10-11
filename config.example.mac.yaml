@@ -1,0 +1,66 @@
+# Hangar on macOS (Apple Silicon). Copy to config.yaml (which git ignores) and edit.
+# ${NAME} is replaced by the environment variable NAME; a leading ~/ is your home folder.
+#
+# On a Mac the GPU shares the machine's memory: Hangar shows what Metal may use (about 75% of RAM on 32 GB+ Macs, or
+# iogpu.wired_limit_mb when you raise it) as "VRAM", and checks models against that.
+
+manager:
+  host: 0.0.0.0
+  port: 9000
+  name: macbook                # how this machine is called in the dashboard and by peers (default: the host name)
+  data_dir: data
+  logs_dir: logs
+
+resources:
+  vram_reserve_mib: 2048       # leave room for macOS and apps sharing the same memory
+  ram_reserve_mib: 4096
+  vram_release_timeout_s: 30
+  sample_interval_s: 5
+  warn_ram_percent: 92
+
+updates:
+  auto_before_start: true
+  min_interval_hours: 6
+  background_check_hours: 6
+
+models:
+  dir: ~/models                # the model library: one folder per model (GGUF + its mmproj + notes.md)
+  scan:
+    - ~/.lmstudio/models
+
+downloads:
+  max_parallel: 2
+  aria2: auto                  # brew install aria2 for parallel connections
+  aria2_connections: 16
+
+templates:
+  llamacpp:
+    policy: exclusive
+    ctx: 65536
+    args: [--jinja, -ngl, "99", -fa, "on", --cache-type-k, q8_0, --cache-type-v, q8_0, --parallel, "1"]
+
+engines:
+  # llama.cpp with Metal: the recommended engine for a coding assistant here. Hangar installs and updates it from the
+  # official macOS arm64 builds: press Update in the dashboard to install it (or run: ./hangar update llamacpp).
+  llamacpp:
+    plugin: llamacpp
+    dir: ~/llama.cpp
+    port: 8081
+    host: 0.0.0.0
+    api_key: ${LLAMA_API_KEY}
+    startup_timeout_s: 600
+
+profiles:
+  qwen3-coder-30b:
+    engine: llamacpp
+    description: Qwen3-Coder 30B-A3B Instruct Q4_K_M, 64K context
+    model: ~/models/qwen3-coder-30b-a3b-instruct/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
+    alias: qwen3-coder-30b
+    ctx: 65536
+    args: [--jinja, -ngl, "99", -fa, "on", --cache-type-k, q8_0, --cache-type-v, q8_0, --parallel, "1"]
+
+# Other Hangars this one can see and control (milestone 3, peering):
+# peers:
+#   pc:
+#     url: http://my-pc:9000
+#     token: ${HANGAR_PC_TOKEN}

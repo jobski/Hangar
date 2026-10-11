@@ -494,10 +494,10 @@ function renderStatus(s) {
   for (const g of r.gpus) {
     const p = g.vram_used_mib / g.vram_total_mib * 100;
     v += `<div class="vital"><span class="k">VRAM</span><span class="mini ${p > 95 ? "hot" : ""}"><i style="width:${p}%"></i></span><span class="v">${gb(g.vram_used_mib)}/${gb(g.vram_total_mib)}G</span></div>
-          <div class="vital opt"><span class="k">GPU</span><span class="v">${(g.util_percent || 0).toFixed(0)}% · ${(g.temp_c || 0).toFixed(0)}°</span></div>`;
-    m += `<div class="gauge"><div class="gh"><span class="gl">VRAM</span><span class="gn">${esc(g.name)}</span><span class="gv">${gb(g.vram_used_mib)}<small> / ${gb(g.vram_total_mib)} GB</small></span></div>
+          <div class="vital opt"><span class="k">GPU</span><span class="v">${g.util_percent == null ? "–" : g.util_percent.toFixed(0) + "%"}${g.temp_c == null ? "" : ` · ${g.temp_c.toFixed(0)}°`}</span></div>`;
+    m += `<div class="gauge"><div class="gh"><span class="gl">${g.unified ? "GPU MEM" : "VRAM"}</span><span class="gn">${esc(g.name)}</span><span class="gv">${gb(g.vram_used_mib)}<small> / ${gb(g.vram_total_mib)} GB</small></span></div>
       <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>
-      <div class="gs"><span>load <b>${(g.util_percent || 0).toFixed(0)}%</b></span><span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${(g.temp_c || 0).toFixed(0)}°C</b></span><span>free <b>${mib(g.vram_total_mib - g.vram_used_mib)}</b></span></div></div>`;
+      <div class="gs">${g.util_percent == null ? "" : `<span>load <b>${g.util_percent.toFixed(0)}%</b></span>`}${g.temp_c == null ? "" : `<span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</b></span>`}<span>free <b>${mib(g.vram_total_mib - g.vram_used_mib)}</b></span>${g.unified ? `<span class="tag" title="shares the machine's RAM; the limit is what Metal may use">unified</span>` : ""}</div></div>`;
   }
   if (!r.gpus.length) m += `<div class="gauge"><div class="small muted">No NVIDIA GPU found (nvidia-smi).</div></div>`;
   const rp = ramUsed / r.ram_total_mib * 100;
