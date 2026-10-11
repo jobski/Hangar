@@ -2,9 +2,7 @@
 #
 #   irm https://raw.githubusercontent.com/jobski/hangar/main/install.ps1 | iex
 #
-# While the repo is private, use a GitHub token that can read it (fine-grained, Contents: read):
-#
-#   $env:GITHUB_TOKEN = '<token>'; irm -Headers @{Authorization = "token $env:GITHUB_TOKEN"} https://raw.githubusercontent.com/jobski/hangar/main/install.ps1 | iex
+# A private fork works too: set $env:GITHUB_TOKEN to a token that can read it (and HANGAR_REPO to the fork).
 #
 # Settings (environment variables, set before running):
 #   HANGAR_DIR=$HOME\hangar   where it goes          HANGAR_REF=main         branch or tag to install

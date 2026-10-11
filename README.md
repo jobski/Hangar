@@ -46,17 +46,6 @@ curl -fsSL https://raw.githubusercontent.com/jobski/hangar/main/install.sh | sh
 irm https://raw.githubusercontent.com/jobski/hangar/main/install.ps1 | iex
 ```
 
-While the repository is private, those URLs need a GitHub token that can read it (a fine-grained token with
-*Contents: read*):
-
-```sh
-curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://raw.githubusercontent.com/jobski/hangar/main/install.sh | GITHUB_TOKEN=$GITHUB_TOKEN sh
-```
-
-```powershell
-$env:GITHUB_TOKEN = '<token>'; irm -Headers @{Authorization = "token $env:GITHUB_TOKEN"} https://raw.githubusercontent.com/jobski/hangar/main/install.ps1 | iex
-```
-
 Options are environment variables: `HANGAR_DIR` (install folder), `HANGAR_REF` (branch or tag, default `main`),
 `HANGAR_NO_START=1`, `HANGAR_NO_AUTOSTART=1`, `HANGAR_NO_PATH=1`.
 

@@ -3,9 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/jobski/hangar/main/install.sh | sh
 #
-# While the repo is private, pass a GitHub token that can read it (a fine-grained token with Contents: read):
-#
-#   curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://raw.githubusercontent.com/jobski/hangar/main/install.sh | GITHUB_TOKEN=$GITHUB_TOKEN sh
+# A private fork works too: pass a token that can read it in GITHUB_TOKEN (sent with the download and the clone).
 #
 # Settings (environment variables):
 #   HANGAR_DIR=~/hangar      where it goes          HANGAR_REF=main     branch or tag to install
