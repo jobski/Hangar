@@ -1,4 +1,4 @@
-# LLM Manager configuration. Copy to config.yaml (which git ignores) and edit.
+# Hangar configuration. Copy to config.yaml (which git ignores) and edit.
 # ${NAME} anywhere is replaced by the environment variable NAME.
 
 manager:

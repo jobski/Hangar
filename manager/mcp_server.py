@@ -21,7 +21,7 @@ def _j(x) -> str:
 
 
 def build(mgr: Manager) -> MCPServer:
-    mcp = MCPServer("llm-manager", instructions=INSTRUCTIONS)
+    mcp = MCPServer("hangar", instructions=INSTRUCTIONS)
 
     async def run(fn, *a):
         return await anyio.to_thread.run_sync(lambda: fn(*a))

@@ -1,5 +1,5 @@
 """python -m manager            run the manager (web UI, REST, MCP)
-python -m manager <command>  the llmctl command-line client (see `python -m manager help`)"""
+python -m manager <command>  the hangar command-line client (see `python -m manager help`)"""
 import sys
 
 if __name__ == "__main__":

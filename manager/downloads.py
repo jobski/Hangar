@@ -22,7 +22,7 @@ from .models import SHARD, folder_name_for
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 QUANT = re.compile(r"(?:^|[-_.])((?:UD-)?(?:I?Q\d(?:_[A-Z0-9]+)*|BF16|F16|F32|MXFP4(?:_MOE)?))(?:[-_.]|$)", re.I)
-UA = {"User-Agent": "llm-manager/0.1"}
+UA = {"User-Agent": "hangar/0.1"}
 
 
 def hf_token() -> str | None:

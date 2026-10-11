@@ -14,5 +14,5 @@ if ($Foreground) {
     Start-Process -FilePath "$root\.venv\Scripts\pythonw.exe" -ArgumentList '-m', 'manager', 'serve' `
         -WorkingDirectory $root -WindowStyle Hidden `
         -RedirectStandardOutput "$root\logs\manager.log" -RedirectStandardError "$root\logs\manager.err.log"
-    Write-Host 'LLM Manager started: http://localhost:9000'
+    Write-Host 'Hangar started: http://localhost:9000'
 }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>LLM Manager</title>
+<title>Hangar</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <meta name="theme-color" content="#0b0e12">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -52,10 +52,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* ---- shell */
 .top { position: sticky; top: 0; z-index: 30; height: var(--top); display: flex; align-items: center; gap: 18px; padding: 0 18px;
   background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; width: calc(var(--side) - 18px); }
-.brand .mark { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
-  background: linear-gradient(135deg, var(--accent), var(--s1) 55%, var(--s3)); box-shadow: 0 0 18px rgba(62,230,160,.25); }
-.brand .mark svg { width: 15px; height: 15px; stroke: #04130c; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15.5px; letter-spacing: -.02em; white-space: nowrap; width: calc(var(--side) - 18px); }
+.brand .mark { width: 28px; height: 28px; border-radius: 8px; display: block; box-shadow: 0 0 20px rgba(62,230,160,.22); }
 .brand small { font-weight: 500; color: var(--muted); font-size: 12px; }
 .vitals { display: flex; gap: 6px; flex: 1; min-width: 0; overflow: hidden; }
 .vital { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-width: 0; white-space: nowrap; }
@@ -310,7 +308,7 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 <body>
 <div id="login" hidden>
   <div class="panel">
-    <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round"><path d="M4 17V7m5 10V11m5 6V5m5 12v-4"/></svg></span>LLM Manager</div>
+    <div class="brand"><img class="mark" src="/favicon.svg" alt="">Hangar</div>
     <h2>Sign in</h2>
     <div class="small muted">Paste the manager's token from <span class="mono">data\token.txt</span> on the PC.</div>
     <input id="tok" class="input" style="width:100%;margin:16px 0 12px" type="password" autocomplete="current-password" placeholder="token">
@@ -320,7 +318,7 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 
 <div id="app" hidden>
 <header class="top">
-  <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round"><path d="M4 17V7m5 10V11m5 6V5m5 12v-4"/></svg></span>LLM Manager <small id="hostname"></small></div>
+  <div class="brand"><img class="mark" src="/favicon.svg" alt="">Hangar <small id="hostname"></small></div>
   <div class="vitals" id="vitals"></div>
   <span id="jobpill" class="pill warn" hidden></span>
   <span id="conn" class="pill"><span class="dot"></span>connecting</span>

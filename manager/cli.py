@@ -1,29 +1,29 @@
-"""llmctl: the manager from a terminal, on this PC or any other.
+"""hangar: the manager from a terminal, on this PC or any other. (llmctl still works as an alias.)
 
-    llmctl login http://my-pc:9000 <token>    remember where the manager is (saved in ~/.llmctl.json)
-    llmctl status | profiles | plan <profile>
-    llmctl start <profile> [--force] [--no-update | --update]
-    llmctl switch <profile>       (same as start)
-    llmctl stop <engine|all> | restart <engine>
-    llmctl check [engine] | update <engine> | rollback <engine>
-    llmctl logs <engine> [lines] [-f]      -f keeps printing new lines (Ctrl+C to stop)
-    llmctl jobs | job <id> | events
-    llmctl stats [day|week|month|year|all]
+    hangar login http://my-pc:9000 <token>    remember where the manager is (saved in ~/.hangar.json)
+    hangar status | profiles | plan <profile>
+    hangar start <profile> [--force] [--no-update | --update]
+    hangar switch <profile>       (same as start)
+    hangar stop <engine|all> | restart <engine>
+    hangar check [engine] | update <engine> | rollback <engine>
+    hangar logs <engine> [lines] [-f]      -f keeps printing new lines (Ctrl+C to stop)
+    hangar jobs | job <id> | events
+    hangar stats [day|week|month|year|all]
 
   models
-    llmctl models                                   the model library
-    llmctl search <words> [--modelscope]           find GGUF repos
-    llmctl files <repo> [--modelscope|--ollama]    a repo's quants and sizes
-    llmctl download <repo> <pattern>... [--modelscope|--ollama|--url] [--no-profile]
-          e.g. llmctl download unsloth/Qwen3-8B-GGUF "*Q4_K_M*"     llmctl download qwen3:8b --ollama
-    llmctl downloads                                progress
-    llmctl new-profile <model.gguf> [name] [ctx]    a llama.cpp profile from the template
-    llmctl custom <profile> [--ctx N] [-- extra llama args...]   one-off run with changes
+    hangar models                                   the model library
+    hangar search <words> [--modelscope]           find GGUF repos
+    hangar files <repo> [--modelscope|--ollama]    a repo's quants and sizes
+    hangar download <repo> <pattern>... [--modelscope|--ollama|--url] [--no-profile]
+          e.g. hangar download unsloth/Qwen3-8B-GGUF "*Q4_K_M*"     hangar download qwen3:8b --ollama
+    hangar downloads                                progress
+    hangar new-profile <model.gguf> [name] [ctx]    a llama.cpp profile from the template
+    hangar custom <profile> [--ctx N] [-- extra llama args...]   one-off run with changes
 
   connect other tools
-    llmctl connect <client> [--host H] [--apply]   config for opencode, qwen, pi, codex, claude, aider, continue, generic
-    llmctl connect mcp [client] [--host H] [--apply]   this manager as an MCP server (claude, codex, qwen, opencode, ...)
-    llmctl hosts                                    addresses other machines can use for --host
+    hangar connect <client> [--host H] [--apply]   config for opencode, qwen, pi, codex, claude, aider, continue, generic
+    hangar connect mcp [client] [--host H] [--apply]   this manager as an MCP server (claude, codex, qwen, opencode, ...)
+    hangar hosts                                    addresses other machines can use for --host
 """
 from __future__ import annotations
 
@@ -35,14 +35,16 @@ from pathlib import Path
 
 import httpx
 
-CONF = Path.home() / ".llmctl.json"
+CONF = Path.home() / ".hangar.json"
+OLD_CONF = Path.home() / ".llmctl.json"        # from before the rename; still read
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def _conn() -> tuple[str, str]:
-    saved = json.loads(CONF.read_text()) if CONF.exists() else {}
-    url = os.environ.get("LLMCTL_URL") or saved.get("url") or "http://127.0.0.1:9000"
-    tok = os.environ.get("LLMCTL_TOKEN") or saved.get("token")
+    conf = CONF if CONF.exists() else OLD_CONF
+    saved = json.loads(conf.read_text()) if conf.exists() else {}
+    url = os.environ.get("HANGAR_URL") or os.environ.get("LLMCTL_URL") or saved.get("url") or "http://127.0.0.1:9000"
+    tok = os.environ.get("HANGAR_TOKEN") or os.environ.get("LLMCTL_TOKEN") or saved.get("token")
     if not tok and (ROOT / "data" / "token.txt").exists():
         tok = (ROOT / "data" / "token.txt").read_text().strip()
     return url.rstrip("/"), tok or ""
@@ -167,7 +169,7 @@ def cmd_logs(a):
     follow = "-f" in a or "--follow" in a
     pl = [x for x in a if x not in ("-f", "--follow")]
     if not pl:
-        sys.exit("usage: llmctl logs <engine> [lines] [-f]")
+        sys.exit("usage: hangar logs <engine> [lines] [-f]")
     lines = int(pl[1]) if len(pl) > 1 else 100
     if not follow:
         print(_call("GET", f"/api/logs/{pl[0]}", params={"lines": lines}))
@@ -259,7 +261,7 @@ def cmd_download(a):
     d = _call("POST", "/api/downloads", json={"source": _source(a), "repo": pl[0], "include": pl[1:] or None,
                                               "make_profile": "--no-profile" not in a})
     print(f"download {d['id']}: {len(d['files'])} files, {_mib(d['total_bytes'] / 2**20)} -> {d['folder']}")
-    print("follow it with: llmctl downloads")
+    print("follow it with: hangar downloads")
 
 
 def cmd_downloads(_):
@@ -316,7 +318,7 @@ def cmd_connect(a):
 
 def cmd_login(a):
     if len(a) < 2:
-        sys.exit("usage: llmctl login <url> <token>")
+        sys.exit("usage: hangar login <url> <token>")
     CONF.write_text(json.dumps({"url": a[0], "token": a[1]}))
     print(f"saved to {CONF}")
     print(_call("GET", "/api/status") and "connected")
@@ -339,7 +341,7 @@ def main(argv=None) -> int:
         return 0 if not argv or argv[0] in ("-h", "--help", "help") else 2
     cmd, rest = argv[0], argv[1:]
     if cmd in NEEDS_ARG and not [x for x in rest if not x.startswith("--")]:
-        sys.exit(f"llmctl {cmd} needs an argument")
+        sys.exit(f"hangar {cmd} needs an argument")
     return COMMANDS[cmd](rest) or 0
 
 

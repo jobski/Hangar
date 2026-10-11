@@ -2,7 +2,8 @@
 # -Remove takes it out again.
 param([switch]$Remove)
 $root = Split-Path -Parent $PSScriptRoot
-$link = Join-Path ([Environment]::GetFolderPath('Startup')) 'LLM Manager.lnk'
+$link = Join-Path ([Environment]::GetFolderPath('Startup')) 'Hangar.lnk'
+Remove-Item (Join-Path ([Environment]::GetFolderPath('Startup')) 'LLM Manager.lnk') -ErrorAction SilentlyContinue   # the name before the rename
 
 if ($Remove) {
     Remove-Item $link -ErrorAction SilentlyContinue
@@ -15,6 +16,6 @@ $s.TargetPath = 'powershell.exe'
 $s.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$root\scripts\start.ps1`""
 $s.WorkingDirectory = $root
 $s.WindowStyle = 7
-$s.Description = 'LLM Manager'
+$s.Description = 'Hangar'
 $s.Save()
 Write-Host "Autostart installed: $link"

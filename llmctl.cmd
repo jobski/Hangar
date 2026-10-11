@@ -1,3 +1,3 @@
 @echo off
-rem llmctl: the LLM Manager from the command line. Put this folder on PATH to use it anywhere.
+rem llmctl: the old name of hangar.cmd, kept so existing scripts and PATH entries still work.
 "%~dp0.venv\Scripts\python.exe" -m manager %*

@@ -1,7 +1,9 @@
-# LLM Manager
+<img src="manager/web/favicon.svg" width="56" align="left" alt="">
+
+# Hangar
 
 Start, stop, switch, update and watch the local LLM engines on one Windows PC with one GPU, from anywhere. You can drive
-it from a web page (works on a phone), an MCP server (for Claude or any other MCP client), a REST API, and the `llmctl`
+it from a web page (works on a phone), an MCP server (for Claude or any other MCP client), a REST API, and the `hangar`
 command line.
 
 - **Engines are plugins.** llama.cpp (`llama-server`) and [Strata](https://github.com/Niko1221/Strata) are built in,
@@ -53,7 +55,7 @@ bare page needs the token, but don't forward port 9000 on your router.
 The MCP server is at `http://<pc>:9000/mcp` (streamable HTTP) and takes the same token.
 
 ```bash
-claude mcp add --transport http llm-manager http://<pc>:9000/mcp --header "Authorization: Bearer <token>"
+claude mcp add --transport http hangar http://<pc>:9000/mcp --header "Authorization: Bearer <token>"
 ```
 
 Tools: `status`, `list_profiles`, `plan`, `start`, `switch_model`, `stop`, `restart`, `run_custom`, `check_updates`,
@@ -63,7 +65,7 @@ Tools: `status`, `list_profiles`, `plan`, `start`, `switch_model`, `stop`, `rest
 
 ### Connecting coding agents and other apps
 
-The **Connect** section of the web page (and `llmctl connect`) gives ready-to-paste settings for the running
+The **Connect** section of the web page (and `hangar connect`) gives ready-to-paste settings for the running
 models: opencode, Qwen Code, Pi, Codex CLI, Claude Code, Aider, Continue, or any OpenAI-compatible app. The second tab
 does the same for this manager's MCP server (Claude Code, Claude Desktop, Codex, Qwen Code, Gemini CLI, opencode,
 Cursor, VS Code). Pick the address the other machine should use (Tailscale name/IP, LAN, or 127.0.0.1 for this PC).
@@ -71,23 +73,24 @@ For opencode, Qwen Code and Pi, "Write to this PC" merges the settings into that
 backup. Over MCP, the `client_config` tool returns the same snippets.
 
 ```
-llmctl hosts                              llmctl connect opencode --host 100.101.102.103
-llmctl connect qwen --apply               llmctl connect mcp codex --host my-pc.tailnet.ts.net
+hangar hosts                              hangar connect opencode --host 100.101.102.103
+hangar connect qwen --apply               hangar connect mcp codex --host my-pc.tailnet.ts.net
 ```
 
-### llmctl
+### hangar (CLI)
 
-`llmctl.cmd` runs on this PC. On another PC, copy the repo and run `llmctl login http://<pc>:9000 <token>` once.
+`hangar.cmd` runs on this PC (`hangar.cmd` is the old name and still works). On another PC, copy the repo and run
+`hangar login http://<pc>:9000 <token>` once.
 
 ```
-llmctl status                         llmctl stats            (day/week/month/year/all)
-llmctl switch tiel-coder-35b          llmctl stop all
-llmctl check                          llmctl update llamacpp  llmctl rollback llamacpp
-llmctl search qwen3 coder             llmctl files unsloth/Qwen3-8B-GGUF
-llmctl download unsloth/Qwen3-8B-GGUF "*Q4_K_M*"
-llmctl download qwen3:8b --ollama     llmctl downloads
-llmctl custom tiel-coder-35b --ctx 65536 -- --temp 0.6
-llmctl logs strata -f                 (follow the log live; Ctrl+C stops)
+hangar status                         hangar stats            (day/week/month/year/all)
+hangar switch tiel-coder-35b          hangar stop all
+hangar check                          hangar update llamacpp  hangar rollback llamacpp
+hangar search qwen3 coder             hangar files unsloth/Qwen3-8B-GGUF
+hangar download unsloth/Qwen3-8B-GGUF "*Q4_K_M*"
+hangar download qwen3:8b --ollama     hangar downloads
+hangar custom tiel-coder-35b --ctx 65536 -- --temp 0.6
+hangar logs strata -f                 (follow the log live; Ctrl+C stops)
 ```
 
 REST: everything is under `/api` (interactive docs at `/api/docs`). Actions return a job; add `?wait=60` to wait for

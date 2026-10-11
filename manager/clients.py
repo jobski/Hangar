@@ -228,32 +228,32 @@ def mcp_configs(host: str, port: int, token: str) -> list[dict]:
     hdr = {"Authorization": auth}
     return [
         {"id": "claude", "title": "Claude Code", "file": "command line", "language": "bash",
-         "content": f'claude mcp add --scope user --transport http llm-manager {url} --header "Authorization: {auth}"',
+         "content": f'claude mcp add --scope user --transport http hangar {url} --header "Authorization: {auth}"',
          "notes": "--scope user makes it available in every project. Check with /mcp."},
         {"id": "claude-json", "title": "Claude Code (.mcp.json, per project)", "file": ".mcp.json in a project", "language": "json",
-         "content": json.dumps({"mcpServers": {"llm-manager": {"type": "http", "url": url, "headers": hdr}}}, indent=2)},
+         "content": json.dumps({"mcpServers": {"hangar": {"type": "http", "url": url, "headers": hdr}}}, indent=2)},
         {"id": "claude-desktop", "title": "Claude Desktop", "file": "%APPDATA%\\Claude\\claude_desktop_config.json",
-         "language": "json", "content": json.dumps({"mcpServers": {"llm-manager": {"command": "npx", "args": [
+         "language": "json", "content": json.dumps({"mcpServers": {"hangar": {"command": "npx", "args": [
              "-y", "mcp-remote", url, "--allow-http", "--header", f"Authorization:{auth}"]}}}, indent=2),
          "notes": "Claude Desktop reaches HTTP servers through the mcp-remote bridge (needs Node.js)."},
         {"id": "codex", "title": "Codex CLI", "file": str(HOME / ".codex" / "config.toml"), "language": "toml",
-         "content": f'[mcp_servers.llm-manager]\nurl = "{url}"\nhttp_headers = {{ Authorization = "{auth}" }}\n'},
+         "content": f'[mcp_servers.hangar]\nurl = "{url}"\nhttp_headers = {{ Authorization = "{auth}" }}\n'},
         {"id": "qwen", "title": "Qwen Code", "file": str(HOME / ".qwen" / "settings.json"), "language": "json",
-         "content": json.dumps({"mcpServers": {"llm-manager": {"httpUrl": url, "headers": hdr}}}, indent=2),
+         "content": json.dumps({"mcpServers": {"hangar": {"httpUrl": url, "headers": hdr}}}, indent=2),
          "apply": "qwen-mcp", "notes": "Merged into settings.json. /mcp lists it."},
         {"id": "gemini", "title": "Gemini CLI", "file": str(HOME / ".gemini" / "settings.json"), "language": "json",
-         "content": json.dumps({"mcpServers": {"llm-manager": {"httpUrl": url, "headers": hdr}}}, indent=2)},
+         "content": json.dumps({"mcpServers": {"hangar": {"httpUrl": url, "headers": hdr}}}, indent=2)},
         {"id": "opencode", "title": "opencode", "file": str(HOME / ".config" / "opencode" / "opencode.json"),
          "language": "json", "apply": "opencode-mcp",
-         "content": json.dumps({"$schema": "https://opencode.ai/config.json", "mcp": {"llm-manager": {
+         "content": json.dumps({"$schema": "https://opencode.ai/config.json", "mcp": {"hangar": {
              "type": "remote", "url": url, "headers": hdr, "enabled": True}}}, indent=2)},
         {"id": "cursor", "title": "Cursor", "file": str(HOME / ".cursor" / "mcp.json"), "language": "json",
-         "content": json.dumps({"mcpServers": {"llm-manager": {"url": url, "headers": hdr}}}, indent=2)},
+         "content": json.dumps({"mcpServers": {"hangar": {"url": url, "headers": hdr}}}, indent=2)},
         {"id": "vscode", "title": "VS Code (Copilot)", "file": ".vscode/mcp.json or user mcp.json", "language": "json",
-         "content": json.dumps({"servers": {"llm-manager": {"type": "http", "url": url, "headers": hdr}}}, indent=2)},
+         "content": json.dumps({"servers": {"hangar": {"type": "http", "url": url, "headers": hdr}}}, indent=2)},
         {"id": "pi", "title": "Pi", "file": "-", "language": "text",
-         "content": "Pi has no built-in MCP support (by design). Use llmctl from Pi's shell tool instead:\n"
-                    f"  llmctl login http://{host}:{port} {token}\n  llmctl status",
+         "content": "Pi has no built-in MCP support (by design). Use the hangar CLI from Pi's shell tool instead:\n"
+                    f"  hangar login http://{host}:{port} {token}\n  hangar status",
          "notes": "Or install an MCP extension for Pi if you use one."},
         {"id": "raw", "title": "Raw values", "file": "-", "language": "text",
          "content": f"URL:       {url}\nTransport: streamable HTTP\nHeader:    Authorization: {auth}"},

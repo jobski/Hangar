@@ -35,7 +35,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
             yield
         mgr.shutdown()
 
-    app = FastAPI(title="LLM Manager", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
+    app = FastAPI(title="Hangar", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.mgr = mgr
 
     @app.middleware("http")
@@ -73,7 +73,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.get("/api/ping")
     def ping():
-        return {"ok": True, "service": "llm-manager"}
+        return {"ok": True, "service": "hangar"}
 
     # ---- reading
     @app.get("/api/status")
@@ -291,5 +291,5 @@ def serve():
         logging.getLogger(noisy).setLevel(logging.WARNING)
     mgr = Manager()
     m = mgr.cfg["manager"]
-    print(f"LLM Manager on http://{m['host']}:{m['port']}  (token in {m['data_dir'] / 'token.txt'})", flush=True)
+    print(f"Hangar on http://{m['host']}:{m['port']}  (token in {m['data_dir'] / 'token.txt'})", flush=True)
     uvicorn.run(create_app(mgr), host=m["host"], port=int(m["port"]), log_level="warning")
