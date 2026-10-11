@@ -5,192 +5,429 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>LLM Manager</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<meta name="theme-color" content="#2f6f5e">
+<meta name="theme-color" content="#0b0e12">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #f6f7f5; --panel: #ffffff; --ink: #1b1f1d; --muted: #66706b; --line: #e2e6e3;
-  --accent: #2f6f5e; --accent-ink: #fff; --ok: #2e7d4f; --warn: #b26a00; --bad: #b3261e; --track: #e9ecea;
-  --s1: #2f6f5e; --s2: #c47f2c; --s3: #5b6fb3;
-  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --bg: #0b0e12; --bg2: #0f1318; --panel: #13171d; --panel2: #181d24; --line: #222932; --line2: #2c343f;
+  --ink: #e6eaf0; --ink2: #b7c0cc; --muted: #7d8794; --faint: #4c5562;
+  --accent: #3ee6a0; --accent-dim: rgba(62, 230, 160, .14); --accent-ink: #04130c;
+  --ok: #3ee6a0; --warn: #f5b041; --bad: #ff6b6b; --info: #7aa7ff;
+  --warn-dim: rgba(245, 176, 65, .13); --bad-dim: rgba(255, 107, 107, .13); --info-dim: rgba(122, 167, 255, .13);
+  --s1: #2dd4bf; --s2: #f5b041; --s3: #a78bfa;
+  --track: #1d232b; --shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px rgba(0,0,0,.25);
+  --sans: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Code", "Cascadia Mono", Consolas, monospace;
+  --r: 10px; --side: 216px; --top: 56px;
+  color-scheme: dark;
 }
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #111413; --panel: #1a1e1c; --ink: #e7ebe9; --muted: #9aa5a0; --line: #2b312e;
-    --accent: #5fb39b; --accent-ink: #0d1211; --ok: #6cc28f; --warn: #e3a447; --bad: #f2867d; --track: #262c29;
-    --s1: #5fb39b; --s2: #e3a447; --s3: #8d9de0;
+    --bg: #f3f5f8; --bg2: #eceff3; --panel: #ffffff; --panel2: #f7f9fb; --line: #e1e5eb; --line2: #d3d9e1;
+    --ink: #121820; --ink2: #3a4552; --muted: #69737f; --faint: #a3acb7;
+    --accent: #0f9d6b; --accent-dim: rgba(15, 157, 107, .1); --accent-ink: #fff;
+    --ok: #0f9d6b; --warn: #b7700a; --bad: #d63c3c; --info: #2f6bd8;
+    --warn-dim: rgba(183, 112, 10, .1); --bad-dim: rgba(214, 60, 60, .09); --info-dim: rgba(47, 107, 216, .09);
+    --s1: #0d9488; --s2: #d48806; --s3: #7c5cdb;
+    --track: #e7ebf0; --shadow: 0 1px 2px rgba(16,24,40,.05);
+    color-scheme: light;
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
-header h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: .1px; }
-header .sp { flex: 1; }
-main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
-main *, dialog * { overflow-wrap: anywhere; }
-.grid2 { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); }
-section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
-section > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-section > h2 .sp { flex: 1; }
-.muted { color: var(--muted); }
-.small { font-size: 13px; }
-.mono { font-family: var(--mono); font-size: 12.5px; }
-.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.meter { margin: 6px 0 10px; }
-.meter .lbl { display: flex; justify-content: space-between; font-size: 13px; }
-.bar { height: 8px; background: var(--track); border-radius: 99px; overflow: hidden; margin-top: 4px; }
-.bar > i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .4s; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; font-feature-settings: "cv11", "ss01"; }
+button, input, select, textarea { font: inherit; color: inherit; }
+::selection { background: var(--accent-dim); }
+.mono, code, pre { font-family: var(--mono); }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); } .faint { color: var(--faint); }
+.small { font-size: 12.5px; }
+.sp { flex: 1; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ok-t { color: var(--ok); } .warn-t { color: var(--warn); } .bad-t { color: var(--bad); }
+
+/* ---- shell */
+.top { position: sticky; top: 0; z-index: 30; height: var(--top); display: flex; align-items: center; gap: 18px; padding: 0 18px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; width: calc(var(--side) - 18px); }
+.brand .mark { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--accent), var(--s1) 55%, var(--s3)); box-shadow: 0 0 18px rgba(62,230,160,.25); }
+.brand .mark svg { width: 15px; height: 15px; stroke: #04130c; }
+.brand small { font-weight: 500; color: var(--muted); font-size: 12px; }
+.vitals { display: flex; gap: 6px; flex: 1; min-width: 0; overflow: hidden; }
+.vital { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-width: 0; white-space: nowrap; }
+.vital .k { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.vital .v { font: 500 12.5px var(--mono); font-variant-numeric: tabular-nums; }
+.vital .mini { width: 46px; height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; }
+.vital .mini > i { display: block; height: 100%; background: var(--s1); border-radius: 9px; transition: width .5s; }
+.vital .mini.ram > i { background: var(--s2); } .vital .mini.cpu > i { background: var(--s3); }
+.vital .mini.hot > i { background: var(--bad); }
+.pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; background: var(--panel); }
+.pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: var(--accent-dim); }
+.pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: var(--bad-dim); }
+.pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: var(--warn-dim); cursor: pointer; }
+
+.shell { display: grid; grid-template-columns: var(--side) minmax(0, 1fr); min-height: calc(100vh - var(--top)); }
+.side { position: sticky; top: var(--top); align-self: start; height: calc(100vh - var(--top)); padding: 14px 10px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; }
+.nav { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--ink2); cursor: pointer; border: 0; background: none; text-align: left; font-size: 13.5px; font-weight: 500; width: 100%; }
+.nav svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; opacity: .85; }
+.nav:hover { background: var(--panel); color: var(--ink); }
+.nav.on { background: var(--panel2); color: var(--ink); box-shadow: inset 2px 0 0 var(--accent); }
+.nav.on svg { color: var(--accent); opacity: 1; }
+.nav .cnt:empty { display: none; }
+.nav .cnt { margin-left: auto; font: 500 11px var(--mono); color: var(--muted); background: var(--bg2); border: 1px solid var(--line); padding: 0 6px; border-radius: 99px; }
+.side .foot { margin-top: auto; padding: 10px; font-size: 11.5px; color: var(--faint); line-height: 1.6; }
+.content { padding: 22px 26px 60px; min-width: 0; max-width: 1320px; width: 100%; }
+.view { display: none; animation: fade .18s ease; }
+.view.on { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.vh { display: flex; align-items: flex-end; gap: 12px; margin-bottom: 2px; flex-wrap: wrap; }
+.vh h1 { font-size: 20px; font-weight: 650; letter-spacing: -.02em; margin: 0; }
+.vh p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+
+/* ---- panels */
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); min-width: 0; }
+.ph { display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-bottom: 1px solid var(--line); min-height: 46px; flex-wrap: wrap; }
+.ph h3 { margin: 0; font-size: 11.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+.ph .meta { font-size: 12px; color: var(--faint); }
+.pb { padding: 14px 16px; }
+.pb.flush { padding: 0; }
+.cols { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); align-items: start; }
+.cols.even { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* ---- controls */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--line2); background: var(--panel2); color: var(--ink); font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background .12s, border-color .12s, color .12s; }
+.btn:hover { border-color: var(--faint); background: var(--bg2); }
+.btn:active { transform: translateY(.5px); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.sm { height: 27px; padding: 0 9px; font-size: 12px; border-radius: 6px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--ink2); }
+.btn.ghost:hover { background: var(--panel2); border-color: var(--line); color: var(--ink); }
+.btn.danger { color: var(--bad); }
+.btn.danger:hover { background: var(--bad-dim); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+.btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.input, select.input, textarea.input { height: 34px; padding: 0 11px; border-radius: 7px; border: 1px solid var(--line2); background: var(--bg2); color: var(--ink); font-size: 13.5px; outline: none; min-width: 0; }
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.input.grow { flex: 1 1 240px; }
+textarea.input { width: 100%; height: auto; min-height: 280px; padding: 10px 12px; font: 12.5px/1.55 var(--mono); resize: vertical; }
+label.fld { display: grid; gap: 5px; font-size: 12px; color: var(--muted); font-weight: 500; }
+label.chk { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink2); cursor: pointer; }
+input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
+.seg { display: inline-flex; min-width: 0; padding: 3px; gap: 2px; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; flex-wrap: wrap; max-width: 100%; }
+.seg button { border: 0; background: none; color: var(--muted); height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.seg button:hover { color: var(--ink); }
+.seg button.on { background: var(--panel2); color: var(--ink); box-shadow: 0 0 0 1px var(--line2), 0 1px 2px rgba(0,0,0,.2); }
+
+/* ---- tags, dots */
+.tag { display: inline-flex; align-items: center; gap: 5px; height: 21px; padding: 0 7px; border-radius: 5px; font: 500 11.5px var(--mono); color: var(--ink2); background: var(--bg2); border: 1px solid var(--line); white-space: nowrap; }
+.tag.ok { color: var(--ok); background: var(--accent-dim); border-color: transparent; }
+.tag.warn { color: var(--warn); background: var(--warn-dim); border-color: transparent; }
+.tag.bad { color: var(--bad); background: var(--bad-dim); border-color: transparent; }
+.tag.info { color: var(--info); background: var(--info-dim); border-color: transparent; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--accent-dim), 0 0 10px var(--ok); animation: pulse 2.2s infinite; }
+.dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-dim); animation: pulse 1s infinite; }
+.dot.bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-dim); }
+@keyframes pulse { 50% { opacity: .55; } }
+.spin { width: 13px; height: 13px; border: 2px solid var(--line2); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- meters */
+.gauge { padding: 12px 0; border-top: 1px solid var(--line); }
+.gauge:first-child { border-top: 0; padding-top: 0; }
+.gauge .gh { display: flex; align-items: baseline; gap: 8px; }
+.gauge .gl { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.gauge .gn { font-size: 12.5px; color: var(--ink2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.gauge .gv { margin-left: auto; font: 600 15px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gauge .gv small { color: var(--muted); font-weight: 400; font-size: 12px; }
+.bar { height: 6px; background: var(--track); border-radius: 99px; overflow: hidden; margin-top: 8px; position: relative; }
+.bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 99px; background: var(--s1); transition: width .5s cubic-bezier(.2,.8,.2,1); }
+.bar.ram > i { background: var(--s2); } .bar.cpu > i { background: var(--s3); }
 .bar.warn > i { background: var(--warn); } .bar.bad > i { background: var(--bad); }
-.engine { border-top: 1px solid var(--line); padding: 12px 0; }
-.engine:first-of-type { border-top: 0; padding-top: 2px; }
-.engine .name { font-weight: 650; font-size: 16px; }
-.badge { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
-.badge.ok { color: var(--ok); border-color: currentColor; } .badge.warn { color: var(--warn); border-color: currentColor; } .badge.bad { color: var(--bad); border-color: currentColor; }
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 10px 0; }
-.kpi { background: var(--bg); border-radius: 8px; padding: 8px 10px; }
-.kpi b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
-.kpi span { font-size: 12px; color: var(--muted); }
-button { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 6px 12px; border-radius: 8px; cursor: pointer; min-height: 34px; }
-button:hover { border-color: var(--muted); }
-button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-button.danger { color: var(--bad); }
-button:disabled { opacity: .5; cursor: default; }
-.profile { display: flex; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
-.profile .info { flex: 1 1 240px; }
-.profile:first-child { border-top: 0; }
-.profile .info { min-width: 0; }
-.profile .id { font-weight: 600; overflow-wrap: anywhere; }
-.tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
-.tabs button { padding: 4px 10px; min-height: 30px; font-size: 13px; }
-.tabs button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
-table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
-th, td { text-align: right; padding: 6px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; overflow-wrap: normal; }
-th:first-child, td:first-child { text-align: left; white-space: normal; overflow-wrap: anywhere; }
-th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.bar.thin { height: 4px; margin-top: 5px; }
+.bar .mk { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); opacity: .55; border-radius: 2px; }
+.gauge .gs { display: flex; gap: 14px; margin-top: 7px; font-size: 12px; color: var(--muted); }
+.gauge .gs b { font: 500 12px var(--mono); color: var(--ink2); }
+.warnbox { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--warn); background: var(--warn-dim); border-radius: 7px; padding: 8px 10px; margin-top: 10px; }
+.errbox { color: var(--bad); background: var(--bad-dim); }
+
+/* ---- engines */
+.eng { padding: 16px; border-top: 1px solid var(--line); }
+.eng:first-child { border-top: 0; }
+.eng .eh { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.eng .en { font-size: 15.5px; font-weight: 650; letter-spacing: -.01em; }
+.eng .esub { margin: 6px 0 0 18px; font-size: 12.5px; color: var(--muted); }
+.eng .esub b { color: var(--ink); font-weight: 600; }
+.eng .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.eng.off .en { color: var(--ink2); }
+.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-top: 14px; }
+.stat { background: var(--bg2); padding: 10px 12px; min-width: 0; }
+.stat .sv { font: 600 19px var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; white-space: nowrap; }
+.stat .sv small { font-size: 11.5px; color: var(--muted); font-weight: 500; margin-left: 3px; letter-spacing: 0; }
+.stat .sl { font-size: 11px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat.hero .sv { color: var(--accent); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; box-shadow: var(--shadow); }
+.kpi .sl { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.kpi .sv { font: 600 24px var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.03em; margin-top: 4px; }
+.kpi .sv small { font-size: 12px; color: var(--muted); font-weight: 500; letter-spacing: 0; margin-left: 4px; }
+.kpi.hero .sv { color: var(--accent); }
+
+/* ---- lists */
+.lrow { display: grid; grid-template-columns: minmax(0, 1fr) 140px 140px 330px; gap: 18px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--line); }
+.lrow:first-child { border-top: 0; }
+.lrow:hover { background: color-mix(in srgb, var(--panel2) 60%, transparent); }
+.lrow .t { display: flex; align-items: center; gap: 9px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.lrow .d { font-size: 12.5px; color: var(--muted); margin: 3px 0 0 17px; overflow-wrap: anywhere; }
+.lrow .tags { display: flex; gap: 5px; flex-wrap: wrap; margin: 7px 0 0 17px; }
+.need .nl { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.need .nl b { font: 500 11.5px var(--mono); color: var(--ink2); }
+.lrow .acts { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
+.lrow.head { padding-top: 9px; padding-bottom: 9px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); background: var(--bg2); border-radius: var(--r) var(--r) 0 0; }
+.lrow.head:hover { background: var(--bg2); }
+.empty { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+
+table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.data th { text-align: right; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); padding: 9px 16px; background: var(--bg2); border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.data td { text-align: right; padding: 9px 16px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.data th:first-child, table.data td:first-child { text-align: left; font-family: var(--sans); font-size: 13px; white-space: normal; overflow-wrap: anywhere; }
+table.data th:first-child { font-size: 11px; }
+table.data td:first-child { min-width: 150px; }
+table.data tr:last-child td { border-bottom: 0; }
+table.data tr:hover td { background: color-mix(in srgb, var(--panel2) 60%, transparent); }
+table.data .share { display: block; height: 3px; border-radius: 3px; background: var(--s1); margin-top: 5px; opacity: .8; }
 .scroll { overflow-x: auto; }
-.chart { width: 100%; height: 170px; display: block; }
-.chart text { fill: var(--muted); font-size: 10px; }
-.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
-.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
-pre.log { background: var(--bg); border-radius: 8px; padding: 10px; max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; font: 12px/1.45 var(--mono); }
-.events div { padding: 5px 0; border-top: 1px solid var(--line); font-size: 13px; }
-.events div:first-child { border-top: 0; }
-.lvl-error { color: var(--bad); } .lvl-warn { color: var(--warn); }
-dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); width: min(760px, calc(100vw - 32px)); padding: 16px; }
-dialog::backdrop { background: rgba(0,0,0,.45); }
-.warnbox { color: var(--warn); font-size: 13px; margin-top: 6px; }
-#login { max-width: 420px; margin: 12vh auto; }
-#login input { width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); margin: 10px 0; }
-select, input.grow, textarea { font: inherit; font-size: 14px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); min-height: 34px; }
-input.grow { flex: 1; min-width: 180px; }
-textarea { width: 100%; font: 12.5px/1.45 var(--mono); min-height: 260px; }
-.dl { padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; }
-.lib { padding: 10px 0; border-top: 1px solid var(--line); }
-.lib:first-child { border-top: 0; }
-.lib .file { display: flex; gap: 8px; align-items: center; font-size: 13px; padding: 3px 0; flex-wrap: wrap; }
-.lib .file span.n { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
-.qrow { display: flex; gap: 8px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); font-size: 13px; }
-.qrow label { flex: 1; overflow-wrap: anywhere; }
-.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--panel); padding: 8px 14px; border-radius: 8px; font-size: 14px; z-index: 20; max-width: calc(100vw - 32px); }
+
+/* ---- charts */
+.chart { width: 100%; height: 190px; display: block; }
+.chart text { fill: var(--faint); font: 10.5px var(--mono); }
+.chart .grid { stroke: var(--line); stroke-dasharray: 2 4; }
+.legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 3px; border-radius: 3px; margin-right: 6px; vertical-align: 3px; }
+
+/* ---- feed */
+.feed { font-size: 13px; }
+.feed .it { display: grid; grid-template-columns: 74px 10px minmax(0, 1fr); gap: 10px; padding: 8px 16px; border-top: 1px solid var(--line); align-items: start; }
+.feed .it:first-child { border-top: 0; }
+.feed .ts { font: 11.5px var(--mono); color: var(--faint); padding-top: 1px; white-space: nowrap; }
+.feed .it .dot { margin-top: 6px; width: 6px; height: 6px; box-shadow: none; animation: none; }
+.feed .msg { overflow-wrap: anywhere; color: var(--ink2); }
+.feed .msg .k { font: 500 11px var(--mono); color: var(--muted); margin-right: 6px; }
+.feed a { color: inherit; text-decoration: none; }
+.feed a:hover .msg { color: var(--ink); }
+.lvl-error .msg { color: var(--bad); } .lvl-warn .msg { color: var(--warn); }
+
+/* ---- terminal & code */
+.term { background: #07090c; color: #c9d3de; border-radius: 8px; border: 1px solid var(--line); margin: 0; padding: 12px 14px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 12px/1.6 var(--mono); max-height: 360px; }
+@media (prefers-color-scheme: light) { .term { background: #0e1217; color: #d3dbe4; border-color: #0e1217; } }
+.term.tall { max-height: none; height: min(68vh, 760px); }
+.code { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg2); }
+.code .chd { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; border-bottom: 1px solid var(--line); background: var(--panel2); flex-wrap: wrap; }
+.code .chd .path { font: 12px var(--mono); color: var(--ink2); overflow-wrap: anywhere; min-width: 0; flex: 1 1 200px; }
+.code pre { margin: 0; padding: 14px; overflow: auto; max-height: 460px; font: 12.5px/1.6 var(--mono); color: var(--ink); white-space: pre; }
+.note { display: flex; gap: 9px; font-size: 12.5px; color: var(--ink2); padding: 9px 12px; border-radius: 7px; background: var(--info-dim); margin-top: 10px; }
+.note.warn { background: var(--warn-dim); color: var(--warn); }
+.note svg { width: 15px; height: 15px; flex: none; margin-top: 2px; stroke: currentColor; fill: none; stroke-width: 2; }
+
+/* ---- models */
+.results .rr { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 13px; }
+.results .rr:first-child { border-top: 0; }
+.results .rr label { flex: 1; min-width: 0; overflow-wrap: anywhere; display: flex; gap: 10px; align-items: center; cursor: pointer; }
+.results .rr:hover { background: var(--panel2); }
+.results { border: 1px solid var(--line); border-radius: 8px; margin-top: 12px; overflow: hidden; }
+.results .rh { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--panel2); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.results .rf { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--panel2); border-top: 1px solid var(--line); flex-wrap: wrap; }
+.dl { padding: 12px 16px; border-top: 1px solid var(--line); }
+.dl:first-child { border-top: 0; }
+.bar.run > i { background-image: linear-gradient(45deg, rgba(255,255,255,.18) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.18) 50%, rgba(255,255,255,.18) 75%, transparent 75%); background-size: 14px 14px; animation: stripes 1s linear infinite; }
+@keyframes stripes { to { background-position: 14px 0; } }
+.lib { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 12px; }
+.mcard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); display: flex; flex-direction: column; min-width: 0; }
+.mcard .mh { display: flex; align-items: flex-start; gap: 10px; padding: 13px 14px 10px; }
+.mcard .mt { font-weight: 650; overflow-wrap: anywhere; }
+.mcard .mp { font: 11.5px var(--mono); color: var(--faint); overflow-wrap: anywhere; margin-top: 2px; }
+.mcard .mf { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12.5px; flex-wrap: wrap; }
+.mcard .mf .n { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; }
+.mcard .mf.mm .n { color: var(--muted); }
+
+/* ---- dialog, toast, login */
+dialog { border: 1px solid var(--line2); border-radius: 12px; background: var(--panel); color: var(--ink); width: min(720px, calc(100vw - 32px)); padding: 0; box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+dialog.wide { width: min(1180px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgba(4, 6, 9, .62); backdrop-filter: blur(3px); }
+dialog .dh { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--line); }
+dialog .dh b { font-size: 14.5px; font-weight: 650; }
+#dlgbody { padding: 16px; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.facts .stat .sv { font-size: 16px; }
+.toasts { position: fixed; right: 18px; bottom: 18px; z-index: 50; display: grid; gap: 8px; }
+.toast { background: var(--panel2); color: var(--ink); border: 1px solid var(--line2); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 8px; font-size: 13px; max-width: min(420px, calc(100vw - 36px)); box-shadow: 0 12px 30px rgba(0,0,0,.35); animation: fade .2s ease; overflow-wrap: anywhere; }
+.toast.err { border-left-color: var(--bad); }
+#login { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
+#login .panel { width: min(400px, 100%); padding: 26px; }
+#login h2 { margin: 14px 0 4px; font-size: 18px; letter-spacing: -.01em; }
+.job { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.job.done { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+.job.failed { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+
+/* ---- small screens */
+@media (max-width: 1100px) {
+  .cols, .cols.even { grid-template-columns: minmax(0, 1fr); } .vital.opt { display: none; }
+  .lrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 14px; }
+  .lrow .main { grid-column: 1 / -1; }
+  .lrow .acts { grid-column: 1 / -1; justify-content: flex-start; }
+  .lrow.head { display: none; }
+}
+@media (max-width: 860px) {
+  :root { --top: 52px; }
+  .shell { display: block; }
+  .content { width: auto; }
+  .side { position: sticky; top: var(--top); z-index: 20; height: auto; flex-direction: row; overflow-x: auto; padding: 6px 10px; gap: 4px; border-right: 0; border-bottom: 1px solid var(--line); background: var(--bg); scrollbar-width: none; }
+  .nav { width: auto; white-space: nowrap; padding: 7px 10px; }
+  .nav.on { box-shadow: inset 0 -2px 0 var(--accent); }
+  .side .foot { display: none; }
+  .brand { width: auto; } .brand small { display: none; }
+  .vitals { display: none; }
+  .top { gap: 10px; padding: 0 14px; } .top #jobpill { max-width: 40vw; overflow: hidden; text-overflow: ellipsis; }
+  .ph { padding: 10px 14px; } .pb { padding: 12px 14px; } .eng { padding: 14px; }
+  .vh h1 { font-size: 18px; }
+  .eng .acts { margin-left: 0; width: 100%; }
+  .code .chd .path { flex-basis: 100%; }
+  .seg { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); } dialog.wide { width: calc(100vw - 16px); }
+  .term.tall { height: calc(100dvh - 150px); }
+  .toasts { left: 12px; right: 12px; bottom: 12px; }
+  .content { padding: 16px 16px 50px; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .feed .it { grid-template-columns: 62px 8px minmax(0, 1fr); padding: 8px 12px; }
+}
 </style>
 </head>
 <body>
-<header>
-  <h1>LLM Manager</h1>
-  <span class="sp"></span>
-  <span id="conn" class="badge">connecting</span>
-</header>
-
 <div id="login" hidden>
-  <section>
+  <div class="panel">
+    <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round"><path d="M4 17V7m5 10V11m5 6V5m5 12v-4"/></svg></span>LLM Manager</div>
     <h2>Sign in</h2>
-    <div class="small muted">Paste the manager's token (in <span class="mono">data\token.txt</span> on the PC).</div>
-    <input id="tok" type="password" autocomplete="current-password" placeholder="token">
-    <button class="primary" id="tokbtn">Continue</button>
-  </section>
+    <div class="small muted">Paste the manager's token from <span class="mono">data\token.txt</span> on the PC.</div>
+    <input id="tok" class="input" style="width:100%;margin:16px 0 12px" type="password" autocomplete="current-password" placeholder="token">
+    <button class="btn primary" id="tokbtn" style="width:100%">Continue</button>
+  </div>
 </div>
 
-<main id="app" hidden>
-  <div class="grid2">
-    <section>
-      <h2>Engines <span class="sp"></span><button id="chk" class="small">Check updates</button></h2>
-      <div id="engines"></div>
-    </section>
-    <section>
-      <h2>Machine</h2>
-      <div id="machine"></div>
-      <svg id="live" class="chart" aria-label="last hour"></svg>
-      <div class="legend"><span><i style="background:var(--s1)"></i>VRAM</span><span><i style="background:var(--s2)"></i>RAM</span><span><i style="background:var(--s3)"></i>tokens out</span><span class="muted">last hour</span></div>
-    </section>
-  </div>
+<div id="app" hidden>
+<header class="top">
+  <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round"><path d="M4 17V7m5 10V11m5 6V5m5 12v-4"/></svg></span>LLM Manager <small id="hostname"></small></div>
+  <div class="vitals" id="vitals"></div>
+  <span id="jobpill" class="pill warn" hidden></span>
+  <span id="conn" class="pill"><span class="dot"></span>connecting</span>
+</header>
 
-  <section id="jobsec" hidden>
-    <h2>Working <span class="sp"></span><span id="jobstate" class="badge"></span></h2>
-    <div id="jobtitle" class="small"></div>
-    <pre class="log" id="joblog"></pre>
-  </section>
+<div class="shell">
+<nav class="side" id="side">
+  <button class="nav" data-view="overview"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
+  <button class="nav" data-view="profiles"><svg viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/></svg>Profiles<span class="cnt" id="cnt-profiles"></span></button>
+  <button class="nav" data-view="models"><svg viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg>Models<span class="cnt" id="cnt-models"></span></button>
+  <button class="nav" data-view="connect"><svg viewBox="0 0 24 24"><path d="M9 7V3m6 4V3M7 7h10v4a5 5 0 0 1-10 0V7Zm5 9v5"/></svg>Connect</button>
+  <button class="nav" data-view="usage"><svg viewBox="0 0 24 24"><path d="M4 20V10m6 10V4m6 16v-7m5 7H3"/></svg>Usage</button>
+  <button class="nav" data-view="activity"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Activity</button>
+  <div class="foot" id="sidefoot"></div>
+</nav>
 
-  <section>
-    <h2>Profiles</h2>
-    <div id="profiles"></div>
-  </section>
-
-  <section>
-    <h2>Connect <span class="sp"></span><select id="cnhost" title="how the client reaches this PC"></select></h2>
-    <div class="tabs" id="cnkind"></div>
-    <div class="tabs" id="cnclients"></div>
-    <div id="cnbody"></div>
-  </section>
-
-  <section>
-    <h2>Get models</h2>
-    <div class="row">
-      <select id="dlsrc"><option value="huggingface">Hugging Face</option><option value="modelscope">ModelScope</option><option value="ollama">Ollama library</option><option value="url">Direct URL</option></select>
-      <input id="dlq" class="grow" placeholder="search words, or a repo like unsloth/Qwen3-8B-GGUF">
-      <button id="dlsearch">Search</button><button id="dlopen" class="primary">Show files</button>
+<main class="content">
+  <!-- overview -->
+  <section class="view" id="v-overview">
+    <div class="vh"><div><h1>Overview</h1><p>Engines, the machine, and what is happening right now.</p></div><span class="sp"></span><button class="btn" id="chk"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Check updates</button></div>
+    <div class="panel job" id="jobsec" hidden>
+      <div class="ph"><span id="jobspin"></span><h3 style="color:var(--ink)" id="jobtitle"></h3><span class="sp"></span><span id="jobstate" class="tag"></span></div>
+      <div class="pb"><pre class="term" id="joblog"></pre></div>
     </div>
-    <div id="dlresults" class="small" style="margin-top:8px"></div>
-    <div id="downloads" style="margin-top:8px"></div>
+    <div class="cols">
+      <div style="display:grid;gap:16px;min-width:0">
+        <div class="panel"><div class="ph"><h3>Engines</h3><span class="sp"></span><span class="meta" id="engmeta"></span></div><div id="engines"></div></div>
+        <div class="panel"><div class="ph"><h3>Recent events</h3><span class="sp"></span><button class="btn ghost sm" data-view="activity">All activity →</button></div><div class="feed" id="ovevents"></div></div>
+      </div>
+      <div class="panel"><div class="ph"><h3>Machine</h3><span class="sp"></span><span class="meta">live</span></div>
+        <div class="pb"><div id="machine"></div>
+          <svg id="live" class="chart" style="margin-top:12px" aria-label="last hour"></svg>
+          <div class="legend" style="margin-top:6px"><span><i style="background:var(--s1)"></i>VRAM</span><span><i style="background:var(--s2)"></i>RAM</span><span><i style="background:var(--s3)"></i>tokens out</span><span class="sp"></span><span class="faint">last hour</span></div>
+        </div>
+      </div>
+    </div>
   </section>
 
-  <section>
-    <h2>Model library</h2>
-    <div id="library"></div>
+  <!-- profiles -->
+  <section class="view" id="v-profiles">
+    <div class="vh"><div><h1>Profiles</h1><p>A model plus its engine settings. Bars show what each needs against this PC.</p></div></div>
+    <div class="panel"><div id="profiles"></div></div>
   </section>
 
-  <section>
-    <h2>Usage <span class="sp"></span></h2>
-    <div class="tabs" id="periods"></div>
+  <!-- models -->
+  <section class="view" id="v-models">
+    <div class="vh"><div><h1>Models</h1><p>Find GGUF models, download them, and turn them into profiles.</p></div></div>
+    <div class="panel"><div class="ph"><h3>Get models</h3></div>
+      <div class="pb">
+        <div class="row">
+          <select id="dlsrc" class="input"><option value="huggingface">Hugging Face</option><option value="modelscope">ModelScope</option><option value="ollama">Ollama library</option><option value="url">Direct URL</option></select>
+          <input id="dlq" class="input grow" placeholder="search words, or a repo like unsloth/Qwen3-8B-GGUF">
+          <button class="btn" id="dlsearch"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search</button><button id="dlopen" class="btn primary">Show files</button>
+        </div>
+        <div id="dlresults"></div>
+      </div>
+    </div>
+    <div class="panel" id="dlpanel" hidden><div class="ph"><h3>Downloads</h3><span class="sp"></span><span class="meta" id="dlmeta"></span></div><div id="downloads"></div></div>
+    <div class="vh" style="margin-top:6px"><div><h1 style="font-size:15px">Library</h1></div><span class="sp"></span><span class="small muted" id="libmeta"></span></div>
+    <div class="lib" id="library"></div>
+  </section>
+
+  <!-- connect -->
+  <section class="view" id="v-connect">
+    <div class="vh"><div><h1>Connect</h1><p>Settings to paste into coding agents, chat apps and MCP clients.</p></div></div>
+    <div class="panel">
+      <div class="ph"><div class="seg" id="cnkind"></div><span class="sp"></span><label class="row small muted" style="gap:8px">Reach this PC at <select id="cnhost" class="input" style="height:30px"></select></label></div>
+      <div class="pb"><div class="seg" id="cnclients" style="margin-bottom:12px"></div><div id="cnbody"></div></div>
+    </div>
+  </section>
+
+  <!-- usage -->
+  <section class="view" id="v-usage">
+    <div class="vh"><div><h1>Usage</h1><p>Tokens, speed and run time, recorded per minute.</p></div><span class="sp"></span><div class="seg" id="periods"></div></div>
     <div class="kpis" id="totals"></div>
-    <div class="scroll"><table id="bytable"></table></div>
-    <div class="tabs" id="buckets" style="margin-top:14px"></div>
-    <svg id="series" class="chart" aria-label="tokens over time"></svg>
-    <div class="legend"><span><i style="background:var(--s1)"></i>tokens out</span><span><i style="background:var(--s2)"></i>tokens in</span></div>
+    <div class="panel"><div class="ph"><h3>Tokens over time</h3><span class="sp"></span><div class="seg" id="buckets"></div></div>
+      <div class="pb"><svg id="series" class="chart" aria-label="tokens over time"></svg>
+        <div class="legend" style="margin-top:6px"><span><i style="background:var(--s1)"></i>tokens out</span><span><i style="background:var(--s2)"></i>tokens in</span></div></div></div>
+    <div class="panel"><div class="ph"><h3>By profile</h3></div><div class="scroll"><table class="data" id="bytable"></table></div></div>
   </section>
 
-  <div class="grid2">
-    <section>
-      <h2>Events</h2>
-      <div class="events" id="events"></div>
-    </section>
-    <section>
-      <h2>Recent jobs</h2>
-      <div class="events" id="jobs"></div>
-    </section>
-  </div>
+  <!-- activity -->
+  <section class="view" id="v-activity">
+    <div class="vh"><div><h1>Activity</h1><p>What the manager did, and every job it ran.</p></div></div>
+    <div class="cols even">
+      <div class="panel"><div class="ph"><h3>Events</h3></div><div class="feed" id="events"></div></div>
+      <div class="panel"><div class="ph"><h3>Jobs</h3></div><div class="feed" id="jobs"></div></div>
+    </div>
+  </section>
 </main>
+</div>
+</div>
 
 <dialog id="dlg">
-  <div class="row"><b id="dlgtitle"></b><span class="sp" style="flex:1"></span><button id="dlgclose">Close</button></div>
+  <div class="dh"><b id="dlgtitle"></b><span class="sp"></span><button class="btn ghost sm" id="dlgclose" aria-label="close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
   <div id="dlgbody"></div>
 </dialog>
+<div class="toasts" id="toasts"></div>
 
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-let TOKEN = new URLSearchParams(location.search).get("token") || (() => { try { return localStorage.getItem("llmm-token"); } catch { return null; } })();
-if (new URLSearchParams(location.search).get("token")) { try { localStorage.setItem("llmm-token", TOKEN); } catch {} history.replaceState(null, "", location.pathname); }
-let period = "day", bucket = "day", watchJob = null, lastStatus = null;
-try { period = localStorage.getItem("llmm-period") || "day"; bucket = localStorage.getItem("llmm-bucket") || "day"; } catch {}
+const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+let TOKEN = new URLSearchParams(location.search).get("token") || store.get("llmm-token", null);
+if (new URLSearchParams(location.search).get("token")) { store.set("llmm-token", TOKEN); history.replaceState(null, "", location.pathname + location.hash); }
+let period = store.get("llmm-period", "day"), bucket = store.get("llmm-bucket", "day"), watchJob = null, lastStatus = null;
+let view = (location.hash.slice(1) || store.get("llmm-view", "overview"));
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) } });
@@ -202,94 +439,156 @@ async function api(path, opts = {}) {
 }
 const post = (path, data) => api(path, { method: "POST", body: JSON.stringify(data) });
 
-function toast(msg) { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.append(t); setTimeout(() => t.remove(), 4000); }
-function showLogin() { $("#app").hidden = true; $("#login").hidden = false; $("#conn").textContent = "signed out"; }
-$("#tokbtn").onclick = () => { TOKEN = $("#tok").value.trim(); try { localStorage.setItem("llmm-token", TOKEN); } catch {} $("#login").hidden = true; boot(); };
+function toast(msg, err) { const t = document.createElement("div"); t.className = "toast" + (err ? " err" : ""); t.textContent = msg; $("#toasts").append(t); setTimeout(() => t.remove(), 4500); }
+const fail = e => toast(e.message, true);
+function showLogin() { $("#app").hidden = true; $("#login").hidden = false; }
+$("#tokbtn").onclick = () => { TOKEN = $("#tok").value.trim(); store.set("llmm-token", TOKEN); $("#login").hidden = true; boot(); };
+$("#tok").addEventListener("keydown", e => { if (e.key === "Enter") $("#tokbtn").click(); });
 
+const gb = v => (v / 1024).toFixed(1);
 const mib = v => v >= 1024 ? (v / 1024).toFixed(1) + " GB" : (v || 0).toFixed(0) + " MiB";
 const num = v => { v = v || 0; return v >= 1e9 ? (v / 1e9).toFixed(2) + "B" : v >= 1e6 ? (v / 1e6).toFixed(2) + "M" : v >= 1e3 ? (v / 1e3).toFixed(1) + "K" : v.toFixed(0); };
 const dur = s => { s = Math.floor(s || 0); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; };
 const tps = v => v ? v.toFixed(1) : "–";
-const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? "just now" : s < 3600 ? Math.floor(s / 60) + " min ago" : s < 86400 ? Math.floor(s / 3600) + " h ago" : new Date(t * 1000).toLocaleDateString(); };
-const meter = (label, used, total, extra = "") => { const p = total ? Math.min(100, used / total * 100) : 0; return `<div class="meter"><div class="lbl"><span>${label}</span><span class="muted">${mib(used)} / ${mib(total)}${extra}</span></div><div class="bar ${p > 95 ? "bad" : p > 85 ? "warn" : ""}"><i style="width:${p}%"></i></div></div>`; };
+const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? "now" : s < 3600 ? Math.floor(s / 60) + "m ago" : s < 86400 ? Math.floor(s / 3600) + "h ago" : new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" }); };
+const pctCls = p => p > 95 ? "bad" : p > 85 ? "warn" : "";
+const stateTag = s => ({ done: "ok", failed: "bad", refused: "bad", cancelled: "bad", ready: "ok" }[s] || "warn");
+const ICON = {
+  play: '<svg viewBox="0 0 24 24"><path d="M7 5v14l11-7z" fill="currentColor" stroke="none"/></svg>',
+  stop: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/></svg>',
+  restart: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
+  logs: '<svg viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 17h7"/></svg>',
+  copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>',
+  info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+  warn: '<svg viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>',
+};
 
+// ---- views
+function setView(v) {
+  if (!document.getElementById("v-" + v)) v = "overview";
+  view = v; store.set("llmm-view", v);
+  if (location.hash !== "#" + v) history.replaceState(null, "", "#" + v);
+  document.querySelectorAll(".view").forEach(x => x.classList.toggle("on", x.id === "v-" + v));
+  document.querySelectorAll(".nav").forEach(x => x.classList.toggle("on", x.dataset.view === v));
+  if (v === "overview") renderLive().catch(() => { });
+  if (v === "usage") renderStats().catch(() => { });
+  if (v === "connect" && !CN_READY) { CN_READY = true; renderConnectHosts().then(renderConnect).catch(fail); }
+  window.scrollTo({ top: 0 });
+}
+window.addEventListener("hashchange", () => setView(location.hash.slice(1)));
+
+// ---- status: top bar vitals, machine, engines
 function renderStatus(s) {
   lastStatus = s;
   const r = s.resources;
-  let m = "";
-  for (const g of r.gpus) m += meter(`GPU ${esc(g.name)}`, g.vram_used_mib, g.vram_total_mib, ` · ${(g.util_percent || 0).toFixed(0)}% · ${(g.temp_c || 0).toFixed(0)}°C`);
-  if (!r.gpus.length) m += `<div class="small muted">No NVIDIA GPU found (nvidia-smi).</div>`;
-  m += meter("RAM", r.ram_total_mib - r.ram_available_mib, r.ram_total_mib, r.swap_used_mib > 512 ? ` · swap ${mib(r.swap_used_mib)}` : "");
-  m += `<div class="small muted">CPU ${r.cpu_percent.toFixed(0)}% of ${r.cpu_count} threads</div>`;
-  for (const w of s.warnings) m += `<div class="warnbox">${esc(w)}</div>`;
+  const ramUsed = r.ram_total_mib - r.ram_available_mib;
+  let v = "", m = "";
+  for (const g of r.gpus) {
+    const p = g.vram_used_mib / g.vram_total_mib * 100;
+    v += `<div class="vital"><span class="k">VRAM</span><span class="mini ${p > 95 ? "hot" : ""}"><i style="width:${p}%"></i></span><span class="v">${gb(g.vram_used_mib)}/${gb(g.vram_total_mib)}G</span></div>
+          <div class="vital opt"><span class="k">GPU</span><span class="v">${(g.util_percent || 0).toFixed(0)}% · ${(g.temp_c || 0).toFixed(0)}°</span></div>`;
+    m += `<div class="gauge"><div class="gh"><span class="gl">VRAM</span><span class="gn">${esc(g.name)}</span><span class="gv">${gb(g.vram_used_mib)}<small> / ${gb(g.vram_total_mib)} GB</small></span></div>
+      <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>
+      <div class="gs"><span>load <b>${(g.util_percent || 0).toFixed(0)}%</b></span><span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${(g.temp_c || 0).toFixed(0)}°C</b></span><span>free <b>${mib(g.vram_total_mib - g.vram_used_mib)}</b></span></div></div>`;
+  }
+  if (!r.gpus.length) m += `<div class="gauge"><div class="small muted">No NVIDIA GPU found (nvidia-smi).</div></div>`;
+  const rp = ramUsed / r.ram_total_mib * 100;
+  v += `<div class="vital"><span class="k">RAM</span><span class="mini ram ${rp > 95 ? "hot" : ""}"><i style="width:${rp}%"></i></span><span class="v">${gb(ramUsed)}/${gb(r.ram_total_mib)}G</span></div>
+        <div class="vital opt"><span class="k">CPU</span><span class="mini cpu"><i style="width:${r.cpu_percent}%"></i></span><span class="v">${r.cpu_percent.toFixed(0)}%</span></div>`;
+  m += `<div class="gauge"><div class="gh"><span class="gl">RAM</span><span class="gv">${gb(ramUsed)}<small> / ${gb(r.ram_total_mib)} GB</small></span></div>
+      <div class="bar ram ${pctCls(rp)}"><i style="width:${rp}%"></i></div>
+      <div class="gs"><span>available <b>${mib(r.ram_available_mib)}</b></span>${r.swap_used_mib > 512 ? `<span class="warn-t">swap <b class="warn-t">${mib(r.swap_used_mib)}</b></span>` : ""}</div></div>
+    <div class="gauge"><div class="gh"><span class="gl">CPU</span><span class="gn">${r.cpu_count} threads</span><span class="gv">${r.cpu_percent.toFixed(0)}<small>%</small></span></div>
+      <div class="bar cpu"><i style="width:${r.cpu_percent}%"></i></div></div>`;
+  for (const w of s.warnings) m += `<div class="warnbox">${ICON.warn}<span>${esc(w)}</span></div>`;
   $("#machine").innerHTML = m;
 
-  let h = "";
+  let h = "", out = 0, nrun = 0;
   for (const e of s.engines) {
     const run = e.running, up = e.update || {};
-    const ver = up.current ? `<span class="badge">${esc(up.current)}</span>` : "";
-    const upd = up.available ? `<span class="badge warn" title="${esc(up.latest)}">update: ${esc(up.latest)}</span>` : up.error ? `<span class="badge bad" title="${esc(up.error)}">update check failed</span>` : "";
-    const state = run ? `<span class="badge ${run.state === "ready" ? "ok" : "warn"}">${esc(run.state)}</span>` : `<span class="badge">stopped</span>`;
-    h += `<div class="engine"><div class="row"><span class="name">${esc(e.name)}</span>${state}<span class="badge">:${e.port}</span>${ver}${upd}</div>`;
+    const ver = up.current ? `<span class="tag">${esc(up.current)}</span>` : "";
+    const upd = up.available ? `<span class="tag warn" title="${esc(up.latest)}">↑ ${esc(up.latest)}</span>` : up.error ? `<span class="tag bad" title="${esc(up.error)}">update check failed</span>` : "";
+    const dot = run ? (run.state === "ready" ? "ok" : "warn") : "";
+    let acts = "";
+    if (run) acts += `<button class="btn sm danger" data-act="stop" data-e="${esc(e.name)}">${ICON.stop}Stop</button><button class="btn sm" data-act="restart" data-e="${esc(e.name)}">${ICON.restart}Restart</button>`;
+    if (e.can_update) acts += `<button class="btn sm ${up.available ? "" : "ghost"}" data-act="update" data-e="${esc(e.name)}">Update${up.available ? " now" : ""}</button>`;
+    if (e.can_rollback) acts += `<button class="btn sm ghost" data-act="rollback" data-e="${esc(e.name)}">Roll back</button>`;
+    acts += `<button class="btn sm" data-act="logs" data-e="${esc(e.name)}">${ICON.logs}Logs</button>`;
+    h += `<div class="eng ${run ? "" : "off"}"><div class="eh"><span class="dot ${dot}"></span><span class="en">${esc(e.name)}</span>
+      ${run ? `<span class="tag ${stateTag(run.state)}">${esc(run.state)}</span>` : `<span class="tag">stopped</span>`}<span class="tag">:${e.port}</span>${ver}${upd}<div class="acts">${acts}</div></div>`;
     if (run) {
+      nrun++;
       const st = run.stats, w1 = st.window["1m"], w5 = st.window["5m"], ss = st.since_start, busy = (st.gauges || {}).requests_processing;
-      h += `<div class="small" style="margin-top:4px">${esc(run.profile)} <span class="muted">· up ${dur(run.uptime_seconds)} · pid ${run.pid}${run.managed ? "" : " · started outside the manager"}</span></div>
-        <div class="kpis">
-          <div class="kpi"><b>${tps(w1.gen_tps ?? w5.gen_tps)}</b><span>tok/s out ${busy ? "· busy" : "· idle"}</span></div>
-          <div class="kpi"><b>${tps(w5.prompt_tps)}</b><span>tok/s in (5 min)</span></div>
-          <div class="kpi"><b>${num(ss.gen_tokens)}</b><span>out since start</span></div>
-          <div class="kpi"><b>${num(ss.prompt_tokens)}</b><span>in since start</span></div>
-          <div class="kpi"><b>${mib(run.ram_mib)}</b><span>RAM · CPU ${run.cpu_percent.toFixed(0)}%</span></div>
+      const g = w1.gen_tps ?? w5.gen_tps; out += g || 0;
+      h += `<div class="esub"><b>${esc(run.profile)}</b> · up <span class="num">${dur(run.uptime_seconds)}</span> · pid <span class="num">${run.pid}</span>${run.managed ? "" : " · started outside the manager"}</div>
+        <div class="stats">
+          <div class="stat hero"><div class="sv">${tps(g)}<small>tok/s</small></div><div class="sl">out · ${busy ? "generating" : "idle"}</div></div>
+          <div class="stat"><div class="sv">${tps(w5.prompt_tps)}<small>tok/s</small></div><div class="sl">in · 5 min avg</div></div>
+          <div class="stat"><div class="sv">${num(ss.gen_tokens)}</div><div class="sl">out since start</div></div>
+          <div class="stat"><div class="sv">${num(ss.prompt_tokens)}</div><div class="sl">in since start</div></div>
+          <div class="stat"><div class="sv">${gb(run.ram_mib)}<small>GB</small></div><div class="sl">RAM · CPU ${run.cpu_percent.toFixed(0)}%</div></div>
         </div>`;
     } else if (e.port_taken_by) {
-      h += `<div class="warnbox">Port ${e.port} is used by ${esc(e.port_taken_by.name)} (pid ${e.port_taken_by.pid}), not by this manager.</div>`;
+      h += `<div class="warnbox">${ICON.warn}<span>Port ${e.port} is used by ${esc(e.port_taken_by.name)} (pid ${e.port_taken_by.pid}), not by this manager.</span></div>`;
     }
-    h += `<div class="row" style="margin-top:6px">`;
-    if (run) h += `<button class="danger" data-act="stop" data-e="${esc(e.name)}">Stop</button><button data-act="restart" data-e="${esc(e.name)}">Restart</button>`;
-    if (e.can_update) h += `<button data-act="update" data-e="${esc(e.name)}">Update${up.available ? " now" : ""}</button>`;
-    if (e.can_rollback) h += `<button data-act="rollback" data-e="${esc(e.name)}">Roll back</button>`;
-    h += `<button data-act="logs" data-e="${esc(e.name)}">Logs</button></div></div>`;
+    h += `</div>`;
   }
   $("#engines").innerHTML = h;
+  $("#engmeta").textContent = `${nrun} of ${s.engines.length} running`;
+  v += `<div class="vital"><span class="k">Out</span><span class="v ${out ? "ok-t" : ""}">${tps(out)} tok/s</span></div>`;
+  $("#vitals").innerHTML = v;
+  $("#hostname").textContent = location.hostname;
 
-  const job = s.job;
-  if (job) { watchJob = job.id; }
-  $("#conn").textContent = "connected"; $("#conn").className = "badge ok";
+  if (s.job) watchJob = s.job.id;
+  $("#conn").className = "pill ok"; $("#conn").innerHTML = `<span class="dot ok"></span>connected`;
 }
 
 async function renderJob() {
-  if (!watchJob) { $("#jobsec").hidden = true; return; }
+  if (!watchJob) { $("#jobsec").hidden = true; $("#jobpill").hidden = true; return; }
   try {
     const j = await api(`/api/jobs/${watchJob}?lines=400`);
+    const live = ["queued", "running"].includes(j.state);
     $("#jobsec").hidden = false;
+    $("#jobsec").className = "panel job " + (live ? "" : j.state === "done" ? "done" : "failed");
+    $("#jobspin").innerHTML = live ? `<span class="spin"></span>` : `<span class="dot ${stateTag(j.state)}"></span>`;
     $("#jobtitle").textContent = j.title + (j.error ? " — " + j.error.split("\n")[0] : "");
-    $("#jobstate").textContent = j.state;
-    $("#jobstate").className = "badge " + ({ done: "ok", failed: "bad", refused: "bad" }[j.state] || "warn");
+    $("#jobstate").textContent = j.state; $("#jobstate").className = "tag " + stateTag(j.state);
+    $("#jobpill").hidden = !live; $("#jobpill").innerHTML = `<span class="spin"></span>${esc(j.title)}`;
     const pre = $("#joblog"), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
     pre.textContent = j.log.join("\n");
     if (atEnd) pre.scrollTop = pre.scrollHeight;
-    if (!["queued", "running"].includes(j.state)) {
-      if (!j._seen) { refreshSlow(); }
+    if (!live) {
+      if (!j._seen) refreshSlow();
       setTimeout(() => { if (watchJob === j.id) { watchJob = null; $("#jobsec").hidden = true; } }, 20000);
     }
   } catch (e) { }
 }
+$("#jobpill").onclick = () => setView("overview");
 
+// ---- profiles
+const needBar = (label, need, total) => {
+  const p = total ? Math.min(100, need / total * 100) : 0;
+  return `<div class="need"><div class="nl"><span>${label}</span><b>${mib(need || 0)}</b></div><div class="bar thin ${label === "RAM" ? "ram" : ""} ${pctCls(p)}"><i style="width:${p}%"></i></div></div>`;
+};
 async function renderProfiles() {
   const ps = await api("/api/profiles");
-  $("#profiles").innerHTML = ps.map(p => {
-    const n = p.needs || {};
-    return `<div class="profile"><div class="info"><div class="id">${esc(p.id)} ${p.running ? '<span class="badge ok">running</span>' : ""}</div>
-      <div class="small muted">${esc(p.description)}</div>
-      <div class="small muted">${esc(p.engine)} · ${esc(p.policy)} · needs ~${mib(n.vram_mib || 0)} VRAM, ~${mib(n.ram_mib || 0)} RAM <span title="${esc(n.note || "")}">(${esc(n.source || "?")})</span></div></div>
-      <div class="row" style="justify-content:flex-end">
-        ${p.editable ? `<button data-act="pedit" data-p="${esc(p.id)}">Edit</button>` : ""}
-        ${p.discovered || p.source === "custom" ? "" : `<button data-act="pcopy" data-p="${esc(p.id)}">Copy</button>`}
-        ${p.source === "custom" ? "" : `<button data-act="pcustom" data-p="${esc(p.id)}">Custom run</button>`}
-        ${p.editable ? `<button class="danger" data-act="pdel" data-p="${esc(p.id)}">Delete</button>` : ""}
-        <button class="${p.running ? "" : "primary"}" data-act="start" data-p="${esc(p.id)}">${p.running ? "Restart" : "Start"}</button></div></div>`;
-  }).join("") || `<div class="muted small">No profiles. Add some to config.yaml, or download a model.</div>`;
   PROFILES = ps;
+  $("#cnt-profiles").textContent = ps.length;
+  const r = lastStatus ? lastStatus.resources : null;
+  const vt = r ? r.gpus.reduce((a, g) => a + g.vram_total_mib, 0) : 0, rt = r ? r.ram_total_mib : 0;
+  $("#profiles").innerHTML = ps.length ? `<div class="lrow head"><span>Profile</span><span>VRAM need</span><span>RAM need</span><span></span></div>` + ps.map(p => {
+    const n = p.needs || {};
+    return `<div class="lrow"><div class="main"><div class="t"><span class="dot ${p.running ? "ok" : ""}"></span>${esc(p.id)}</div>
+        ${p.description ? `<div class="d">${esc(p.description)}</div>` : ""}
+        <div class="tags"><span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
+      ${needBar("VRAM", n.vram_mib, vt)}${needBar("RAM", n.ram_mib, rt)}
+      <div class="acts">
+        ${p.editable ? `<button class="btn sm ghost" data-act="pedit" data-p="${esc(p.id)}">Edit</button>` : ""}
+        ${p.discovered || p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcopy" data-p="${esc(p.id)}">Copy</button>`}
+        ${p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcustom" data-p="${esc(p.id)}">Custom run</button>`}
+        ${p.editable ? `<button class="btn sm ghost danger" data-act="pdel" data-p="${esc(p.id)}">Delete</button>` : ""}
+        <button class="btn sm ${p.running ? "" : "primary"}" data-act="start" data-p="${esc(p.id)}">${p.running ? ICON.restart + "Restart" : ICON.play + "Start"}</button></div></div>`;
+  }).join("") : `<div class="empty">No profiles yet. Add some to config.yaml, or download a model.</div>`;
 }
 let PROFILES = [];
 
@@ -298,58 +597,63 @@ async function dlSearch() {
   const src = $("#dlsrc").value, q = $("#dlq").value.trim();
   if (!q) return;
   if (src === "ollama" || src === "url" || q.includes("/") && !q.includes(" ")) return dlFiles(q);
+  $("#dlresults").innerHTML = `<div class="results"><div class="rr"><span class="spin"></span><span class="muted">Searching…</span></div></div>`;
   const rs = await api(`/api/search?source=${src}&q=${encodeURIComponent(q)}`);
-  $("#dlresults").innerHTML = rs.map(r => `<div class="qrow"><label>${esc(r.repo)} <span class="muted">· ${num(r.downloads || 0)} downloads</span></label><button data-act="dlrepo" data-repo="${esc(r.repo)}">Files</button></div>`).join("") || "Nothing found.";
+  $("#dlresults").innerHTML = `<div class="results">${rs.map(r => `<div class="rr"><label>${esc(r.repo)}</label><span class="num muted small">${num(r.downloads || 0)} ↓</span><button class="btn sm" data-act="dlrepo" data-repo="${esc(r.repo)}">Files</button></div>`).join("") || `<div class="empty">Nothing found.</div>`}</div>`;
 }
 async function dlFiles(repo) {
   const src = $("#dlsrc").value;
-  $("#dlresults").innerHTML = `<span class="muted">Loading ${esc(repo)} …</span>`;
+  $("#dlresults").innerHTML = `<div class="results"><div class="rr"><span class="spin"></span><span class="muted">Loading ${esc(repo)}…</span></div></div>`;
   const res = await api(`/api/repo-files?source=${src}&repo=${encodeURIComponent(repo)}`);
   const groups = res.groups.length ? res.groups : res.files.map(f => ({ key: f.path, files: [f.path], size: f.size, quant: null, mmproj: false }));
   const mm = groups.filter(g => g.mmproj);
-  $("#dlresults").innerHTML = `<div class="row"><b>${esc(repo)}</b><span class="muted">tick what to download</span></div>` +
-    groups.map((g, i) => `<div class="qrow"><input type="checkbox" id="q${i}" data-files='${esc(JSON.stringify(g.files))}' ${(src === "ollama" || src === "url" || g.mmproj && mm.length === 1) ? "checked" : ""}>
-      <label for="q${i}">${g.quant ? `<b>${esc(g.quant)}</b> ` : g.mmproj ? "<b>mmproj</b> " : ""}${esc(g.key)} ${g.files.length > 1 ? `<span class="muted">(${g.files.length} files)</span>` : ""}</label><span class="muted">${mib((g.size || 0) / 1048576)}</span></div>`).join("") +
-    `<div class="row" style="margin-top:8px"><label class="small"><input type="checkbox" id="dlprof" checked> make a llama.cpp profile when done</label><span style="flex:1"></span><button class="primary" data-act="dlgo" data-repo="${esc(repo)}">Download</button></div>`;
+  $("#dlresults").innerHTML = `<div class="results"><div class="rh"><b class="mono" style="font-size:13px">${esc(repo)}</b><span class="sp"></span><span class="small muted">tick what to download</span></div>` +
+    groups.map((g, i) => `<div class="rr"><label for="q${i}"><input type="checkbox" id="q${i}" data-files='${esc(JSON.stringify(g.files))}' ${(src === "ollama" || src === "url" || g.mmproj && mm.length === 1) ? "checked" : ""}>
+      ${g.quant ? `<span class="tag info">${esc(g.quant)}</span>` : g.mmproj ? `<span class="tag">mmproj</span>` : ""}<span class="mono small">${esc(g.key)}</span>${g.files.length > 1 ? `<span class="muted small">${g.files.length} files</span>` : ""}</label><span class="num small muted">${mib((g.size || 0) / 1048576)}</span></div>`).join("") +
+    `<div class="rf"><label class="chk"><input type="checkbox" id="dlprof" checked> make a llama.cpp profile when done</label><span class="sp"></span><button class="btn primary" data-act="dlgo" data-repo="${esc(repo)}">Download</button></div></div>`;
 }
 async function renderDownloads() {
   const res = await api("/api/downloads");
   const act = res.items.filter(d => ["queued", "running"].includes(d.state) || Date.now() / 1000 - (d.finished || 0) < 3600);
+  const running = act.filter(d => ["queued", "running"].includes(d.state));
+  $("#dlpanel").hidden = !act.length && !!res.aria2;
+  $("#dlmeta").textContent = running.length ? `${running.length} active` : "";
+  $("#cnt-models").textContent = running.length ? `↓ ${running.length}` : "";
   $("#downloads").innerHTML = act.map(d => {
-    const pct = d.total_bytes ? d.done_bytes / d.total_bytes * 100 : 0;
-    return `<div class="dl"><div class="row"><b>${esc(d.repo)}</b><span class="badge ${({ done: "ok", failed: "bad", cancelled: "bad" }[d.state] || "warn")}">${esc(d.state)}</span>
-      <span class="muted">${mib(d.done_bytes / 1048576)} / ${mib(d.total_bytes / 1048576)}${d.state === "running" ? ` · ${(d.speed / 1048576).toFixed(1)} MiB/s${d.eta_seconds ? " · " + dur(d.eta_seconds) + " left" : ""}` : ""}</span>
-      <span style="flex:1"></span>${["queued", "running"].includes(d.state) ? `<button class="danger" data-act="dlcancel" data-id="${d.id}">Cancel</button>` : ""}</div>
-      <div class="bar"><i style="width:${pct}%"></i></div>
-      <div class="muted">${esc(d.current || d.folder)}${d.result && d.result.profile ? ` · profile <b>${esc(d.result.profile)}</b> created` : ""}${d.error ? ` · <span class="lvl-error">${esc(d.error)}</span>` : ""}</div></div>`;
-  }).join("") + (res.aria2 ? "" : `<div class="small muted" style="margin-top:6px">Tip: install aria2 (<span class="mono">winget install aria2.aria2</span>) for faster, multi-connection downloads.</div>`);
-  return act.some(d => ["queued", "running"].includes(d.state));
+    const pct = d.total_bytes ? d.done_bytes / d.total_bytes * 100 : 0, live = ["queued", "running"].includes(d.state);
+    return `<div class="dl"><div class="row"><b class="mono" style="font-size:13px">${esc(d.repo)}</b><span class="tag ${stateTag(d.state)}">${esc(d.state)}</span><span class="sp"></span>
+      <span class="num small muted">${mib(d.done_bytes / 1048576)} / ${mib(d.total_bytes / 1048576)}${d.state === "running" ? ` · <span class="ok-t">${(d.speed / 1048576).toFixed(1)} MiB/s</span>${d.eta_seconds ? " · " + dur(d.eta_seconds) : ""}` : ""}</span>
+      ${live ? `<button class="btn sm ghost danger" data-act="dlcancel" data-id="${d.id}">Cancel</button>` : ""}</div>
+      <div class="bar ${live ? "run" : ""} ${d.state === "failed" ? "bad" : ""}"><i style="width:${pct}%"></i></div>
+      <div class="small muted" style="margin-top:6px;overflow-wrap:anywhere">${esc(d.current || d.folder)}${d.result && d.result.profile ? ` · profile <b>${esc(d.result.profile)}</b> created` : ""}${d.error ? ` · <span class="bad-t">${esc(d.error)}</span>` : ""}</div></div>`;
+  }).join("") + (res.aria2 ? "" : `<div class="pb"><div class="note">${ICON.info}<span>Install aria2 (<span class="mono">winget install aria2.aria2</span>) for faster, multi-connection downloads.</span></div></div>`);
+  return running.length > 0;
 }
 async function renderLibrary() {
   const lib = await api("/api/models");
-  $("#library").innerHTML = lib.map(m => `<div class="lib"><div class="row"><b>${esc(m.name)}</b><span class="badge">${mib(m.size / 1048576)}</span>${m.kind === "external" ? '<span class="badge">external</span>' : ""}
-      <span style="flex:1"></span>${m.kind === "library" ? `<button class="danger" data-act="mdel" data-folder="${esc(m.folder)}">Delete</button>` : ""}</div>
-      <div class="small muted mono" style="overflow-wrap:anywhere">${esc(m.folder)}</div>
-      ${m.models.map(g => `<div class="file"><span class="n">${esc(g.name)} <span class="muted">${mib(g.size / 1048576)}${g.complete ? "" : " · incomplete"}</span>${g.used_by.length ? ` <span class="badge ok">${esc(g.used_by.join(", "))}</span>` : ""}</span>
-        <button data-act="mprof" data-model="${esc(g.first)}">Make profile</button></div>`).join("")}
-      ${m.mmproj.map(g => `<div class="file"><span class="n muted">mmproj: ${esc(g.name)} · ${mib(g.size / 1048576)}</span></div>`).join("")}
-      ${m.partial.length ? `<div class="small lvl-warn">partial: ${esc(m.partial.join(", "))}</div>` : ""}</div>`).join("") || `<div class="muted small">The library is empty.</div>`;
+  const total = lib.reduce((a, m) => a + m.size, 0);
+  $("#libmeta").innerHTML = lib.length ? `<span class="num">${lib.length}</span> folders · <span class="num">${mib(total / 1048576)}</span>` : "";
+  $("#library").innerHTML = lib.map(m => `<div class="mcard"><div class="mh"><div style="min-width:0;flex:1"><div class="mt">${esc(m.name)}</div><div class="mp">${esc(m.folder)}</div></div>
+      <span class="tag">${mib(m.size / 1048576)}</span>${m.kind === "external" ? '<span class="tag">external</span>' : ""}
+      ${m.kind === "library" ? `<button class="btn sm ghost danger" data-act="mdel" data-folder="${esc(m.folder)}" title="delete the folder">Delete</button>` : ""}</div>
+      ${m.models.map(g => `<div class="mf"><span class="n">${esc(g.name)}</span><span class="num small muted">${mib(g.size / 1048576)}</span>${g.complete ? "" : `<span class="tag warn">incomplete</span>`}
+        ${g.used_by.map(u => `<span class="tag ok">${esc(u)}</span>`).join("")}<button class="btn sm" data-act="mprof" data-model="${esc(g.first)}">Make profile</button></div>`).join("")}
+      ${m.mmproj.map(g => `<div class="mf mm"><span class="tag">mmproj</span><span class="n">${esc(g.name)}</span><span class="num small muted">${mib(g.size / 1048576)}</span></div>`).join("")}
+      ${m.partial.length ? `<div class="mf"><span class="tag warn">partial</span><span class="n warn-t">${esc(m.partial.join(", "))}</span></div>` : ""}</div>`).join("") || `<div class="panel empty">The library is empty.</div>`;
 }
 
 // ---- connect: configs for coding agents (the models) and MCP clients (this manager)
 const CN_MODELS = [["opencode", "opencode"], ["qwen", "Qwen Code"], ["pi", "Pi"], ["codex", "Codex CLI"], ["claude", "Claude Code"], ["aider", "Aider"], ["continue", "Continue"], ["generic", "Any OpenAI app"]];
-let cnKind = "models", cnClient = "opencode", cnHost = "127.0.0.1", cnSnip = null;
-try { cnKind = localStorage.getItem("llmm-cnkind") || cnKind; cnClient = localStorage.getItem("llmm-cnclient") || cnClient; cnHost = localStorage.getItem("llmm-cnhost") || cnHost; } catch {}
+let cnKind = store.get("llmm-cnkind", "models"), cnClient = store.get("llmm-cnclient", "opencode"), cnHost = store.get("llmm-cnhost", "127.0.0.1"), cnSnip = null, CN_READY = false;
 async function renderConnectHosts() {
   const hs = await api("/api/connect/hosts");
   if (!hs.some(h => h.host === cnHost)) hs.push({ host: cnHost, label: "saved" });
-  $("#cnhost").innerHTML = hs.map(h => `<option value="${esc(h.host)}" ${h.host === cnHost ? "selected" : ""}>${esc(h.host)} · ${esc(h.label)}</option>`).join("");
+  $("#cnhost").innerHTML = hs.map(h => `<option value="${esc(h.host)}" ${h.host === cnHost ? "selected" : ""}>${esc(h.host)} — ${esc(h.label)}</option>`).join("");
 }
 async function renderConnect() {
   $("#cnkind").innerHTML = [["models", "Use the models"], ["mcp", "Control this manager (MCP)"]].map(([k, l]) => `<button class="${k === cnKind ? "on" : ""}" data-cnkind="${k}">${l}</button>`).join("");
-  let snips;
   if (cnKind === "mcp") {
-    snips = await api(`/api/connect/mcp?host=${encodeURIComponent(cnHost)}`);
+    const snips = await api(`/api/connect/mcp?host=${encodeURIComponent(cnHost)}`);
     if (!snips.some(s => s.id === cnClient)) cnClient = snips[0].id;
     $("#cnclients").innerHTML = snips.map(s => `<button class="${s.id === cnClient ? "on" : ""}" data-cnclient="${esc(s.id)}">${esc(s.title)}</button>`).join("");
     cnSnip = snips.find(s => s.id === cnClient);
@@ -359,43 +663,45 @@ async function renderConnect() {
     cnSnip = await api(`/api/connect/models?client=${cnClient}&host=${encodeURIComponent(cnHost)}`);
   }
   const s = cnSnip, local = ["127.0.0.1", "localhost"].includes(location.hostname);
-  $("#cnbody").innerHTML = `<div class="row small"><span class="muted">${esc(s.file)}</span><span style="flex:1"></span>
-      ${s.apply ? `<button data-act="cnapply" title="merges into the file on the manager's PC; a backup is kept">Write to ${local ? "this PC" : "the manager's PC"}</button>` : ""}
-      <button class="primary" data-act="cncopy">Copy</button></div>
-    <pre class="log" id="cnpre">${esc(s.content)}</pre>
-    ${s.notes ? `<div class="small muted" style="margin-top:6px">${esc(s.notes)}</div>` : ""}
-    ${cnHost === "127.0.0.1" ? `<div class="small muted" style="margin-top:4px">127.0.0.1 only works on the manager's PC. Pick a Tailscale or LAN address above for other machines.</div>` : ""}`;
+  $("#cnbody").innerHTML = `<div class="code"><div class="chd"><span class="path">${esc(s.file)}</span><span class="tag">${esc(s.language)}</span>
+      ${s.apply ? `<button class="btn sm" data-act="cnapply" title="merges into the file on the manager's PC; a backup is kept">Write to ${local ? "this PC" : "the manager's PC"}</button>` : ""}
+      <button class="btn sm primary" data-act="cncopy">${ICON.copy}Copy</button></div><pre>${esc(s.content)}</pre></div>
+    ${s.notes ? `<div class="note">${ICON.info}<span>${esc(s.notes)}</span></div>` : ""}
+    ${cnHost === "127.0.0.1" ? `<div class="note warn">${ICON.warn}<span>127.0.0.1 only works on the manager's PC. Pick a Tailscale or LAN address for other machines.</span></div>` : ""}`;
 }
 async function copyText(t) {
   try { await navigator.clipboard.writeText(t); }
   catch { const a = document.createElement("textarea"); a.value = t; document.body.append(a); a.select(); document.execCommand("copy"); a.remove(); }
-  toast("Copied");
+  toast("Copied to clipboard");
 }
-$("#cnhost").onchange = () => { cnHost = $("#cnhost").value; try { localStorage.setItem("llmm-cnhost", cnHost); } catch {} renderConnect().catch(e => toast(e.message)); };
+$("#cnhost").onchange = () => { cnHost = $("#cnhost").value; store.set("llmm-cnhost", cnHost); renderConnect().catch(fail); };
 
+// ---- profile dialogs
 function editProfile(p, isNew) {
   const settings = { engine: p.engine, ...p.settings };
   dialog(isNew ? "New profile" : `Edit ${p.id}`, `
-    <div class="row" style="margin:8px 0"><label class="small">Name <input id="pid" class="grow" value="${esc(isNew ? p.id + "-copy" : p.id)}" ${isNew ? "" : "disabled"}></label></div>
-    <div class="small muted">Settings (JSON). llama.cpp: model, mmproj, alias, ctx, args, policy, description, idle_stop_minutes, restart_on_crash.</div>
-    <textarea id="pjson">${esc(JSON.stringify(settings, null, 2))}</textarea>
-    <div class="row" style="margin-top:8px"><span style="flex:1"></span><button class="primary" id="psave">Save</button></div>`);
+    <label class="fld">Name<input id="pid" class="input" value="${esc(isNew ? p.id + "-copy" : p.id)}" ${isNew ? "" : "disabled"}></label>
+    <div class="small muted" style="margin:14px 0 6px">Settings (JSON). llama.cpp: <span class="mono">model, mmproj, alias, ctx, args, policy, description, idle_stop_minutes, restart_on_crash</span>.</div>
+    <textarea id="pjson" class="input" spellcheck="false">${esc(JSON.stringify(settings, null, 2))}</textarea>
+    <div class="row" style="margin-top:14px"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="psave">Save</button></div>`);
   $("#psave").onclick = async () => {
     try {
       const s = JSON.parse($("#pjson").value);
       await post("/api/profiles", { id: $("#pid").value.trim(), settings: s, overwrite: !isNew });
-      $("#dlg").close(); toast("Saved"); renderProfiles();
-    } catch (e) { toast(e.message); }
+      $("#dlg").close(); toast("Profile saved"); renderProfiles();
+    } catch (e) { fail(e); }
   };
 }
 function customRun(p) {
-  dialog(`Custom run: ${p.id}`, `
-    <p class="small muted">Starts this profile once with changes. Nothing is saved unless you give it a name.</p>
-    <div class="row" style="margin:6px 0"><label class="small">Context <input id="cctx" class="grow" type="number" placeholder="${esc(p.settings.ctx || "")}"></label></div>
-    <div class="row" style="margin:6px 0"><label class="small" style="flex:1">Extra arguments <input id="cargs" class="grow" style="width:100%" placeholder="--temp 0.6 --top-k 20"></label></div>
-    <div class="row" style="margin:6px 0"><label class="small"><input type="checkbox" id="cnomm"> without vision (no mmproj)</label></div>
-    <div class="row" style="margin:6px 0"><label class="small">Save as <input id="csave" class="grow" placeholder="(leave empty for a one-off run)"></label></div>
-    <div class="row" style="margin-top:8px"><span style="flex:1"></span><button class="primary" id="cgo">Start</button></div>`);
+  dialog(`Custom run · ${p.id}`, `
+    <p class="small muted" style="margin:0 0 14px">Starts this profile once with changes. Nothing is saved unless you give it a name.</p>
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+      <label class="fld">Context<input id="cctx" class="input num" type="number" placeholder="${esc(p.settings.ctx || "")}"></label>
+      <label class="fld">Save as<input id="csave" class="input" placeholder="leave empty for a one-off run"></label>
+    </div>
+    <label class="fld" style="margin-top:12px">Extra arguments<input id="cargs" class="input mono" placeholder="--temp 0.6 --top-k 20"></label>
+    <label class="chk" style="margin-top:12px"><input type="checkbox" id="cnomm"> without vision (no mmproj)</label>
+    <div class="row" style="margin-top:16px"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="cgo">${ICON.play}Start</button></div>`);
   $("#cgo").onclick = async () => {
     const ov = {}, ctx = $("#cctx").value.trim(), args = $("#cargs").value.trim();
     if (ctx) ov.ctx = parseInt(ctx);
@@ -403,71 +709,85 @@ function customRun(p) {
     if ($("#cnomm").checked) ov.mmproj = "";
     try {
       const j = await post("/api/run-custom", { profile: p.id, overrides: ov, save_as: $("#csave").value.trim() || null });
-      $("#dlg").close(); watchJob = j.id; renderJob();
-    } catch (e) { toast(e.message); }
+      $("#dlg").close(); watchJob = j.id; setView("overview"); renderJob();
+    } catch (e) { fail(e); }
   };
 }
 
-const PERIODS = [["day", "Today"], ["week", "This week"], ["month", "This month"], ["year", "This year"], ["all", "All time"], ["24h", "24 h"], ["7d", "7 days"], ["30d", "30 days"]];
-const BUCKETS = [["hour", "By hour", 24], ["day", "By day", 30], ["week", "By week", 26], ["month", "By month", 12], ["year", "By year", 5]];
+// ---- usage
+const PERIODS = [["day", "Today"], ["week", "Week"], ["month", "Month"], ["year", "Year"], ["all", "All"], ["24h", "24h"], ["7d", "7d"], ["30d", "30d"]];
+const BUCKETS = [["hour", "Hour", 24], ["day", "Day", 30], ["week", "Week", 26], ["month", "Month", 12], ["year", "Year", 5]];
 
 async function renderStats() {
   $("#periods").innerHTML = PERIODS.map(([k, l]) => `<button class="${k === period ? "on" : ""}" data-period="${k}">${l}</button>`).join("");
   $("#buckets").innerHTML = BUCKETS.map(([k, l]) => `<button class="${k === bucket ? "on" : ""}" data-bucket="${k}">${l}</button>`).join("");
   const s = await api(`/api/stats/summary?period=${period}`), t = s.total;
   $("#totals").innerHTML = `
-    <div class="kpi"><b>${num(t.gen_tokens)}</b><span>tokens out</span></div>
-    <div class="kpi"><b>${num(t.prompt_tokens)}</b><span>tokens in</span></div>
-    <div class="kpi"><b>${num(t.cached_tokens)}</b><span>prompt reused (cache)</span></div>
-    <div class="kpi"><b>${tps(t.gen_tps)}</b><span>avg tok/s out</span></div>
-    <div class="kpi"><b>${tps(t.prompt_tps)}</b><span>avg tok/s in</span></div>
-    <div class="kpi"><b>${dur(t.uptime_seconds)}</b><span>running · ${t.runs} runs</span></div>
-    ${t.requests ? `<div class="kpi"><b>${num(t.requests)}</b><span>requests</span></div>` : ""}`;
+    <div class="kpi hero"><div class="sl">Tokens out</div><div class="sv">${num(t.gen_tokens)}</div></div>
+    <div class="kpi"><div class="sl">Tokens in</div><div class="sv">${num(t.prompt_tokens)}</div></div>
+    <div class="kpi"><div class="sl">Cache reused</div><div class="sv">${num(t.cached_tokens)}</div></div>
+    <div class="kpi"><div class="sl">Avg out</div><div class="sv">${tps(t.gen_tps)}<small>tok/s</small></div></div>
+    <div class="kpi"><div class="sl">Avg in</div><div class="sv">${tps(t.prompt_tps)}<small>tok/s</small></div></div>
+    <div class="kpi"><div class="sl">Running · ${t.runs} runs</div><div class="sv">${dur(t.uptime_seconds)}</div></div>
+    ${t.requests ? `<div class="kpi"><div class="sl">Requests</div><div class="sv">${num(t.requests)}</div></div>` : ""}`;
   const rows = Object.entries(s.profiles).sort((a, b) => b[1].gen_tokens - a[1].gen_tokens);
+  const top = Math.max(1, ...rows.map(r => r[1].gen_tokens));
   $("#bytable").innerHTML = rows.length ? `<tr><th>Profile</th><th>Out</th><th>In</th><th>tok/s out</th><th>tok/s in</th><th>Running</th><th>Runs</th></tr>` +
-    rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${num(v.gen_tokens)}</td><td>${num(v.prompt_tokens)}</td><td>${tps(v.gen_tps)}</td><td>${tps(v.prompt_tps)}</td><td>${dur(v.uptime_seconds)}</td><td>${v.runs}</td></tr>`).join("")
-    : `<tr><td class="muted">Nothing recorded in this period yet.</td></tr>`;
+    rows.map(([k, v]) => `<tr><td>${esc(k)}<span class="share" style="width:${v.gen_tokens / top * 100}%"></span></td><td>${num(v.gen_tokens)}</td><td>${num(v.prompt_tokens)}</td><td>${tps(v.gen_tps)}</td><td>${tps(v.prompt_tps)}</td><td>${dur(v.uptime_seconds)}</td><td>${v.runs}</td></tr>`).join("")
+    : `<tr><td class="empty">Nothing recorded in this period yet.</td></tr>`;
   const b = BUCKETS.find(x => x[0] === bucket);
   const ser = await api(`/api/stats/series?bucket=${bucket}&count=${b[2]}`);
   drawBars($("#series"), ser, bucket);
 }
 
 function drawBars(svg, ser, bucket) {
-  const W = Math.max(200, svg.clientWidth || 400), H = 170, P = 30, max = Math.max(1, ...ser.map(x => x.gen_tokens + x.prompt_tokens));
+  const W = Math.max(280, svg.clientWidth || 600), H = 190, L = 44, B = 20, T = 8, max = Math.max(1, ...ser.map(x => x.gen_tokens + x.prompt_tokens));
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  const bw = (W - P) / ser.length;
+  const ih = H - B - T, bw = (W - L) / Math.max(1, ser.length);
   const fmt = t => { const d = new Date(t * 1000); return bucket === "hour" ? d.getHours() + "h" : bucket === "month" ? d.toLocaleString(undefined, { month: "short" }) : bucket === "year" ? d.getFullYear() : (d.getMonth() + 1) + "/" + d.getDate(); };
-  let g = `<text x="0" y="10">${num(max)}</text><line x1="${P}" x2="${W}" y1="${H - 14}" y2="${H - 14}" stroke="var(--line)"/>`;
+  let g = "";
+  for (const f of [0, .25, .5, .75, 1]) { const y = T + ih * (1 - f); g += `<line class="grid" x1="${L}" x2="${W}" y1="${y}" y2="${y}"/><text x="${L - 6}" y="${y + 3}" text-anchor="end">${num(max * f)}</text>`; }
   ser.forEach((x, i) => {
-    const hIn = (x.prompt_tokens / max) * (H - 30), hOut = (x.gen_tokens / max) * (H - 30), X = P + i * bw + bw * .12, w = bw * .76;
-    g += `<rect x="${X}" y="${H - 14 - hOut - hIn}" width="${w}" height="${hIn}" fill="var(--s2)" rx="1"><title>${fmt(x.start)}: ${num(x.prompt_tokens)} in</title></rect>`;
-    g += `<rect x="${X}" y="${H - 14 - hOut}" width="${w}" height="${hOut}" fill="var(--s1)" rx="1"><title>${fmt(x.start)}: ${num(x.gen_tokens)} out</title></rect>`;
-    if (i % Math.max(1, Math.ceil(ser.length / Math.floor(W / 48))) === 0) g += `<text x="${X}" y="${H - 2}">${fmt(x.start)}</text>`;
+    const hIn = (x.prompt_tokens / max) * ih, hOut = (x.gen_tokens / max) * ih, X = L + i * bw + bw * .16, w = Math.max(1, bw * .68);
+    g += `<rect x="${X}" y="${T + ih - hOut - hIn}" width="${w}" height="${hIn}" fill="var(--s2)" opacity=".85" rx="1.5"><title>${fmt(x.start)}: ${num(x.prompt_tokens)} in</title></rect>`;
+    g += `<rect x="${X}" y="${T + ih - hOut}" width="${w}" height="${hOut}" fill="var(--s1)" rx="1.5"><title>${fmt(x.start)}: ${num(x.gen_tokens)} out</title></rect>`;
+    if (i % Math.max(1, Math.ceil(ser.length / Math.floor((W - L) / 52))) === 0) g += `<text x="${X + w / 2}" y="${H - 4}" text-anchor="middle">${fmt(x.start)}</text>`;
   });
   svg.innerHTML = g;
 }
 
 async function renderLive() {
+  const svg = $("#live");
+  if (!svg.clientWidth) return;
   const pts = await api("/api/history?minutes=60");
-  const svg = $("#live"), W = Math.max(200, svg.clientWidth || 400), H = 170;
+  const W = svg.clientWidth, H = 190, T = 8, B = 4, ih = H - T - B;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  if (pts.length < 2 || !lastStatus) { svg.innerHTML = ""; return; }
+  if (pts.length < 2 || !lastStatus) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">collecting samples…</text>`; return; }
   const r = lastStatus.resources, vt = r.gpus.reduce((a, g) => a + g.vram_total_mib, 0) || 1, rt = r.ram_total_mib;
-  const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1, X = t => (t - t0) / Math.max(1, t1 - t0) * W;
-  const line = (f, col) => `<polyline fill="none" stroke="${col}" stroke-width="1.8" points="${pts.map(p => `${X(p.t).toFixed(1)},${(H - 4 - f(p) * (H - 12)).toFixed(1)}`).join(" ")}"/>`;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1, X = t => (t - t0) / Math.max(1, t1 - t0) * W, Y = f => T + ih * (1 - Math.min(1, f));
+  const path = f => pts.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(f(p)).toFixed(1)}`).join("");
+  const area = (f, id) => `<path d="${path(f)}L${W},${T + ih}L0,${T + ih}Z" fill="url(#${id})"/>`;
+  const grad = (id, col) => `<linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".16"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient>`;
   const mt = Math.max(1, ...pts.map(p => p.gen_tokens));
-  let bars = pts.map(p => p.gen_tokens ? `<rect x="${X(p.t) - 1}" y="${H - 4 - p.gen_tokens / mt * (H - 12) * .6}" width="2.2" height="${p.gen_tokens / mt * (H - 12) * .6}" fill="var(--s3)" opacity=".8"/>` : "").join("");
-  svg.innerHTML = bars + line(p => p.vram_used_mib / vt, "var(--s1)") + line(p => p.ram_used_mib / rt, "var(--s2)") + `<text x="2" y="10">100%</text>`;
+  let g = `<defs>${grad("gv", "var(--s1)")}${grad("gr", "var(--s2)")}</defs>`;
+  for (const f of [.25, .5, .75, 1]) g += `<line class="grid" x1="0" x2="${W}" y1="${Y(f)}" y2="${Y(f)}"/>`;
+  g += pts.map(p => p.gen_tokens ? `<rect x="${X(p.t) - 1.2}" y="${Y(p.gen_tokens / mt * .55)}" width="2.4" height="${p.gen_tokens / mt * .55 * ih}" fill="var(--s3)" opacity=".75" rx="1"/>` : "").join("");
+  g += area(p => p.ram_used_mib / rt, "gr") + area(p => p.vram_used_mib / vt, "gv");
+  g += `<path d="${path(p => p.ram_used_mib / rt)}" fill="none" stroke="var(--s2)" stroke-width="1.6"/><path d="${path(p => p.vram_used_mib / vt)}" fill="none" stroke="var(--s1)" stroke-width="1.8"/>`;
+  g += `<text x="4" y="${Y(1) + 11}">100%</text><text x="4" y="${Y(.5) + 11}">50%</text>`;
+  svg.innerHTML = g;
 }
 
 async function renderEvents() {
-  const ev = await api("/api/events?limit=25");
-  $("#events").innerHTML = ev.map(e => `<div class="lvl-${esc(e.level)}"><span class="muted">${ago(e.ts)}</span> · ${esc(e.message)}</div>`).join("") || `<div class="muted">No events yet.</div>`;
-  const jobs = await api("/api/jobs?limit=12");
-  $("#jobs").innerHTML = jobs.map(j => `<div><a href="#" data-job="${j.id}" style="color:inherit">${esc(j.title)}</a> <span class="badge ${({ done: "ok", failed: "bad", refused: "bad" }[j.state] || "warn")}">${esc(j.state)}</span> <span class="muted">${ago(j.created)}</span></div>`).join("") || `<div class="muted">No jobs yet.</div>`;
+  const ev = await api("/api/events?limit=40");
+  const item = e => `<div class="it lvl-${esc(e.level)}"><span class="ts" title="${new Date(e.ts * 1000).toLocaleString()}">${ago(e.ts)}</span><span class="dot ${e.level === "error" ? "bad" : e.level === "warn" ? "warn" : ""}"></span><span class="msg"><span class="k">${esc(e.kind)}</span>${esc(e.message)}</span></div>`;
+  $("#events").innerHTML = ev.map(item).join("") || `<div class="empty">No events yet.</div>`;
+  $("#ovevents").innerHTML = ev.slice(0, 7).map(item).join("") || `<div class="empty">No events yet.</div>`;
+  const jobs = await api("/api/jobs?limit=25");
+  $("#jobs").innerHTML = jobs.map(j => `<a href="#" class="it" data-job="${j.id}"><span class="ts">${ago(j.created)}</span><span class="dot ${stateTag(j.state)}"></span><span class="msg">${esc(j.title)} <span class="tag ${stateTag(j.state)}" style="margin-left:4px">${esc(j.state)}</span></span></a>`).join("") || `<div class="empty">No jobs yet.</div>`;
 }
 
-function dialog(title, html) { stopLog(); $("#dlgtitle").textContent = title; $("#dlgbody").innerHTML = html; $("#dlg").showModal(); }
+function dialog(title, html, wide) { stopLog(); $("#dlg").className = wide ? "wide" : ""; $("#dlgtitle").textContent = title; $("#dlgbody").innerHTML = html; if (!$("#dlg").open) $("#dlg").showModal(); }
 $("#dlgclose").onclick = () => $("#dlg").close();
 $("#dlg").addEventListener("close", () => stopLog());
 
@@ -486,15 +806,16 @@ function flushLog() {
   pre.textContent = text;
   if (atEnd) pre.scrollTop = pre.scrollHeight;
 }
+function logState(txt, cls) { const s = $("#logstate"); if (s) { s.innerHTML = `<span class="dot ${cls}"></span>${txt}`; } }
 async function streamLog(engine) {
-  dialog(`${engine} log`, `<div class="row small" style="margin-top:6px"><span id="logstate" class="badge ok">live</span><span style="flex:1"></span>
-      <button data-act="logpause">Pause</button><button data-act="logcopy">Copy</button></div>
-    <pre class="log" id="logpre" style="max-height:70vh"></pre>`);
+  dialog(`${engine} · log`, `<div class="row" style="margin-bottom:10px"><span id="logstate" class="pill"></span><span class="sp"></span>
+      <button class="btn sm" data-act="logpause">Pause</button><button class="btn sm" data-act="logcopy">${ICON.copy}Copy</button></div>
+    <pre class="term tall" id="logpre"></pre>`, true);
   logPaused = false; logPending = "";
+  logState("live", "ok");
   const ctl = logAbort = new AbortController();
-  const state = (txt, cls) => { const s = $("#logstate"); if (s && logAbort === ctl) { s.textContent = txt; s.className = "badge " + cls; } };
   try {
-    const r = await fetch(`/api/logs/${encodeURIComponent(engine)}/stream?lines=400`, { headers: { "Authorization": "Bearer " + TOKEN }, signal: ctl.signal });
+    const r = await fetch(`/api/logs/${encodeURIComponent(engine)}/stream?lines=400`, { headers: { "Authorization": "Bearer " + TOKEN }, signal: ctl.signal, cache: "no-store" });
     if (!r.ok) throw new Error((await r.text()) || r.statusText);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
     for (;;) {
@@ -504,39 +825,48 @@ async function streamLog(engine) {
       if (logPending.length > 4e6) logPending = logPending.slice(-2e6);
       if (!logPaused) flushLog();
     }
-    state("ended", "");
+    if (logAbort === ctl) logState("ended", "");
   } catch (err) {
-    if (err.name !== "AbortError") state("disconnected", "bad");
+    if (err.name !== "AbortError" && logAbort === ctl) logState("disconnected", "bad");
   }
 }
 
 async function startProfile(id) {
   const plan = await api(`/api/plan?profile=${encodeURIComponent(id)}`);
   const n = plan.needs;
-  let html = `<p class="small">Needs ~${mib(n.vram_mib)} VRAM and ~${mib(n.ram_mib)} RAM (${esc(n.source)}). Free now: ${mib(plan.free_vram_mib)} VRAM, ${mib(plan.free_ram_mib)} RAM.</p>`;
-  if (plan.will_stop.length) html += `<p class="small">This will stop: <b>${plan.will_stop.map(esc).join(", ")}</b></p>`;
-  for (const w of plan.warnings) html += `<div class="warnbox">${esc(w)}</div>`;
-  if (!plan.ok) html += `<div class="warnbox" style="color:var(--bad)">${esc(plan.reason)}</div>`;
-  html += `<label class="row small" style="margin-top:10px"><input type="checkbox" id="optupd" checked> check for engine updates first (at most every few hours)</label>`;
-  html += `<div class="row" style="margin-top:12px"><button class="primary" id="go">${plan.ok ? "Start" : "Start anyway (force)"}</button></div>`;
+  let html = `<div class="facts">
+      <div class="stat"><div class="sv">${mib(n.vram_mib)}</div><div class="sl">VRAM needed</div></div>
+      <div class="stat"><div class="sv">${mib(plan.free_vram_mib)}</div><div class="sl">VRAM free now</div></div>
+      <div class="stat"><div class="sv">${mib(n.ram_mib)}</div><div class="sl">RAM needed</div></div>
+      <div class="stat"><div class="sv">${mib(plan.free_ram_mib)}</div><div class="sl">RAM free now</div></div></div>
+    <div class="small faint" style="margin-top:6px">needs from: ${esc(n.source)}</div>`;
+  if (plan.will_stop.length) html += `<div class="note warn">${ICON.warn}<span>This will stop <b>${plan.will_stop.map(esc).join(", ")}</b>.</span></div>`;
+  for (const w of plan.warnings) html += `<div class="warnbox">${ICON.warn}<span>${esc(w)}</span></div>`;
+  if (!plan.ok) html += `<div class="warnbox errbox">${ICON.warn}<span>${esc(plan.reason)}</span></div>`;
+  html += `<label class="chk" style="margin-top:14px"><input type="checkbox" id="optupd" checked> check for engine updates first (at most every few hours)</label>`;
+  html += `<div class="row" style="margin-top:16px"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn ${plan.ok ? "primary" : "danger"}" id="go">${plan.ok ? ICON.play + "Start" : "Start anyway (force)"}</button></div>`;
   dialog(`Start ${id}`, html);
   $("#go").onclick = async () => {
     $("#dlg").close();
-    const j = await post("/api/start", { profile: id, force: !plan.ok, update: $("#optupd")?.checked === false ? "skip" : "auto" });
-    watchJob = j.id; renderJob();
+    try {
+      const j = await post("/api/start", { profile: id, force: !plan.ok, update: $("#optupd")?.checked === false ? "skip" : "auto" });
+      watchJob = j.id; setView("overview"); renderJob();
+    } catch (e) { fail(e); }
   };
 }
 
 document.addEventListener("click", async ev => {
-  const b = ev.target.closest("[data-act],[data-period],[data-bucket],[data-job],[data-cnkind],[data-cnclient]");
+  if (ev.target.closest("[data-close]")) return $("#dlg").close();
+  const b = ev.target.closest("[data-act],[data-period],[data-bucket],[data-job],[data-cnkind],[data-cnclient],[data-view]");
   if (!b) return;
   ev.preventDefault();
   try {
-    if (b.dataset.cnkind) { cnKind = b.dataset.cnkind; try { localStorage.setItem("llmm-cnkind", cnKind); } catch {} return renderConnect(); }
-    if (b.dataset.cnclient) { cnClient = b.dataset.cnclient; try { localStorage.setItem("llmm-cnclient", cnClient); } catch {} return renderConnect(); }
-    if (b.dataset.period) { period = b.dataset.period; try { localStorage.setItem("llmm-period", period); } catch {} return renderStats(); }
-    if (b.dataset.bucket) { bucket = b.dataset.bucket; try { localStorage.setItem("llmm-bucket", bucket); } catch {} return renderStats(); }
-    if (b.dataset.job) { watchJob = b.dataset.job; return renderJob(); }
+    if (b.dataset.view) return setView(b.dataset.view);
+    if (b.dataset.cnkind) { cnKind = b.dataset.cnkind; store.set("llmm-cnkind", cnKind); return renderConnect(); }
+    if (b.dataset.cnclient) { cnClient = b.dataset.cnclient; store.set("llmm-cnclient", cnClient); return renderConnect(); }
+    if (b.dataset.period) { period = b.dataset.period; store.set("llmm-period", period); return renderStats(); }
+    if (b.dataset.bucket) { bucket = b.dataset.bucket; store.set("llmm-bucket", bucket); return renderStats(); }
+    if (b.dataset.job) { watchJob = b.dataset.job; setView("overview"); return renderJob(); }
     const act = b.dataset.act, e = b.dataset.e;
     const prof = () => PROFILES.find(x => x.id === b.dataset.p);
     if (act === "start") return startProfile(b.dataset.p);
@@ -547,7 +877,7 @@ document.addEventListener("click", async ev => {
     if (act === "dlrepo") return dlFiles(b.dataset.repo);
     if (act === "dlgo") {
       const files = [...document.querySelectorAll("#dlresults input[data-files]:checked")].flatMap(c => JSON.parse(c.dataset.files));
-      if (!files.length) return toast("Tick at least one file");
+      if (!files.length) return toast("Tick at least one file", true);
       await post("/api/downloads", { source: $("#dlsrc").value, repo: b.dataset.repo, include: files, make_profile: $("#dlprof").checked });
       $("#dlresults").innerHTML = ""; return pollDownloads();
     }
@@ -561,22 +891,22 @@ document.addEventListener("click", async ev => {
       return toast(`Written to ${r.file}` + (r.backup ? " (backup kept)" : ""));
     }
     if (act === "logs") return streamLog(e);
-    if (act === "logpause") { logPaused = !logPaused; b.textContent = logPaused ? "Resume" : "Pause"; $("#logstate").textContent = logPaused ? "paused" : "live"; $("#logstate").className = "badge " + (logPaused ? "warn" : "ok"); if (!logPaused) { flushLog(); } return; }
+    if (act === "logpause") { logPaused = !logPaused; b.textContent = logPaused ? "Resume" : "Pause"; logState(logPaused ? "paused" : "live", logPaused ? "warn" : "ok"); if (!logPaused) flushLog(); return; }
     if (act === "logcopy") return copyText($("#logpre").textContent);
     const confirmMsg = { stop: `Stop ${e}?`, restart: `Restart ${e}?`, update: `Update ${e}? It stops while updating and starts again after.`, rollback: `Roll ${e} back to its previous version?` }[act];
     if (confirmMsg && !confirm(confirmMsg)) return;
     const j = await post(`/api/${act}`, { engine: e });
     watchJob = j.id; renderJob();
-  } catch (err) { toast(err.message); }
+  } catch (err) { fail(err); }
 });
-$("#chk").onclick = async () => { try { const j = await post("/api/check-updates", {}); watchJob = j.id; renderJob(); } catch (e) { toast(e.message); } };
+$("#chk").onclick = async () => { try { const j = await post("/api/check-updates", {}); watchJob = j.id; renderJob(); } catch (e) { fail(e); } };
 
 async function refreshFast() {
   try { renderStatus(await api("/api/status")); await renderJob(); }
-  catch (e) { if (e.message !== "unauthorized") { $("#conn").textContent = "offline"; $("#conn").className = "badge bad"; } }
+  catch (e) { if (e.message !== "unauthorized") { $("#conn").className = "pill bad"; $("#conn").innerHTML = `<span class="dot bad"></span>offline`; } }
 }
 async function refreshSlow() {
-  try { await Promise.all([renderProfiles(), renderStats(), renderEvents(), renderLive(), renderLibrary(), pollDownloads()]); } catch (e) { }
+  try { await Promise.all([renderProfiles(), view === "usage" ? renderStats() : null, renderEvents(), renderLive(), renderLibrary(), pollDownloads()]); } catch (e) { }
 }
 let dlTimer = null;
 async function pollDownloads() {
@@ -585,18 +915,19 @@ async function pollDownloads() {
   if (active) dlTimer = setTimeout(pollDownloads, 2500);
   else renderLibrary().catch(() => { });
 }
-$("#dlsearch").onclick = () => dlSearch().catch(e => toast(e.message));
-$("#dlopen").onclick = () => { const q = $("#dlq").value.trim(); if (q) dlFiles(q).catch(e => toast(e.message)); };
-$("#dlq").addEventListener("keydown", e => { if (e.key === "Enter") dlSearch().catch(er => toast(er.message)); });
-let timers = [];
+$("#dlsearch").onclick = () => dlSearch().catch(fail);
+$("#dlopen").onclick = () => { const q = $("#dlq").value.trim(); if (q) dlFiles(q).catch(fail); };
+$("#dlq").addEventListener("keydown", e => { if (e.key === "Enter") dlSearch().catch(fail); });
+let timers = [], resizeT = null;
+window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { renderLive().catch(() => { }); if (view === "usage") renderStats().catch(() => { }); }, 200); });
 async function boot() {
   if (!TOKEN) return showLogin();
   try { await api("/api/status"); } catch (e) { return; }
   $("#app").hidden = false; $("#login").hidden = true;
+  setView(view);
   await refreshFast(); refreshSlow();
-  renderConnectHosts().then(renderConnect).catch(e => toast(e.message));
   timers.forEach(clearInterval);
-  timers = [setInterval(refreshFast, 3000), setInterval(refreshSlow, 30000), setInterval(() => renderLive().catch(() => { }), 10000)];
+  timers = [setInterval(refreshFast, 3000), setInterval(refreshSlow, 30000), setInterval(() => { if (view === "overview") renderLive().catch(() => { }); }, 10000)];
 }
 boot();
 </script>
