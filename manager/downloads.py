@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -224,10 +225,24 @@ class Downloader:
         if self.aria2 == "off":
             return None
         p = shutil.which("aria2c")
-        if not p:
-            for c in Path(os.environ.get("LOCALAPPDATA", "")).glob("Microsoft/WinGet/Packages/aria2.aria2*/**/aria2c.exe"):
-                return str(c)
-        return p
+        if p:
+            return p
+        # where installers put it when it is not on this process's PATH (Hangar may run without the shell's PATH)
+        for c in ("/opt/homebrew/bin/aria2c", "/usr/local/bin/aria2c", "/usr/bin/aria2c"):
+            if Path(c).exists():
+                return c
+        for c in Path(os.environ.get("LOCALAPPDATA", "")).glob("Microsoft/WinGet/Packages/aria2.aria2*/**/aria2c.exe"):
+            return str(c)
+        return None
+
+    @staticmethod
+    def aria2_hint() -> str:
+        """The command that installs aria2 on this machine."""
+        if sys.platform == "darwin":
+            return "brew install aria2"
+        if sys.platform.startswith("linux"):
+            return "sudo apt install aria2   (or your distribution's package manager)"
+        return "winget install aria2.aria2"
 
     # ---- browsing
     def search(self, source: str, q: str, limit: int = 20):
@@ -293,6 +308,11 @@ class Downloader:
                     else:
                         d.write(f"downloading {name} ({(f.get('size') or 0) / 2**30:.2f} GiB)")
                         aria = self.aria2_path()
+                        part = target.with_name(target.name + ".part")
+                        if aria and part.exists() and not target.exists():
+                            # started without aria2: hand it what is already here (it continues an existing file)
+                            part.rename(target)
+                            d.write(f"  continuing with aria2 from {target.stat().st_size / 2**30:.2f} GiB")
                         if aria:
                             self._aria2(d, aria, url, src.headers(), target, base_done)
                         else:

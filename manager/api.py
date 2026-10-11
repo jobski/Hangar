@@ -233,7 +233,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.get("/api/downloads")
     def downloads():
-        return {"items": mgr.downloader.list(), "aria2": mgr.downloader.aria2_path()}
+        return {"items": mgr.downloader.list(), "aria2": mgr.downloader.aria2_path(), "aria2_hint": mgr.downloader.aria2_hint()}
 
     @app.post("/api/downloads")
     def download(source: str = Body("huggingface", embed=True), repo: str = Body(..., embed=True),

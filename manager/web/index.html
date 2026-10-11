@@ -716,7 +716,7 @@ async function renderDownloads() {
       ${live ? `<button class="btn sm ghost danger" data-act="dlcancel" data-id="${d.id}">Cancel</button>` : ""}</div>
       <div class="bar ${live ? "run" : ""} ${d.state === "failed" ? "bad" : ""}"><i style="width:${pct}%"></i></div>
       <div class="small muted" style="margin-top:6px;overflow-wrap:anywhere">${esc(d.current || d.folder)}${d.result && d.result.profile ? ` · profile <b>${esc(d.result.profile)}</b> created` : ""}${d.error ? ` · <span class="bad-t">${esc(d.error)}</span>` : ""}</div></div>`;
-  }).join("") + (res.aria2 ? "" : `<div class="pb"><div class="note">${ICON.info}<span>Install aria2 (<span class="mono">winget install aria2.aria2</span>) for faster, multi-connection downloads.</span></div></div>`);
+  }).join("") + (res.aria2 ? "" : `<div class="pb"><div class="note">${ICON.info}<span>Install aria2 (<span class="mono">${esc(res.aria2_hint || "winget install aria2.aria2")}</span>) for faster, multi-connection downloads. A download that is running picks it up if you cancel and start it again; it continues where it was.</span></div></div>`);
   return running.length > 0;
 }
 async function renderLibrary() {
