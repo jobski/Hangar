@@ -1,0 +1,90 @@
+# LLM Manager configuration. Copy to config.yaml (which git ignores) and edit.
+# ${NAME} anywhere is replaced by the environment variable NAME.
+
+manager:
+  host: 0.0.0.0          # listen on every interface; the API token protects everything but the bare web page
+  port: 9000
+  data_dir: data         # token.txt, stats.db, state.json, downloads
+  logs_dir: logs         # one log per engine
+
+resources:
+  vram_reserve_mib: 512        # spare VRAM to keep when deciding whether two things fit together
+  ram_reserve_mib: 4096
+  vram_release_timeout_s: 60
+  sample_interval_s: 5
+  warn_ram_percent: 92
+
+updates:
+  auto_before_start: true      # check for (and install) engine updates before starting an engine...
+  min_interval_hours: 6        # ...at most this often per engine
+  background_check_hours: 6    # report available updates in the UI (0 = off)
+
+models:
+  dir: E:\models               # the model library: one folder per model (GGUF + its mmproj + notes.md)
+  scan:                        # other folders to show GGUFs from (read-only), e.g. LM Studio's
+    - ~\.lmstudio\models
+
+downloads:
+  max_parallel: 2
+  aria2: auto                  # auto = use aria2c (parallel connections) when installed; on | off
+  aria2_connections: 16
+
+# what a new profile made from a downloaded model starts with (edit the profile afterwards to tune it)
+templates:
+  llamacpp:
+    policy: exclusive
+    ctx: 32768
+    args: [--jinja, -ngl, auto, --fit, "on", -fitt, "512", -t, "16", -tb, "32", -fa, "on",
+           --cache-type-k, q8_0, --cache-type-v, q8_0, -b, "2048", -ub, "2048", --parallel, "1"]
+
+engines:
+  llamacpp:
+    plugin: llamacpp
+    dir: E:\llama-cuda
+    port: 8081
+    host: 0.0.0.0
+    api_key: ${LLAMA_API_KEY}  # clients send it as "Authorization: Bearer ..."; empty = no key
+    startup_timeout_s: 900
+    update:
+      channel: builds          # builds = every bNNNN build (what the CUDA zips are published as), stable = releases/latest
+      asset: '^llama-b\d+-bin-win-cuda-13\.\d+-x64\.zip$'
+      runtime_asset: '^cudart-llama-bin-win-cuda-13\.\d+-x64\.zip$'
+
+  strata:
+    plugin: strata
+    dir: E:\Strata-main        # every strata-*.json run config here becomes a profile automatically
+    port: 8080
+    host: 0.0.0.0
+    startup_timeout_s: 1200
+    profile_defaults:
+      policy: exclusive
+
+  # any other program can be managed with the generic plugin:
+  # comfyui:
+  #   plugin: command
+  #   port: 8188
+  #   health_path: /system_stats
+
+profiles:
+  # policy: exclusive = stop everything else first (default)
+  #         coexist   = run next to others if the measured/estimated VRAM and RAM fit, else refuse (force overrides)
+  #         refuse    = only start when nothing else runs (force overrides)
+  # requires: {vram_mib: N, ram_mib: N}  overrides the estimate; after a run the measured peak is used instead
+  # idle_stop_minutes: 30   stop it after 30 minutes without requests (frees the GPU); 0/absent = never
+  # restart_on_crash: true  start it again if it exits on its own (at most 3 times an hour)
+  tiel-coder-35b:
+    engine: llamacpp
+    description: Occult-Nail 1.0 35B-A3B UD-Q4_K_XL + vision, 128K context
+    policy: exclusive
+    model: E:\models\occult-nail-1.0-35b-a3b\Occult-Nail-1.0-35B-A3B-UD-Q4_K_XL.gguf
+    mmproj: E:\models\occult-nail-1.0-35b-a3b\mmproj-F16.gguf
+    alias: tiel-coder-35b-a3b
+    ctx: 131072
+    args: [--jinja, -ngl, auto, --fit, "on", -fitt, "512", -t, "16", -tb, "32", -fa, "on",
+           --cache-type-k, q8_0, --cache-type-v, q8_0, -b, "4096", -ub, "4096", --load-mode, none, --parallel, "1"]
+
+  # comfyui:
+  #   engine: comfyui
+  #   cmd: [E:\comfyui\python_embeded\python.exe, ComfyUI\main.py, --listen, 0.0.0.0, --port, "8188"]
+  #   cwd: E:\comfyui
+  #   policy: exclusive

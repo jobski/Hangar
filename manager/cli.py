@@ -1,0 +1,292 @@
+"""llmctl: the manager from a terminal, on this PC or any other.
+
+    llmctl login http://my-pc:9000 <token>    remember where the manager is (saved in ~/.llmctl.json)
+    llmctl status | profiles | plan <profile>
+    llmctl start <profile> [--force] [--no-update | --update]
+    llmctl switch <profile>       (same as start)
+    llmctl stop <engine|all> | restart <engine>
+    llmctl check [engine] | update <engine> | rollback <engine>
+    llmctl logs <engine> [lines] | jobs | job <id> | events
+    llmctl stats [day|week|month|year|all]
+
+  models
+    llmctl models                                   the model library
+    llmctl search <words> [--modelscope]           find GGUF repos
+    llmctl files <repo> [--modelscope|--ollama]    a repo's quants and sizes
+    llmctl download <repo> <pattern>... [--modelscope|--ollama|--url] [--no-profile]
+          e.g. llmctl download unsloth/Qwen3-8B-GGUF "*Q4_K_M*"     llmctl download qwen3:8b --ollama
+    llmctl downloads                                progress
+    llmctl new-profile <model.gguf> [name] [ctx]    a llama.cpp profile from the template
+    llmctl custom <profile> [--ctx N] [-- extra llama args...]   one-off run with changes
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import httpx
+
+CONF = Path.home() / ".llmctl.json"
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def _conn() -> tuple[str, str]:
+    saved = json.loads(CONF.read_text()) if CONF.exists() else {}
+    url = os.environ.get("LLMCTL_URL") or saved.get("url") or "http://127.0.0.1:9000"
+    tok = os.environ.get("LLMCTL_TOKEN") or saved.get("token")
+    if not tok and (ROOT / "data" / "token.txt").exists():
+        tok = (ROOT / "data" / "token.txt").read_text().strip()
+    return url.rstrip("/"), tok or ""
+
+
+def _call(method: str, path: str, **kw):
+    url, tok = _conn()
+    try:
+        r = httpx.request(method, url + path, headers={"Authorization": f"Bearer {tok}"}, timeout=660, **kw)
+    except httpx.HTTPError as e:
+        sys.exit(f"cannot reach the manager at {url}: {e}")
+    if r.status_code >= 400:
+        try:
+            msg = r.json().get("detail") or r.json().get("error")
+        except ValueError:
+            msg = r.text
+        sys.exit(f"error {r.status_code}: {msg}")
+    return r.json() if "json" in r.headers.get("content-type", "") else r.text
+
+
+def _mib(v):
+    return f"{v / 1024:.1f} GB" if v and v >= 1024 else f"{v or 0:.0f} MiB"
+
+
+def _dur(s):
+    s = int(s or 0)
+    return f"{s // 86400}d {s % 86400 // 3600}h" if s >= 86400 else f"{s // 3600}h {s % 3600 // 60}m" if s >= 3600 else f"{s // 60}m {s % 60}s"
+
+
+def _num(v):
+    v = v or 0
+    return f"{v / 1e9:.2f}B" if v >= 1e9 else f"{v / 1e6:.2f}M" if v >= 1e6 else f"{v / 1e3:.1f}K" if v >= 1e3 else f"{v:.0f}"
+
+
+def _follow(job: dict):
+    """Print a job's log as it runs."""
+    seen = 0
+    while True:
+        log = job.get("log", [])
+        for line in log[seen:]:
+            print(line)
+        seen = len(log)
+        if job["state"] not in ("queued", "running"):
+            break
+        time.sleep(2)
+        job = _call("GET", f"/api/jobs/{job['id']}?lines=100000")
+    print(f"-> {job['state']}" + (f": {job['error']}" if job.get("error") else ""))
+    return 0 if job["state"] == "done" else 1
+
+
+def cmd_status(_):
+    s = _call("GET", "/api/status")
+    r = s["resources"]
+    for g in r["gpus"]:
+        print(f"GPU {g['index']} {g['name']}: {_mib(g['vram_used_mib'])} / {_mib(g['vram_total_mib'])} VRAM, "
+              f"{g['util_percent'] or 0:.0f}% busy, {g['temp_c'] or 0:.0f} C")
+    print(f"RAM {_mib(r['ram_total_mib'] - r['ram_available_mib'])} / {_mib(r['ram_total_mib'])}, CPU {r['cpu_percent']:.0f}%")
+    for w in s["warnings"]:
+        print("warning:", w)
+    print()
+    for e in s["engines"]:
+        upd = e["update"]
+        v = f" [{upd.get('current') or '?'}" + (f" -> {upd['latest']} available" if upd.get("available") else "") + "]"
+        run = e["running"]
+        if run:
+            st = run["stats"]
+            w = st["window"]["5m"]
+            print(f"{e['name']:10s} :{e['port']}  {run['state'].upper():8s} {run['profile']}  up {_dur(run['uptime_seconds'])}"
+                  f"  RAM {_mib(run['ram_mib'])}{v}")
+            tps = f"{w['gen_tps']:.1f} tok/s" if w["gen_tps"] else "idle"
+            print(f"{'':16s}last 5 min: {tps}, {_num(w['gen_tokens'])} out / {_num(w['prompt_tokens'])} in; since start "
+                  f"{_num(st['since_start']['gen_tokens'])} out / {_num(st['since_start']['prompt_tokens'])} in"
+                  + ("" if run["managed"] else "  (started outside the manager)"))
+        else:
+            other = e.get("port_taken_by")
+            print(f"{e['name']:10s} :{e['port']}  stopped" + (f" (port used by {other['name']} pid {other['pid']})" if other else "") + v)
+    if s["job"]:
+        print(f"\nrunning job: {s['job']['title']} ({s['job']['state']})")
+
+
+def cmd_profiles(_):
+    for p in _call("GET", "/api/profiles"):
+        n = p.get("needs", {})
+        print(f"{'*' if p['running'] else ' '} {p['id']:32s} {p['engine']:9s} {p['policy']:9s} "
+              f"~{_mib(n.get('vram_mib'))} VRAM, ~{_mib(n.get('ram_mib'))} RAM ({n.get('source', '?')})  {p['description']}")
+
+
+def cmd_plan(a):
+    print(json.dumps(_call("GET", "/api/plan", params={"profile": a[0], "force": "--force" in a}), indent=1))
+
+
+def _start_args(a):
+    upd = "skip" if "--no-update" in a else "force" if "--update" in a else "auto"
+    return {"profile": a[0], "force": "--force" in a, "update": upd}
+
+
+def cmd_start(a):
+    return _follow(_call("POST", "/api/start", json=_start_args(a)))
+
+
+def cmd_stop(a):
+    return _follow(_call("POST", "/api/stop", json={"engine": a[0] if a else "all"}))
+
+
+def cmd_restart(a):
+    return _follow(_call("POST", "/api/restart", json={"engine": a[0]}))
+
+
+def cmd_check(a):
+    return _follow(_call("POST", "/api/check-updates", json={"engine": a[0] if a else None}))
+
+
+def cmd_update(a):
+    return _follow(_call("POST", "/api/update", json={"engine": a[0], "start_after": "--no-start" not in a}))
+
+
+def cmd_rollback(a):
+    return _follow(_call("POST", "/api/rollback", json={"engine": a[0], "start_after": "--no-start" not in a}))
+
+
+def cmd_logs(a):
+    print(_call("GET", f"/api/logs/{a[0]}", params={"lines": int(a[1]) if len(a) > 1 else 100}))
+
+
+def cmd_jobs(_):
+    for j in _call("GET", "/api/jobs"):
+        print(f"{j['id']}  {time.strftime('%m-%d %H:%M', time.localtime(j['created']))}  {j['state']:8s} {j['title']}"
+              + (f"  - {j['error']}" if j.get("error") else ""))
+
+
+def cmd_job(a):
+    return _follow(_call("GET", f"/api/jobs/{a[0]}?lines=100000"))
+
+
+def cmd_events(_):
+    for e in reversed(_call("GET", "/api/events", params={"limit": 40})):
+        print(f"{time.strftime('%m-%d %H:%M', time.localtime(e['ts']))} {e['level']:5s} {e['kind']:8s} {e['message']}")
+
+
+def cmd_stats(a):
+    periods = a or ["day", "week", "month", "year", "all"]
+    for p in periods:
+        s = _call("GET", "/api/stats/summary", params={"period": p})
+        t = s["total"]
+        tps = f"{t['gen_tps']:.1f} tok/s" if t["gen_tps"] else "-"
+        print(f"{p:6s} out {_num(t['gen_tokens']):>8s}  in {_num(t['prompt_tokens']):>8s}  cached {_num(t['cached_tokens']):>8s}"
+              f"  avg {tps:>11s}  up {_dur(t['uptime_seconds'])}  runs {t['runs']}")
+        if len(periods) == 1:
+            for name, v in sorted(s["profiles"].items(), key=lambda x: -x[1]["gen_tokens"]):
+                print(f"   {name:32s} out {_num(v['gen_tokens']):>8s}  in {_num(v['prompt_tokens']):>8s}  up {_dur(v['uptime_seconds'])}")
+
+
+def _source(a):
+    for flag, src in (("--modelscope", "modelscope"), ("--ollama", "ollama"), ("--url", "url")):
+        if flag in a:
+            return src
+    return "huggingface"
+
+
+def _plain(a):
+    return [x for x in a if not x.startswith("--")]
+
+
+def cmd_models(_):
+    for m in _call("GET", "/api/models"):
+        print(f"{m['name']}  ({_mib(m['size'] / 2**20)}, {m['kind']})  {m['folder']}")
+        for g in m["models"]:
+            print(f"   model  {g['name']}  {_mib(g['size'] / 2**20)}" + (f"  used by {', '.join(g['used_by'])}" if g["used_by"] else "")
+                  + ("" if g["complete"] else "  INCOMPLETE"))
+        for g in m["mmproj"]:
+            print(f"   mmproj {g['name']}  {_mib(g['size'] / 2**20)}")
+        if m["partial"]:
+            print(f"   partial downloads: {', '.join(m['partial'])}")
+
+
+def cmd_search(a):
+    for r in _call("GET", "/api/search", params={"q": " ".join(_plain(a)), "source": _source(a)}):
+        print(f"{r['repo']:60s} {r.get('downloads') or 0:>9} downloads")
+
+
+def cmd_files(a):
+    res = _call("GET", "/api/repo-files", params={"repo": _plain(a)[0], "source": _source(a)})
+    for g in res["groups"]:
+        print(f"{(g['quant'] or ('mmproj' if g['mmproj'] else '?')):14s} {_mib(g['size'] / 2**20):>9s}  {g['key']}"
+              + (f"  ({len(g['files'])} files)" if len(g["files"]) > 1 else ""))
+    if not res["groups"]:
+        for f in res["files"]:
+            print(f"{_mib((f['size'] or 0) / 2**20):>9s}  {f['path']}")
+
+
+def cmd_download(a):
+    pl = _plain(a)
+    d = _call("POST", "/api/downloads", json={"source": _source(a), "repo": pl[0], "include": pl[1:] or None,
+                                              "make_profile": "--no-profile" not in a})
+    print(f"download {d['id']}: {len(d['files'])} files, {_mib(d['total_bytes'] / 2**20)} -> {d['folder']}")
+    print("follow it with: llmctl downloads")
+
+
+def cmd_downloads(_):
+    res = _call("GET", "/api/downloads")
+    print(f"aria2c: {res['aria2'] or 'not installed (single connection downloads)'}")
+    for d in res["items"]:
+        pct = d["done_bytes"] / d["total_bytes"] * 100 if d["total_bytes"] else 0
+        eta = f", ETA {_dur(d['eta_seconds'])}" if d["eta_seconds"] else ""
+        print(f"{d['id']}  {d['state']:9s} {pct:5.1f}%  {_mib(d['done_bytes'] / 2**20)} / {_mib(d['total_bytes'] / 2**20)}"
+              f"  {d['speed'] / 2**20:.1f} MiB/s{eta}  {d['repo']}" + (f"  -> profile {d['result']['profile']}" if d["result"].get("profile") else "")
+              + (f"  {d['error']}" if d["error"] else ""))
+
+
+def cmd_new_profile(a):
+    body = {"model": a[0], "name": a[1] if len(a) > 1 else None, "ctx": int(a[2]) if len(a) > 2 else None}
+    print("created profile", _call("POST", "/api/profiles/from-model", json=body)["id"])
+
+
+def cmd_custom(a):
+    extra = a[a.index("--") + 1:] if "--" in a else []
+    head = a[:a.index("--")] if "--" in a else a
+    ov = {"args_add": extra}
+    if "--ctx" in head:
+        ov["ctx"] = int(head[head.index("--ctx") + 1])
+    return _follow(_call("POST", "/api/run-custom", json={"profile": head[0], "overrides": ov}))
+
+
+def cmd_login(a):
+    if len(a) < 2:
+        sys.exit("usage: llmctl login <url> <token>")
+    CONF.write_text(json.dumps({"url": a[0], "token": a[1]}))
+    print(f"saved to {CONF}")
+    print(_call("GET", "/api/status") and "connected")
+
+
+COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "start": cmd_start, "switch": cmd_start,
+            "stop": cmd_stop, "restart": cmd_restart, "check": cmd_check, "update": cmd_update,
+            "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
+            "stats": cmd_stats, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
+            "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom}
+NEEDS_ARG = {"plan", "start", "switch", "restart", "update", "rollback", "logs", "job", "search", "files", "download",
+             "new-profile", "custom"}
+
+
+def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] in ("-h", "--help", "help") or argv[0] not in COMMANDS:
+        print(__doc__)
+        return 0 if not argv or argv[0] in ("-h", "--help", "help") else 2
+    cmd, rest = argv[0], argv[1:]
+    if cmd in NEEDS_ARG and not [x for x in rest if not x.startswith("--")]:
+        sys.exit(f"llmctl {cmd} needs an argument")
+    return COMMANDS[cmd](rest) or 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

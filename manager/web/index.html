@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LLM Manager</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#2f6f5e">
+<style>
+:root {
+  --bg: #f6f7f5; --panel: #ffffff; --ink: #1b1f1d; --muted: #66706b; --line: #e2e6e3;
+  --accent: #2f6f5e; --accent-ink: #fff; --ok: #2e7d4f; --warn: #b26a00; --bad: #b3261e; --track: #e9ecea;
+  --s1: #2f6f5e; --s2: #c47f2c; --s3: #5b6fb3;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111413; --panel: #1a1e1c; --ink: #e7ebe9; --muted: #9aa5a0; --line: #2b312e;
+    --accent: #5fb39b; --accent-ink: #0d1211; --ok: #6cc28f; --warn: #e3a447; --bad: #f2867d; --track: #262c29;
+    --s1: #5fb39b; --s2: #e3a447; --s3: #8d9de0;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: .1px; }
+header .sp { flex: 1; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+main *, dialog * { overflow-wrap: anywhere; }
+.grid2 { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+section > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+section > h2 .sp { flex: 1; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.meter { margin: 6px 0 10px; }
+.meter .lbl { display: flex; justify-content: space-between; font-size: 13px; }
+.bar { height: 8px; background: var(--track); border-radius: 99px; overflow: hidden; margin-top: 4px; }
+.bar > i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .4s; }
+.bar.warn > i { background: var(--warn); } .bar.bad > i { background: var(--bad); }
+.engine { border-top: 1px solid var(--line); padding: 12px 0; }
+.engine:first-of-type { border-top: 0; padding-top: 2px; }
+.engine .name { font-weight: 650; font-size: 16px; }
+.badge { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.badge.ok { color: var(--ok); border-color: currentColor; } .badge.warn { color: var(--warn); border-color: currentColor; } .badge.bad { color: var(--bad); border-color: currentColor; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 10px 0; }
+.kpi { background: var(--bg); border-radius: 8px; padding: 8px 10px; }
+.kpi b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.kpi span { font-size: 12px; color: var(--muted); }
+button { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 6px 12px; border-radius: 8px; cursor: pointer; min-height: 34px; }
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+.profile { display: flex; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.profile .info { flex: 1 1 240px; }
+.profile:first-child { border-top: 0; }
+.profile .info { min-width: 0; }
+.profile .id { font-weight: 600; overflow-wrap: anywhere; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
+.tabs button { padding: 4px 10px; min-height: 30px; font-size: 13px; }
+.tabs button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; overflow-wrap: normal; }
+th:first-child, td:first-child { text-align: left; white-space: normal; overflow-wrap: anywhere; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.scroll { overflow-x: auto; }
+.chart { width: 100%; height: 170px; display: block; }
+.chart text { fill: var(--muted); font-size: 10px; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+pre.log { background: var(--bg); border-radius: 8px; padding: 10px; max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; font: 12px/1.45 var(--mono); }
+.events div { padding: 5px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.events div:first-child { border-top: 0; }
+.lvl-error { color: var(--bad); } .lvl-warn { color: var(--warn); }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); width: min(760px, calc(100vw - 32px)); padding: 16px; }
+dialog::backdrop { background: rgba(0,0,0,.45); }
+.warnbox { color: var(--warn); font-size: 13px; margin-top: 6px; }
+#login { max-width: 420px; margin: 12vh auto; }
+#login input { width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); margin: 10px 0; }
+select, input.grow, textarea { font: inherit; font-size: 14px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); min-height: 34px; }
+input.grow { flex: 1; min-width: 180px; }
+textarea { width: 100%; font: 12.5px/1.45 var(--mono); min-height: 260px; }
+.dl { padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.lib { padding: 10px 0; border-top: 1px solid var(--line); }
+.lib:first-child { border-top: 0; }
+.lib .file { display: flex; gap: 8px; align-items: center; font-size: 13px; padding: 3px 0; flex-wrap: wrap; }
+.lib .file span.n { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
+.qrow { display: flex; gap: 8px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.qrow label { flex: 1; overflow-wrap: anywhere; }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--panel); padding: 8px 14px; border-radius: 8px; font-size: 14px; z-index: 20; max-width: calc(100vw - 32px); }
+</style>
+</head>
+<body>
+<header>
+  <h1>LLM Manager</h1>
+  <span class="sp"></span>
+  <span id="conn" class="badge">connecting</span>
+</header>
+
+<div id="login" hidden>
+  <section>
+    <h2>Sign in</h2>
+    <div class="small muted">Paste the manager's token (in <span class="mono">data\token.txt</span> on the PC).</div>
+    <input id="tok" type="password" autocomplete="current-password" placeholder="token">
+    <button class="primary" id="tokbtn">Continue</button>
+  </section>
+</div>
+
+<main id="app" hidden>
+  <div class="grid2">
+    <section>
+      <h2>Engines <span class="sp"></span><button id="chk" class="small">Check updates</button></h2>
+      <div id="engines"></div>
+    </section>
+    <section>
+      <h2>Machine</h2>
+      <div id="machine"></div>
+      <svg id="live" class="chart" aria-label="last hour"></svg>
+      <div class="legend"><span><i style="background:var(--s1)"></i>VRAM</span><span><i style="background:var(--s2)"></i>RAM</span><span><i style="background:var(--s3)"></i>tokens out</span><span class="muted">last hour</span></div>
+    </section>
+  </div>
+
+  <section id="jobsec" hidden>
+    <h2>Working <span class="sp"></span><span id="jobstate" class="badge"></span></h2>
+    <div id="jobtitle" class="small"></div>
+    <pre class="log" id="joblog"></pre>
+  </section>
+
+  <section>
+    <h2>Profiles</h2>
+    <div id="profiles"></div>
+  </section>
+
+  <section>
+    <h2>Get models</h2>
+    <div class="row">
+      <select id="dlsrc"><option value="huggingface">Hugging Face</option><option value="modelscope">ModelScope</option><option value="ollama">Ollama library</option><option value="url">Direct URL</option></select>
+      <input id="dlq" class="grow" placeholder="search words, or a repo like unsloth/Qwen3-8B-GGUF">
+      <button id="dlsearch">Search</button><button id="dlopen" class="primary">Show files</button>
+    </div>
+    <div id="dlresults" class="small" style="margin-top:8px"></div>
+    <div id="downloads" style="margin-top:8px"></div>
+  </section>
+
+  <section>
+    <h2>Model library</h2>
+    <div id="library"></div>
+  </section>
+
+  <section>
+    <h2>Usage <span class="sp"></span></h2>
+    <div class="tabs" id="periods"></div>
+    <div class="kpis" id="totals"></div>
+    <div class="scroll"><table id="bytable"></table></div>
+    <div class="tabs" id="buckets" style="margin-top:14px"></div>
+    <svg id="series" class="chart" aria-label="tokens over time"></svg>
+    <div class="legend"><span><i style="background:var(--s1)"></i>tokens out</span><span><i style="background:var(--s2)"></i>tokens in</span></div>
+  </section>
+
+  <div class="grid2">
+    <section>
+      <h2>Events</h2>
+      <div class="events" id="events"></div>
+    </section>
+    <section>
+      <h2>Recent jobs</h2>
+      <div class="events" id="jobs"></div>
+    </section>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <div class="row"><b id="dlgtitle"></b><span class="sp" style="flex:1"></span><button id="dlgclose">Close</button></div>
+  <div id="dlgbody"></div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+let TOKEN = new URLSearchParams(location.search).get("token") || (() => { try { return localStorage.getItem("llmm-token"); } catch { return null; } })();
+if (new URLSearchParams(location.search).get("token")) { try { localStorage.setItem("llmm-token", TOKEN); } catch {} history.replaceState(null, "", location.pathname); }
+let period = "day", bucket = "day", watchJob = null, lastStatus = null;
+try { period = localStorage.getItem("llmm-period") || "day"; bucket = localStorage.getItem("llmm-bucket") || "day"; } catch {}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) } });
+  if (r.status === 401) { showLogin(); throw new Error("unauthorized"); }
+  const ct = r.headers.get("content-type") || "";
+  const body = ct.includes("json") ? await r.json() : await r.text();
+  if (!r.ok) throw new Error(body.detail || body.error || body);
+  return body;
+}
+const post = (path, data) => api(path, { method: "POST", body: JSON.stringify(data) });
+
+function toast(msg) { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.append(t); setTimeout(() => t.remove(), 4000); }
+function showLogin() { $("#app").hidden = true; $("#login").hidden = false; $("#conn").textContent = "signed out"; }
+$("#tokbtn").onclick = () => { TOKEN = $("#tok").value.trim(); try { localStorage.setItem("llmm-token", TOKEN); } catch {} $("#login").hidden = true; boot(); };
+
+const mib = v => v >= 1024 ? (v / 1024).toFixed(1) + " GB" : (v || 0).toFixed(0) + " MiB";
+const num = v => { v = v || 0; return v >= 1e9 ? (v / 1e9).toFixed(2) + "B" : v >= 1e6 ? (v / 1e6).toFixed(2) + "M" : v >= 1e3 ? (v / 1e3).toFixed(1) + "K" : v.toFixed(0); };
+const dur = s => { s = Math.floor(s || 0); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; };
+const tps = v => v ? v.toFixed(1) : "–";
+const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? "just now" : s < 3600 ? Math.floor(s / 60) + " min ago" : s < 86400 ? Math.floor(s / 3600) + " h ago" : new Date(t * 1000).toLocaleDateString(); };
+const meter = (label, used, total, extra = "") => { const p = total ? Math.min(100, used / total * 100) : 0; return `<div class="meter"><div class="lbl"><span>${label}</span><span class="muted">${mib(used)} / ${mib(total)}${extra}</span></div><div class="bar ${p > 95 ? "bad" : p > 85 ? "warn" : ""}"><i style="width:${p}%"></i></div></div>`; };
+
+function renderStatus(s) {
+  lastStatus = s;
+  const r = s.resources;
+  let m = "";
+  for (const g of r.gpus) m += meter(`GPU ${esc(g.name)}`, g.vram_used_mib, g.vram_total_mib, ` · ${(g.util_percent || 0).toFixed(0)}% · ${(g.temp_c || 0).toFixed(0)}°C`);
+  if (!r.gpus.length) m += `<div class="small muted">No NVIDIA GPU found (nvidia-smi).</div>`;
+  m += meter("RAM", r.ram_total_mib - r.ram_available_mib, r.ram_total_mib, r.swap_used_mib > 512 ? ` · swap ${mib(r.swap_used_mib)}` : "");
+  m += `<div class="small muted">CPU ${r.cpu_percent.toFixed(0)}% of ${r.cpu_count} threads</div>`;
+  for (const w of s.warnings) m += `<div class="warnbox">${esc(w)}</div>`;
+  $("#machine").innerHTML = m;
+
+  let h = "";
+  for (const e of s.engines) {
+    const run = e.running, up = e.update || {};
+    const ver = up.current ? `<span class="badge">${esc(up.current)}</span>` : "";
+    const upd = up.available ? `<span class="badge warn" title="${esc(up.latest)}">update: ${esc(up.latest)}</span>` : up.error ? `<span class="badge bad" title="${esc(up.error)}">update check failed</span>` : "";
+    const state = run ? `<span class="badge ${run.state === "ready" ? "ok" : "warn"}">${esc(run.state)}</span>` : `<span class="badge">stopped</span>`;
+    h += `<div class="engine"><div class="row"><span class="name">${esc(e.name)}</span>${state}<span class="badge">:${e.port}</span>${ver}${upd}</div>`;
+    if (run) {
+      const st = run.stats, w1 = st.window["1m"], w5 = st.window["5m"], ss = st.since_start, busy = (st.gauges || {}).requests_processing;
+      h += `<div class="small" style="margin-top:4px">${esc(run.profile)} <span class="muted">· up ${dur(run.uptime_seconds)} · pid ${run.pid}${run.managed ? "" : " · started outside the manager"}</span></div>
+        <div class="kpis">
+          <div class="kpi"><b>${tps(w1.gen_tps ?? w5.gen_tps)}</b><span>tok/s out ${busy ? "· busy" : "· idle"}</span></div>
+          <div class="kpi"><b>${tps(w5.prompt_tps)}</b><span>tok/s in (5 min)</span></div>
+          <div class="kpi"><b>${num(ss.gen_tokens)}</b><span>out since start</span></div>
+          <div class="kpi"><b>${num(ss.prompt_tokens)}</b><span>in since start</span></div>
+          <div class="kpi"><b>${mib(run.ram_mib)}</b><span>RAM · CPU ${run.cpu_percent.toFixed(0)}%</span></div>
+        </div>`;
+    } else if (e.port_taken_by) {
+      h += `<div class="warnbox">Port ${e.port} is used by ${esc(e.port_taken_by.name)} (pid ${e.port_taken_by.pid}), not by this manager.</div>`;
+    }
+    h += `<div class="row" style="margin-top:6px">`;
+    if (run) h += `<button class="danger" data-act="stop" data-e="${esc(e.name)}">Stop</button><button data-act="restart" data-e="${esc(e.name)}">Restart</button>`;
+    if (e.can_update) h += `<button data-act="update" data-e="${esc(e.name)}">Update${up.available ? " now" : ""}</button>`;
+    if (e.can_rollback) h += `<button data-act="rollback" data-e="${esc(e.name)}">Roll back</button>`;
+    h += `<button data-act="logs" data-e="${esc(e.name)}">Logs</button></div></div>`;
+  }
+  $("#engines").innerHTML = h;
+
+  const job = s.job;
+  if (job) { watchJob = job.id; }
+  $("#conn").textContent = "connected"; $("#conn").className = "badge ok";
+}
+
+async function renderJob() {
+  if (!watchJob) { $("#jobsec").hidden = true; return; }
+  try {
+    const j = await api(`/api/jobs/${watchJob}?lines=400`);
+    $("#jobsec").hidden = false;
+    $("#jobtitle").textContent = j.title + (j.error ? " — " + j.error.split("\n")[0] : "");
+    $("#jobstate").textContent = j.state;
+    $("#jobstate").className = "badge " + ({ done: "ok", failed: "bad", refused: "bad" }[j.state] || "warn");
+    const pre = $("#joblog"), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+    pre.textContent = j.log.join("\n");
+    if (atEnd) pre.scrollTop = pre.scrollHeight;
+    if (!["queued", "running"].includes(j.state)) {
+      if (!j._seen) { refreshSlow(); }
+      setTimeout(() => { if (watchJob === j.id) { watchJob = null; $("#jobsec").hidden = true; } }, 20000);
+    }
+  } catch (e) { }
+}
+
+async function renderProfiles() {
+  const ps = await api("/api/profiles");
+  $("#profiles").innerHTML = ps.map(p => {
+    const n = p.needs || {};
+    return `<div class="profile"><div class="info"><div class="id">${esc(p.id)} ${p.running ? '<span class="badge ok">running</span>' : ""}</div>
+      <div class="small muted">${esc(p.description)}</div>
+      <div class="small muted">${esc(p.engine)} · ${esc(p.policy)} · needs ~${mib(n.vram_mib || 0)} VRAM, ~${mib(n.ram_mib || 0)} RAM <span title="${esc(n.note || "")}">(${esc(n.source || "?")})</span></div></div>
+      <div class="row" style="justify-content:flex-end">
+        ${p.editable ? `<button data-act="pedit" data-p="${esc(p.id)}">Edit</button>` : ""}
+        ${p.discovered || p.source === "custom" ? "" : `<button data-act="pcopy" data-p="${esc(p.id)}">Copy</button>`}
+        ${p.source === "custom" ? "" : `<button data-act="pcustom" data-p="${esc(p.id)}">Custom run</button>`}
+        ${p.editable ? `<button class="danger" data-act="pdel" data-p="${esc(p.id)}">Delete</button>` : ""}
+        <button class="${p.running ? "" : "primary"}" data-act="start" data-p="${esc(p.id)}">${p.running ? "Restart" : "Start"}</button></div></div>`;
+  }).join("") || `<div class="muted small">No profiles. Add some to config.yaml, or download a model.</div>`;
+  PROFILES = ps;
+}
+let PROFILES = [];
+
+// ---- models: search, pick a quant, download, library
+async function dlSearch() {
+  const src = $("#dlsrc").value, q = $("#dlq").value.trim();
+  if (!q) return;
+  if (src === "ollama" || src === "url" || q.includes("/") && !q.includes(" ")) return dlFiles(q);
+  const rs = await api(`/api/search?source=${src}&q=${encodeURIComponent(q)}`);
+  $("#dlresults").innerHTML = rs.map(r => `<div class="qrow"><label>${esc(r.repo)} <span class="muted">· ${num(r.downloads || 0)} downloads</span></label><button data-act="dlrepo" data-repo="${esc(r.repo)}">Files</button></div>`).join("") || "Nothing found.";
+}
+async function dlFiles(repo) {
+  const src = $("#dlsrc").value;
+  $("#dlresults").innerHTML = `<span class="muted">Loading ${esc(repo)} …</span>`;
+  const res = await api(`/api/repo-files?source=${src}&repo=${encodeURIComponent(repo)}`);
+  const groups = res.groups.length ? res.groups : res.files.map(f => ({ key: f.path, files: [f.path], size: f.size, quant: null, mmproj: false }));
+  const mm = groups.filter(g => g.mmproj);
+  $("#dlresults").innerHTML = `<div class="row"><b>${esc(repo)}</b><span class="muted">tick what to download</span></div>` +
+    groups.map((g, i) => `<div class="qrow"><input type="checkbox" id="q${i}" data-files='${esc(JSON.stringify(g.files))}' ${(src === "ollama" || src === "url" || g.mmproj && mm.length === 1) ? "checked" : ""}>
+      <label for="q${i}">${g.quant ? `<b>${esc(g.quant)}</b> ` : g.mmproj ? "<b>mmproj</b> " : ""}${esc(g.key)} ${g.files.length > 1 ? `<span class="muted">(${g.files.length} files)</span>` : ""}</label><span class="muted">${mib((g.size || 0) / 1048576)}</span></div>`).join("") +
+    `<div class="row" style="margin-top:8px"><label class="small"><input type="checkbox" id="dlprof" checked> make a llama.cpp profile when done</label><span style="flex:1"></span><button class="primary" data-act="dlgo" data-repo="${esc(repo)}">Download</button></div>`;
+}
+async function renderDownloads() {
+  const res = await api("/api/downloads");
+  const act = res.items.filter(d => ["queued", "running"].includes(d.state) || Date.now() / 1000 - (d.finished || 0) < 3600);
+  $("#downloads").innerHTML = act.map(d => {
+    const pct = d.total_bytes ? d.done_bytes / d.total_bytes * 100 : 0;
+    return `<div class="dl"><div class="row"><b>${esc(d.repo)}</b><span class="badge ${({ done: "ok", failed: "bad", cancelled: "bad" }[d.state] || "warn")}">${esc(d.state)}</span>
+      <span class="muted">${mib(d.done_bytes / 1048576)} / ${mib(d.total_bytes / 1048576)}${d.state === "running" ? ` · ${(d.speed / 1048576).toFixed(1)} MiB/s${d.eta_seconds ? " · " + dur(d.eta_seconds) + " left" : ""}` : ""}</span>
+      <span style="flex:1"></span>${["queued", "running"].includes(d.state) ? `<button class="danger" data-act="dlcancel" data-id="${d.id}">Cancel</button>` : ""}</div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      <div class="muted">${esc(d.current || d.folder)}${d.result && d.result.profile ? ` · profile <b>${esc(d.result.profile)}</b> created` : ""}${d.error ? ` · <span class="lvl-error">${esc(d.error)}</span>` : ""}</div></div>`;
+  }).join("") + (res.aria2 ? "" : `<div class="small muted" style="margin-top:6px">Tip: install aria2 (<span class="mono">winget install aria2.aria2</span>) for faster, multi-connection downloads.</div>`);
+  return act.some(d => ["queued", "running"].includes(d.state));
+}
+async function renderLibrary() {
+  const lib = await api("/api/models");
+  $("#library").innerHTML = lib.map(m => `<div class="lib"><div class="row"><b>${esc(m.name)}</b><span class="badge">${mib(m.size / 1048576)}</span>${m.kind === "external" ? '<span class="badge">external</span>' : ""}
+      <span style="flex:1"></span>${m.kind === "library" ? `<button class="danger" data-act="mdel" data-folder="${esc(m.folder)}">Delete</button>` : ""}</div>
+      <div class="small muted mono" style="overflow-wrap:anywhere">${esc(m.folder)}</div>
+      ${m.models.map(g => `<div class="file"><span class="n">${esc(g.name)} <span class="muted">${mib(g.size / 1048576)}${g.complete ? "" : " · incomplete"}</span>${g.used_by.length ? ` <span class="badge ok">${esc(g.used_by.join(", "))}</span>` : ""}</span>
+        <button data-act="mprof" data-model="${esc(g.first)}">Make profile</button></div>`).join("")}
+      ${m.mmproj.map(g => `<div class="file"><span class="n muted">mmproj: ${esc(g.name)} · ${mib(g.size / 1048576)}</span></div>`).join("")}
+      ${m.partial.length ? `<div class="small lvl-warn">partial: ${esc(m.partial.join(", "))}</div>` : ""}</div>`).join("") || `<div class="muted small">The library is empty.</div>`;
+}
+
+function editProfile(p, isNew) {
+  const settings = { engine: p.engine, ...p.settings };
+  dialog(isNew ? "New profile" : `Edit ${p.id}`, `
+    <div class="row" style="margin:8px 0"><label class="small">Name <input id="pid" class="grow" value="${esc(isNew ? p.id + "-copy" : p.id)}" ${isNew ? "" : "disabled"}></label></div>
+    <div class="small muted">Settings (JSON). llama.cpp: model, mmproj, alias, ctx, args, policy, description, idle_stop_minutes, restart_on_crash.</div>
+    <textarea id="pjson">${esc(JSON.stringify(settings, null, 2))}</textarea>
+    <div class="row" style="margin-top:8px"><span style="flex:1"></span><button class="primary" id="psave">Save</button></div>`);
+  $("#psave").onclick = async () => {
+    try {
+      const s = JSON.parse($("#pjson").value);
+      await post("/api/profiles", { id: $("#pid").value.trim(), settings: s, overwrite: !isNew });
+      $("#dlg").close(); toast("Saved"); renderProfiles();
+    } catch (e) { toast(e.message); }
+  };
+}
+function customRun(p) {
+  dialog(`Custom run: ${p.id}`, `
+    <p class="small muted">Starts this profile once with changes. Nothing is saved unless you give it a name.</p>
+    <div class="row" style="margin:6px 0"><label class="small">Context <input id="cctx" class="grow" type="number" placeholder="${esc(p.settings.ctx || "")}"></label></div>
+    <div class="row" style="margin:6px 0"><label class="small" style="flex:1">Extra arguments <input id="cargs" class="grow" style="width:100%" placeholder="--temp 0.6 --top-k 20"></label></div>
+    <div class="row" style="margin:6px 0"><label class="small"><input type="checkbox" id="cnomm"> without vision (no mmproj)</label></div>
+    <div class="row" style="margin:6px 0"><label class="small">Save as <input id="csave" class="grow" placeholder="(leave empty for a one-off run)"></label></div>
+    <div class="row" style="margin-top:8px"><span style="flex:1"></span><button class="primary" id="cgo">Start</button></div>`);
+  $("#cgo").onclick = async () => {
+    const ov = {}, ctx = $("#cctx").value.trim(), args = $("#cargs").value.trim();
+    if (ctx) ov.ctx = parseInt(ctx);
+    if (args) ov.args_add = args.match(/(?:[^\s"]+|"[^"]*")+/g).map(a => a.replace(/^"|"$/g, ""));
+    if ($("#cnomm").checked) ov.mmproj = "";
+    try {
+      const j = await post("/api/run-custom", { profile: p.id, overrides: ov, save_as: $("#csave").value.trim() || null });
+      $("#dlg").close(); watchJob = j.id; renderJob();
+    } catch (e) { toast(e.message); }
+  };
+}
+
+const PERIODS = [["day", "Today"], ["week", "This week"], ["month", "This month"], ["year", "This year"], ["all", "All time"], ["24h", "24 h"], ["7d", "7 days"], ["30d", "30 days"]];
+const BUCKETS = [["hour", "By hour", 24], ["day", "By day", 30], ["week", "By week", 26], ["month", "By month", 12], ["year", "By year", 5]];
+
+async function renderStats() {
+  $("#periods").innerHTML = PERIODS.map(([k, l]) => `<button class="${k === period ? "on" : ""}" data-period="${k}">${l}</button>`).join("");
+  $("#buckets").innerHTML = BUCKETS.map(([k, l]) => `<button class="${k === bucket ? "on" : ""}" data-bucket="${k}">${l}</button>`).join("");
+  const s = await api(`/api/stats/summary?period=${period}`), t = s.total;
+  $("#totals").innerHTML = `
+    <div class="kpi"><b>${num(t.gen_tokens)}</b><span>tokens out</span></div>
+    <div class="kpi"><b>${num(t.prompt_tokens)}</b><span>tokens in</span></div>
+    <div class="kpi"><b>${num(t.cached_tokens)}</b><span>prompt reused (cache)</span></div>
+    <div class="kpi"><b>${tps(t.gen_tps)}</b><span>avg tok/s out</span></div>
+    <div class="kpi"><b>${tps(t.prompt_tps)}</b><span>avg tok/s in</span></div>
+    <div class="kpi"><b>${dur(t.uptime_seconds)}</b><span>running · ${t.runs} runs</span></div>
+    ${t.requests ? `<div class="kpi"><b>${num(t.requests)}</b><span>requests</span></div>` : ""}`;
+  const rows = Object.entries(s.profiles).sort((a, b) => b[1].gen_tokens - a[1].gen_tokens);
+  $("#bytable").innerHTML = rows.length ? `<tr><th>Profile</th><th>Out</th><th>In</th><th>tok/s out</th><th>tok/s in</th><th>Running</th><th>Runs</th></tr>` +
+    rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${num(v.gen_tokens)}</td><td>${num(v.prompt_tokens)}</td><td>${tps(v.gen_tps)}</td><td>${tps(v.prompt_tps)}</td><td>${dur(v.uptime_seconds)}</td><td>${v.runs}</td></tr>`).join("")
+    : `<tr><td class="muted">Nothing recorded in this period yet.</td></tr>`;
+  const b = BUCKETS.find(x => x[0] === bucket);
+  const ser = await api(`/api/stats/series?bucket=${bucket}&count=${b[2]}`);
+  drawBars($("#series"), ser, bucket);
+}
+
+function drawBars(svg, ser, bucket) {
+  const W = Math.max(200, svg.clientWidth || 400), H = 170, P = 30, max = Math.max(1, ...ser.map(x => x.gen_tokens + x.prompt_tokens));
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const bw = (W - P) / ser.length;
+  const fmt = t => { const d = new Date(t * 1000); return bucket === "hour" ? d.getHours() + "h" : bucket === "month" ? d.toLocaleString(undefined, { month: "short" }) : bucket === "year" ? d.getFullYear() : (d.getMonth() + 1) + "/" + d.getDate(); };
+  let g = `<text x="0" y="10">${num(max)}</text><line x1="${P}" x2="${W}" y1="${H - 14}" y2="${H - 14}" stroke="var(--line)"/>`;
+  ser.forEach((x, i) => {
+    const hIn = (x.prompt_tokens / max) * (H - 30), hOut = (x.gen_tokens / max) * (H - 30), X = P + i * bw + bw * .12, w = bw * .76;
+    g += `<rect x="${X}" y="${H - 14 - hOut - hIn}" width="${w}" height="${hIn}" fill="var(--s2)" rx="1"><title>${fmt(x.start)}: ${num(x.prompt_tokens)} in</title></rect>`;
+    g += `<rect x="${X}" y="${H - 14 - hOut}" width="${w}" height="${hOut}" fill="var(--s1)" rx="1"><title>${fmt(x.start)}: ${num(x.gen_tokens)} out</title></rect>`;
+    if (i % Math.max(1, Math.ceil(ser.length / Math.floor(W / 48))) === 0) g += `<text x="${X}" y="${H - 2}">${fmt(x.start)}</text>`;
+  });
+  svg.innerHTML = g;
+}
+
+async function renderLive() {
+  const pts = await api("/api/history?minutes=60");
+  const svg = $("#live"), W = Math.max(200, svg.clientWidth || 400), H = 170;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (pts.length < 2 || !lastStatus) { svg.innerHTML = ""; return; }
+  const r = lastStatus.resources, vt = r.gpus.reduce((a, g) => a + g.vram_total_mib, 0) || 1, rt = r.ram_total_mib;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1, X = t => (t - t0) / Math.max(1, t1 - t0) * W;
+  const line = (f, col) => `<polyline fill="none" stroke="${col}" stroke-width="1.8" points="${pts.map(p => `${X(p.t).toFixed(1)},${(H - 4 - f(p) * (H - 12)).toFixed(1)}`).join(" ")}"/>`;
+  const mt = Math.max(1, ...pts.map(p => p.gen_tokens));
+  let bars = pts.map(p => p.gen_tokens ? `<rect x="${X(p.t) - 1}" y="${H - 4 - p.gen_tokens / mt * (H - 12) * .6}" width="2.2" height="${p.gen_tokens / mt * (H - 12) * .6}" fill="var(--s3)" opacity=".8"/>` : "").join("");
+  svg.innerHTML = bars + line(p => p.vram_used_mib / vt, "var(--s1)") + line(p => p.ram_used_mib / rt, "var(--s2)") + `<text x="2" y="10">100%</text>`;
+}
+
+async function renderEvents() {
+  const ev = await api("/api/events?limit=25");
+  $("#events").innerHTML = ev.map(e => `<div class="lvl-${esc(e.level)}"><span class="muted">${ago(e.ts)}</span> · ${esc(e.message)}</div>`).join("") || `<div class="muted">No events yet.</div>`;
+  const jobs = await api("/api/jobs?limit=12");
+  $("#jobs").innerHTML = jobs.map(j => `<div><a href="#" data-job="${j.id}" style="color:inherit">${esc(j.title)}</a> <span class="badge ${({ done: "ok", failed: "bad", refused: "bad" }[j.state] || "warn")}">${esc(j.state)}</span> <span class="muted">${ago(j.created)}</span></div>`).join("") || `<div class="muted">No jobs yet.</div>`;
+}
+
+function dialog(title, html) { $("#dlgtitle").textContent = title; $("#dlgbody").innerHTML = html; $("#dlg").showModal(); }
+$("#dlgclose").onclick = () => $("#dlg").close();
+
+async function startProfile(id) {
+  const plan = await api(`/api/plan?profile=${encodeURIComponent(id)}`);
+  const n = plan.needs;
+  let html = `<p class="small">Needs ~${mib(n.vram_mib)} VRAM and ~${mib(n.ram_mib)} RAM (${esc(n.source)}). Free now: ${mib(plan.free_vram_mib)} VRAM, ${mib(plan.free_ram_mib)} RAM.</p>`;
+  if (plan.will_stop.length) html += `<p class="small">This will stop: <b>${plan.will_stop.map(esc).join(", ")}</b></p>`;
+  for (const w of plan.warnings) html += `<div class="warnbox">${esc(w)}</div>`;
+  if (!plan.ok) html += `<div class="warnbox" style="color:var(--bad)">${esc(plan.reason)}</div>`;
+  html += `<label class="row small" style="margin-top:10px"><input type="checkbox" id="optupd" checked> check for engine updates first (at most every few hours)</label>`;
+  html += `<div class="row" style="margin-top:12px"><button class="primary" id="go">${plan.ok ? "Start" : "Start anyway (force)"}</button></div>`;
+  dialog(`Start ${id}`, html);
+  $("#go").onclick = async () => {
+    $("#dlg").close();
+    const j = await post("/api/start", { profile: id, force: !plan.ok, update: $("#optupd")?.checked === false ? "skip" : "auto" });
+    watchJob = j.id; renderJob();
+  };
+}
+
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-act],[data-period],[data-bucket],[data-job]");
+  if (!b) return;
+  ev.preventDefault();
+  try {
+    if (b.dataset.period) { period = b.dataset.period; try { localStorage.setItem("llmm-period", period); } catch {} return renderStats(); }
+    if (b.dataset.bucket) { bucket = b.dataset.bucket; try { localStorage.setItem("llmm-bucket", bucket); } catch {} return renderStats(); }
+    if (b.dataset.job) { watchJob = b.dataset.job; return renderJob(); }
+    const act = b.dataset.act, e = b.dataset.e;
+    const prof = () => PROFILES.find(x => x.id === b.dataset.p);
+    if (act === "start") return startProfile(b.dataset.p);
+    if (act === "pedit") return editProfile(prof(), false);
+    if (act === "pcopy") return editProfile(prof(), true);
+    if (act === "pcustom") return customRun(prof());
+    if (act === "pdel") { if (!confirm(`Delete profile ${b.dataset.p}? The model files stay.`)) return; await api(`/api/profiles/${encodeURIComponent(b.dataset.p)}`, { method: "DELETE" }); return renderProfiles(); }
+    if (act === "dlrepo") return dlFiles(b.dataset.repo);
+    if (act === "dlgo") {
+      const files = [...document.querySelectorAll("#dlresults input[data-files]:checked")].flatMap(c => JSON.parse(c.dataset.files));
+      if (!files.length) return toast("Tick at least one file");
+      await post("/api/downloads", { source: $("#dlsrc").value, repo: b.dataset.repo, include: files, make_profile: $("#dlprof").checked });
+      $("#dlresults").innerHTML = ""; return pollDownloads();
+    }
+    if (act === "dlcancel") { await post(`/api/downloads/${b.dataset.id}/cancel`, {}); return renderDownloads(); }
+    if (act === "mprof") { const r = await post("/api/profiles/from-model", { model: b.dataset.model }); toast(`Profile ${r.id} created`); await renderProfiles(); return editProfile(PROFILES.find(x => x.id === r.id), false); }
+    if (act === "mdel") { if (!confirm(`Delete ${b.dataset.folder} and every file in it?`)) return; await api(`/api/models?folder=${encodeURIComponent(b.dataset.folder)}`, { method: "DELETE" }); return renderLibrary(); }
+    if (act === "logs") { const t = await api(`/api/logs/${e}?lines=300`); dialog(`${e} log`, `<pre class="log" style="max-height:70vh">${esc(t)}</pre>`); const p = $("#dlgbody pre"); p.scrollTop = p.scrollHeight; return; }
+    const confirmMsg = { stop: `Stop ${e}?`, restart: `Restart ${e}?`, update: `Update ${e}? It stops while updating and starts again after.`, rollback: `Roll ${e} back to its previous version?` }[act];
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    const j = await post(`/api/${act}`, { engine: e });
+    watchJob = j.id; renderJob();
+  } catch (err) { toast(err.message); }
+});
+$("#chk").onclick = async () => { try { const j = await post("/api/check-updates", {}); watchJob = j.id; renderJob(); } catch (e) { toast(e.message); } };
+
+async function refreshFast() {
+  try { renderStatus(await api("/api/status")); await renderJob(); }
+  catch (e) { if (e.message !== "unauthorized") { $("#conn").textContent = "offline"; $("#conn").className = "badge bad"; } }
+}
+async function refreshSlow() {
+  try { await Promise.all([renderProfiles(), renderStats(), renderEvents(), renderLive(), renderLibrary(), pollDownloads()]); } catch (e) { }
+}
+let dlTimer = null;
+async function pollDownloads() {
+  clearTimeout(dlTimer);
+  const active = await renderDownloads().catch(() => false);
+  if (active) dlTimer = setTimeout(pollDownloads, 2500);
+  else renderLibrary().catch(() => { });
+}
+$("#dlsearch").onclick = () => dlSearch().catch(e => toast(e.message));
+$("#dlopen").onclick = () => { const q = $("#dlq").value.trim(); if (q) dlFiles(q).catch(e => toast(e.message)); };
+$("#dlq").addEventListener("keydown", e => { if (e.key === "Enter") dlSearch().catch(er => toast(er.message)); });
+let timers = [];
+async function boot() {
+  if (!TOKEN) return showLogin();
+  try { await api("/api/status"); } catch (e) { return; }
+  $("#app").hidden = false; $("#login").hidden = true;
+  await refreshFast(); refreshSlow();
+  timers.forEach(clearInterval);
+  timers = [setInterval(refreshFast, 3000), setInterval(refreshSlow, 30000), setInterval(() => renderLive().catch(() => { }), 10000)];
+}
+boot();
+</script>
+</body>
+</html>

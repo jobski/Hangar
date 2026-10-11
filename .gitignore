@@ -1,0 +1,11 @@
+# local settings and secrets
+config.yaml
+profiles.yaml
+data/
+logs/
+.env
+
+# python
+.venv/
+__pycache__/
+*.pyc
