@@ -135,6 +135,13 @@ textarea { width: 100%; font: 12.5px/1.45 var(--mono); min-height: 260px; }
   </section>
 
   <section>
+    <h2>Connect <span class="sp"></span><select id="cnhost" title="how the client reaches this PC"></select></h2>
+    <div class="tabs" id="cnkind"></div>
+    <div class="tabs" id="cnclients"></div>
+    <div id="cnbody"></div>
+  </section>
+
+  <section>
     <h2>Get models</h2>
     <div class="row">
       <select id="dlsrc"><option value="huggingface">Hugging Face</option><option value="modelscope">ModelScope</option><option value="ollama">Ollama library</option><option value="url">Direct URL</option></select>
@@ -329,6 +336,43 @@ async function renderLibrary() {
       ${m.partial.length ? `<div class="small lvl-warn">partial: ${esc(m.partial.join(", "))}</div>` : ""}</div>`).join("") || `<div class="muted small">The library is empty.</div>`;
 }
 
+// ---- connect: configs for coding agents (the models) and MCP clients (this manager)
+const CN_MODELS = [["opencode", "opencode"], ["qwen", "Qwen Code"], ["pi", "Pi"], ["codex", "Codex CLI"], ["claude", "Claude Code"], ["aider", "Aider"], ["continue", "Continue"], ["generic", "Any OpenAI app"]];
+let cnKind = "models", cnClient = "opencode", cnHost = "127.0.0.1", cnSnip = null;
+try { cnKind = localStorage.getItem("llmm-cnkind") || cnKind; cnClient = localStorage.getItem("llmm-cnclient") || cnClient; cnHost = localStorage.getItem("llmm-cnhost") || cnHost; } catch {}
+async function renderConnectHosts() {
+  const hs = await api("/api/connect/hosts");
+  if (!hs.some(h => h.host === cnHost)) hs.push({ host: cnHost, label: "saved" });
+  $("#cnhost").innerHTML = hs.map(h => `<option value="${esc(h.host)}" ${h.host === cnHost ? "selected" : ""}>${esc(h.host)} · ${esc(h.label)}</option>`).join("");
+}
+async function renderConnect() {
+  $("#cnkind").innerHTML = [["models", "Use the models"], ["mcp", "Control this manager (MCP)"]].map(([k, l]) => `<button class="${k === cnKind ? "on" : ""}" data-cnkind="${k}">${l}</button>`).join("");
+  let snips;
+  if (cnKind === "mcp") {
+    snips = await api(`/api/connect/mcp?host=${encodeURIComponent(cnHost)}`);
+    if (!snips.some(s => s.id === cnClient)) cnClient = snips[0].id;
+    $("#cnclients").innerHTML = snips.map(s => `<button class="${s.id === cnClient ? "on" : ""}" data-cnclient="${esc(s.id)}">${esc(s.title)}</button>`).join("");
+    cnSnip = snips.find(s => s.id === cnClient);
+  } else {
+    if (!CN_MODELS.some(c => c[0] === cnClient)) cnClient = "opencode";
+    $("#cnclients").innerHTML = CN_MODELS.map(([k, l]) => `<button class="${k === cnClient ? "on" : ""}" data-cnclient="${k}">${l}</button>`).join("");
+    cnSnip = await api(`/api/connect/models?client=${cnClient}&host=${encodeURIComponent(cnHost)}`);
+  }
+  const s = cnSnip, local = ["127.0.0.1", "localhost"].includes(location.hostname);
+  $("#cnbody").innerHTML = `<div class="row small"><span class="muted">${esc(s.file)}</span><span style="flex:1"></span>
+      ${s.apply ? `<button data-act="cnapply" title="merges into the file on the manager's PC; a backup is kept">Write to ${local ? "this PC" : "the manager's PC"}</button>` : ""}
+      <button class="primary" data-act="cncopy">Copy</button></div>
+    <pre class="log" id="cnpre">${esc(s.content)}</pre>
+    ${s.notes ? `<div class="small muted" style="margin-top:6px">${esc(s.notes)}</div>` : ""}
+    ${cnHost === "127.0.0.1" ? `<div class="small muted" style="margin-top:4px">127.0.0.1 only works on the manager's PC. Pick a Tailscale or LAN address above for other machines.</div>` : ""}`;
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); }
+  catch { const a = document.createElement("textarea"); a.value = t; document.body.append(a); a.select(); document.execCommand("copy"); a.remove(); }
+  toast("Copied");
+}
+$("#cnhost").onchange = () => { cnHost = $("#cnhost").value; try { localStorage.setItem("llmm-cnhost", cnHost); } catch {} renderConnect().catch(e => toast(e.message)); };
+
 function editProfile(p, isNew) {
   const settings = { engine: p.engine, ...p.settings };
   dialog(isNew ? "New profile" : `Edit ${p.id}`, `
@@ -444,10 +488,12 @@ async function startProfile(id) {
 }
 
 document.addEventListener("click", async ev => {
-  const b = ev.target.closest("[data-act],[data-period],[data-bucket],[data-job]");
+  const b = ev.target.closest("[data-act],[data-period],[data-bucket],[data-job],[data-cnkind],[data-cnclient]");
   if (!b) return;
   ev.preventDefault();
   try {
+    if (b.dataset.cnkind) { cnKind = b.dataset.cnkind; try { localStorage.setItem("llmm-cnkind", cnKind); } catch {} return renderConnect(); }
+    if (b.dataset.cnclient) { cnClient = b.dataset.cnclient; try { localStorage.setItem("llmm-cnclient", cnClient); } catch {} return renderConnect(); }
     if (b.dataset.period) { period = b.dataset.period; try { localStorage.setItem("llmm-period", period); } catch {} return renderStats(); }
     if (b.dataset.bucket) { bucket = b.dataset.bucket; try { localStorage.setItem("llmm-bucket", bucket); } catch {} return renderStats(); }
     if (b.dataset.job) { watchJob = b.dataset.job; return renderJob(); }
@@ -468,6 +514,12 @@ document.addEventListener("click", async ev => {
     if (act === "dlcancel") { await post(`/api/downloads/${b.dataset.id}/cancel`, {}); return renderDownloads(); }
     if (act === "mprof") { const r = await post("/api/profiles/from-model", { model: b.dataset.model }); toast(`Profile ${r.id} created`); await renderProfiles(); return editProfile(PROFILES.find(x => x.id === r.id), false); }
     if (act === "mdel") { if (!confirm(`Delete ${b.dataset.folder} and every file in it?`)) return; await api(`/api/models?folder=${encodeURIComponent(b.dataset.folder)}`, { method: "DELETE" }); return renderLibrary(); }
+    if (act === "cncopy") return copyText(cnSnip.content);
+    if (act === "cnapply") {
+      if (!confirm(`Merge these settings into ${cnSnip.file} on the manager's PC? The old file is backed up next to it.`)) return;
+      const r = await post("/api/connect/apply", { kind: cnSnip.apply, client: cnKind === "models" ? cnClient : null, host: cnHost });
+      return toast(`Written to ${r.file}` + (r.backup ? " (backup kept)" : ""));
+    }
     if (act === "logs") { const t = await api(`/api/logs/${e}?lines=300`); dialog(`${e} log`, `<pre class="log" style="max-height:70vh">${esc(t)}</pre>`); const p = $("#dlgbody pre"); p.scrollTop = p.scrollHeight; return; }
     const confirmMsg = { stop: `Stop ${e}?`, restart: `Restart ${e}?`, update: `Update ${e}? It stops while updating and starts again after.`, rollback: `Roll ${e} back to its previous version?` }[act];
     if (confirmMsg && !confirm(confirmMsg)) return;
@@ -500,6 +552,7 @@ async function boot() {
   try { await api("/api/status"); } catch (e) { return; }
   $("#app").hidden = false; $("#login").hidden = true;
   await refreshFast(); refreshSlow();
+  renderConnectHosts().then(renderConnect).catch(e => toast(e.message));
   timers.forEach(clearInterval);
   timers = [setInterval(refreshFast, 3000), setInterval(refreshSlow, 30000), setInterval(() => renderLive().catch(() => { }), 10000)];
 }

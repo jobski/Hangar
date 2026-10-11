@@ -9,6 +9,7 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from mcp.server.transport_security import TransportSecuritySettings
 
+from . import clients
 from . import config as config_mod
 from .core import Manager
 from .mcp_server import build as build_mcp
@@ -94,6 +95,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     def logs(engine: str, lines: int = 200):
         guard(mgr.engine, engine)
         return "\n".join(mgr.tail_log(engine, min(lines, 5000)))
+
 
     @app.get("/api/jobs")
     def jobs(limit: int = 20):
@@ -214,6 +216,40 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     @app.post("/api/downloads/{did}/cancel")
     def cancel_download(did: str):
         return guard(mgr.downloader.cancel, did).public()
+
+    # ---- copy-paste configs for coding agents and MCP clients
+    @app.get("/api/connect/hosts")
+    def connect_hosts():
+        return clients.hosts()
+
+    def _snippet(client: str, host: str, profiles: str | None, env: bool):
+        if client not in clients.MODEL_CLIENTS:
+            raise HTTPException(404, f"unknown client {client}; one of {', '.join(clients.MODEL_CLIENTS)}")
+        mgr.refresh_profiles()
+        entries = clients.model_entries(mgr, [p for p in (profiles or "").split(",") if p] or None, host)
+        return clients.MODEL_CLIENTS[client](entries, env)
+
+    @app.get("/api/connect/models")
+    def connect_models(client: str, host: str = "127.0.0.1", profiles: str | None = None, env: bool = False):
+        return _snippet(client, host, profiles, env)
+
+    @app.get("/api/connect/mcp")
+    def connect_mcp(host: str = "127.0.0.1"):
+        return clients.mcp_configs(host, int(mgr.cfg["manager"]["port"]), token)
+
+    @app.post("/api/connect/apply")
+    def connect_apply(kind: str = Body(..., embed=True), client: str | None = Body(None, embed=True),
+                      host: str = Body("127.0.0.1", embed=True), profiles: str | None = Body(None, embed=True)):
+        if kind not in clients.APPLY:
+            raise HTTPException(400, f"cannot apply {kind}; one of {', '.join(sorted(clients.APPLY))}")
+        if kind.endswith("-mcp"):
+            snip = next(s for s in clients.mcp_configs(host, int(mgr.cfg["manager"]["port"]), token)
+                        if s.get("apply") == kind)
+        else:
+            snip = _snippet(client or kind, host, profiles, False)
+        res = guard(clients.apply, kind, snip)
+        mgr.store.event("connect", f"wrote {kind} settings to {res['file']}")
+        return res
 
     @app.post("/api/reload-config")
     def reload_config():

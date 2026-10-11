@@ -18,6 +18,11 @@
     llmctl downloads                                progress
     llmctl new-profile <model.gguf> [name] [ctx]    a llama.cpp profile from the template
     llmctl custom <profile> [--ctx N] [-- extra llama args...]   one-off run with changes
+
+  connect other tools
+    llmctl connect <client> [--host H] [--apply]   config for opencode, qwen, pi, codex, claude, aider, continue, generic
+    llmctl connect mcp [client] [--host H] [--apply]   this manager as an MCP server (claude, codex, qwen, opencode, ...)
+    llmctl hosts                                    addresses other machines can use for --host
 """
 from __future__ import annotations
 
@@ -260,6 +265,33 @@ def cmd_custom(a):
     return _follow(_call("POST", "/api/run-custom", json={"profile": head[0], "overrides": ov}))
 
 
+def cmd_hosts(_):
+    for h in _call("GET", "/api/connect/hosts"):
+        print(f"{h['host']:32s} {h['label']}")
+
+
+def cmd_connect(a):
+    host = a[a.index("--host") + 1] if "--host" in a and a.index("--host") + 1 < len(a) else "127.0.0.1"
+    pl = [x for x in _plain(a) if x != host]
+    if pl[0] == "mcp":
+        snips = _call("GET", "/api/connect/mcp", params={"host": host})
+        snip = next((s for s in snips if s["id"] == (pl[1] if len(pl) > 1 else "claude")), None)
+        if not snip:
+            sys.exit("unknown client; one of " + ", ".join(s["id"] for s in snips))
+    else:
+        snip = _call("GET", "/api/connect/models", params={"client": pl[0], "host": host})
+    if "--apply" in a:
+        if not snip.get("apply"):
+            sys.exit(f"{snip['title']} cannot be written automatically; run without --apply and paste it ({snip['file']})")
+        res = _call("POST", "/api/connect/apply", json={"kind": snip["apply"], "client": pl[0], "host": host})
+        print(f"written to {res['file']}" + (f" (backup {res['backup']})" if res["backup"] else ""))
+        return
+    print(f"# {snip['title']} -> {snip['file']}\n")
+    print(snip["content"])
+    if snip.get("notes"):
+        print(f"\n# {snip['notes']}")
+
+
 def cmd_login(a):
     if len(a) < 2:
         sys.exit("usage: llmctl login <url> <token>")
@@ -272,9 +304,10 @@ COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "s
             "stop": cmd_stop, "restart": cmd_restart, "check": cmd_check, "update": cmd_update,
             "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
             "stats": cmd_stats, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
-            "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom}
+            "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom,
+            "connect": cmd_connect, "hosts": cmd_hosts}
 NEEDS_ARG = {"plan", "start", "switch", "restart", "update", "rollback", "logs", "job", "search", "files", "download",
-             "new-profile", "custom"}
+             "new-profile", "custom", "connect"}
 
 
 def main(argv=None) -> int:

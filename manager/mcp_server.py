@@ -6,6 +6,7 @@ import json
 import anyio
 from mcp.server.mcpserver import MCPServer
 
+from . import clients
 from .core import Manager
 
 INSTRUCTIONS = """Manages local LLM engines (llama.cpp, Strata, ...) on one PC with one GPU.
@@ -168,5 +169,17 @@ def build(mgr: Manager) -> MCPServer:
     async def delete_profile(profile_id: str) -> str:
         await run(mgr.delete_profile, profile_id)
         return "deleted"
+
+    @mcp.tool(description="Ready-to-paste config that points a coding agent at the local models. client: opencode, qwen, "
+                          "pi, codex, claude, aider, continue, generic. host: how the client reaches this PC (default "
+                          "127.0.0.1; see the hosts list in the result's notes). profiles: comma-separated, default all.")
+    async def client_config(client: str, host: str = "127.0.0.1", profiles: str | None = None) -> str:
+        if client not in clients.MODEL_CLIENTS:
+            return f"unknown client; one of {', '.join(clients.MODEL_CLIENTS)}"
+        await run(mgr.refresh_profiles)
+        entries = await run(clients.model_entries, mgr, [p for p in (profiles or "").split(",") if p] or None, host)
+        snip = clients.MODEL_CLIENTS[client](entries, False)
+        snip["hosts"] = await run(clients.hosts)
+        return _j(snip)
 
     return mcp

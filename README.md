@@ -59,7 +59,21 @@ claude mcp add --transport http llm-manager http://<pc>:9000/mcp --header "Autho
 Tools: `status`, `list_profiles`, `plan`, `start`, `switch_model`, `stop`, `restart`, `run_custom`, `check_updates`,
 `update_engine`, `rollback_engine`, `job_status`, `logs`, `stats`, `stats_series`, `events`, `list_models`,
 `search_models`, `repo_files`, `download_model`, `downloads_status`, `cancel_download`, `create_profile_from_model`,
-`save_profile`, `copy_profile`, `delete_profile`.
+`save_profile`, `copy_profile`, `delete_profile`, `client_config`.
+
+### Connecting coding agents and other apps
+
+The **Connect** section of the web page (and `llmctl connect`) gives ready-to-paste settings for the running
+models: opencode, Qwen Code, Pi, Codex CLI, Claude Code, Aider, Continue, or any OpenAI-compatible app. The second tab
+does the same for this manager's MCP server (Claude Code, Claude Desktop, Codex, Qwen Code, Gemini CLI, opencode,
+Cursor, VS Code). Pick the address the other machine should use (Tailscale name/IP, LAN, or 127.0.0.1 for this PC).
+For opencode, Qwen Code and Pi, "Write to this PC" merges the settings into that tool's config file and keeps a
+backup. Over MCP, the `client_config` tool returns the same snippets.
+
+```
+llmctl hosts                              llmctl connect opencode --host 100.101.102.103
+llmctl connect qwen --apply               llmctl connect mcp codex --host my-pc.tailnet.ts.net
+```
 
 ### llmctl
 
