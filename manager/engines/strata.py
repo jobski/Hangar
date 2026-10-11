@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -20,6 +21,12 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 def _norm(p: str) -> str:
     return os.path.normcase(os.path.normpath(p.strip('"')))
+
+
+# "[strata] thinking: 5466 of max 64000 tokens, 42.7 tok/s, 231 s" (also answering / writing a tool call: <name>)
+GEN = re.compile(r"\[strata\] (?P<phase>.+?): (?P<n>[\d,]+) of max [\d,]+ tokens, (?P<tps>[\d.]+) tok/s")
+# "[strata] reading the prompt: 22,982 of 39,584 tokens, 19 s so far"
+READ = re.compile(r"\[strata\] reading the prompt: (?P<n>[\d,]+) of (?P<total>[\d,]+) tokens, (?P<s>\d+) s so far")
 
 
 class StrataEngine(Engine):
@@ -124,6 +131,21 @@ class StrataEngine(Engine):
         # Strata fills the GPU up to its --vram-reserve-mib and keeps as much of the model in RAM as fits
         return Estimate(vram_total_mib, min(files, ram_total_mib * 0.85), True,
                         "Strata uses the whole GPU and streams the rest of the model from RAM/disk")
+
+    def progress(self, lines):
+        # Strata's Prometheus counters only move when a request finishes; its log prints the live rate every second
+        for line in reversed(lines):
+            if "[strata] done:" in line:
+                return None
+            m = GEN.search(line)
+            if m:
+                return {"phase": m.group("phase"), "gen_tps": float(m.group("tps")), "tokens": int(m.group("n").replace(",", ""))}
+            m = READ.search(line)
+            if m:
+                n, s = int(m.group("n").replace(",", "")), int(m.group("s"))
+                return {"phase": "reading the prompt", "prompt_tps": n / s if s else None, "tokens": n,
+                        "of": int(m.group("total").replace(",", ""))}
+        return None
 
     # ---- updates
     def _git(self, *args, timeout=120) -> subprocess.CompletedProcess:

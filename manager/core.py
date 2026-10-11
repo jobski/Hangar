@@ -892,7 +892,17 @@ class Manager:
                           "gen_tps": agg["gen_tokens"] / agg["gen_seconds"] if agg["gen_seconds"] else None,
                           "prompt_tps": agg["prompt_tokens"] / agg["prompt_seconds"] if agg["prompt_seconds"] else None}
         t = inst.totals
-        return {"window": out, "since_start": {
+        live = None
+        if inst.gauges.get("requests_processing"):
+            eng = self.engines.get(inst.engine)
+            path = self.log_path(inst.engine)
+            try:
+                fresh = time.time() - path.stat().st_mtime < 5      # progress lines are printed every second
+            except OSError:
+                fresh = False
+            if eng and fresh:
+                live = eng.progress(self.tail_log(inst.engine, 6))
+        return {"window": out, "live": live, "since_start": {
             "gen_tokens": t["gen_tokens"], "prompt_tokens": t["prompt_tokens"], "cached_tokens": t["cached_tokens"],
             "requests": t["requests"],
             "gen_tps": t["gen_tokens"] / t["gen_seconds"] if t["gen_seconds"] else None,

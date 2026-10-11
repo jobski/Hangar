@@ -183,8 +183,9 @@ def summary(st: dict) -> dict:
     for e in st.get("engines") or []:
         run = e.get("running")
         if run:
-            w = (run.get("stats") or {}).get("window") or {}
-            g = (w.get("1m") or {}).get("gen_tps") or (w.get("5m") or {}).get("gen_tps")
+            st = run.get("stats") or {}
+            w = st.get("window") or {}
+            g = (st.get("live") or {}).get("gen_tps") or (w.get("1m") or {}).get("gen_tps") or (w.get("5m") or {}).get("gen_tps")
             running.append({"engine": e["name"], "profile": run["profile"], "state": run["state"], "port": e["port"],
                             "gen_tps": g})
     return {"running": running, "engines": len(st.get("engines") or []),

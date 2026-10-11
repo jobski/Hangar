@@ -571,11 +571,13 @@ function renderStatus(s) {
     if (run) {
       nrun++;
       const st = run.stats, w1 = st.window["1m"], w5 = st.window["5m"], ss = st.since_start, busy = (st.gauges || {}).requests_processing;
-      const g = w1.gen_tps ?? w5.gen_tps; out += g || 0;
+      const lv = st.live || {};
+      const g = lv.gen_tps ?? w1.gen_tps ?? w5.gen_tps; out += g || 0;
+      const doing = lv.phase ? `${esc(lv.phase)}${lv.tokens ? ` · ${num(lv.tokens)}${lv.of ? " / " + num(lv.of) : ""} tok` : ""}` : busy ? "generating" : "idle";
       h += `<div class="esub"><b>${esc(run.profile)}</b> · up <span class="num">${dur(run.uptime_seconds)}</span> · pid <span class="num">${run.pid}</span>${run.managed ? "" : " · started outside the manager"}</div>
         <div class="stats">
-          <div class="stat hero"><div class="sv">${tps(g)}<small>tok/s</small></div><div class="sl">out · ${busy ? "generating" : "idle"}</div></div>
-          <div class="stat"><div class="sv">${tps(w5.prompt_tps)}<small>tok/s</small></div><div class="sl">in · 5 min avg</div></div>
+          <div class="stat hero"><div class="sv">${tps(g)}<small>tok/s</small></div><div class="sl" title="${lv.phase ? "live, from the engine's progress" : "from finished requests"}">out · ${doing}</div></div>
+          <div class="stat"><div class="sv">${tps(lv.prompt_tps ?? w5.prompt_tps)}<small>tok/s</small></div><div class="sl">in · ${lv.prompt_tps != null ? "reading now" : "5 min avg"}</div></div>
           <div class="stat"><div class="sv">${num(ss.gen_tokens)}</div><div class="sl">out since start</div></div>
           <div class="stat"><div class="sv">${num(ss.prompt_tokens)}</div><div class="sl">in since start</div></div>
           <div class="stat"><div class="sv">${gb(run.ram_mib)}<small>GB</small></div><div class="sl">RAM · CPU ${run.cpu_percent.toFixed(0)}%</div></div>

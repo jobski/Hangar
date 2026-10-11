@@ -111,6 +111,12 @@ class Engine:
             return None
         return parse_prometheus(r.text)
 
+    def progress(self, lines: list[str]) -> dict | None:
+        """What a request is doing right now, from the engine's own progress lines in its log (the last lines given,
+        newest last), for engines whose counters only move when a request ends. {phase, gen_tps, tokens} or
+        {phase, prompt_tps, tokens}; None when the log says nothing current."""
+        return None
+
     # ---- updates
     def version(self) -> str | None:
         return None
