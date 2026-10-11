@@ -467,8 +467,48 @@ async function renderEvents() {
   $("#jobs").innerHTML = jobs.map(j => `<div><a href="#" data-job="${j.id}" style="color:inherit">${esc(j.title)}</a> <span class="badge ${({ done: "ok", failed: "bad", refused: "bad" }[j.state] || "warn")}">${esc(j.state)}</span> <span class="muted">${ago(j.created)}</span></div>`).join("") || `<div class="muted">No jobs yet.</div>`;
 }
 
-function dialog(title, html) { $("#dlgtitle").textContent = title; $("#dlgbody").innerHTML = html; $("#dlg").showModal(); }
+function dialog(title, html) { stopLog(); $("#dlgtitle").textContent = title; $("#dlgbody").innerHTML = html; $("#dlg").showModal(); }
 $("#dlgclose").onclick = () => $("#dlg").close();
+$("#dlg").addEventListener("close", () => stopLog());
+
+// ---- engine logs, followed live while the dialog is open
+const LOG_MAX = 5000;
+let logAbort = null, logPaused = false, logPending = "";
+function stopLog() { if (logAbort) { logAbort.abort(); logAbort = null; } }
+function flushLog() {
+  const pre = $("#logpre");
+  if (!pre || !logPending) return;
+  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+  let text = pre.textContent + logPending;
+  logPending = "";
+  const lines = text.split("\n");
+  if (lines.length > LOG_MAX) text = lines.slice(-LOG_MAX).join("\n");
+  pre.textContent = text;
+  if (atEnd) pre.scrollTop = pre.scrollHeight;
+}
+async function streamLog(engine) {
+  dialog(`${engine} log`, `<div class="row small" style="margin-top:6px"><span id="logstate" class="badge ok">live</span><span style="flex:1"></span>
+      <button data-act="logpause">Pause</button><button data-act="logcopy">Copy</button></div>
+    <pre class="log" id="logpre" style="max-height:70vh"></pre>`);
+  logPaused = false; logPending = "";
+  const ctl = logAbort = new AbortController();
+  const state = (txt, cls) => { const s = $("#logstate"); if (s && logAbort === ctl) { s.textContent = txt; s.className = "badge " + cls; } };
+  try {
+    const r = await fetch(`/api/logs/${encodeURIComponent(engine)}/stream?lines=400`, { headers: { "Authorization": "Bearer " + TOKEN }, signal: ctl.signal });
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      logPending += value;
+      if (logPending.length > 4e6) logPending = logPending.slice(-2e6);
+      if (!logPaused) flushLog();
+    }
+    state("ended", "");
+  } catch (err) {
+    if (err.name !== "AbortError") state("disconnected", "bad");
+  }
+}
 
 async function startProfile(id) {
   const plan = await api(`/api/plan?profile=${encodeURIComponent(id)}`);
@@ -520,7 +560,9 @@ document.addEventListener("click", async ev => {
       const r = await post("/api/connect/apply", { kind: cnSnip.apply, client: cnKind === "models" ? cnClient : null, host: cnHost });
       return toast(`Written to ${r.file}` + (r.backup ? " (backup kept)" : ""));
     }
-    if (act === "logs") { const t = await api(`/api/logs/${e}?lines=300`); dialog(`${e} log`, `<pre class="log" style="max-height:70vh">${esc(t)}</pre>`); const p = $("#dlgbody pre"); p.scrollTop = p.scrollHeight; return; }
+    if (act === "logs") return streamLog(e);
+    if (act === "logpause") { logPaused = !logPaused; b.textContent = logPaused ? "Resume" : "Pause"; $("#logstate").textContent = logPaused ? "paused" : "live"; $("#logstate").className = "badge " + (logPaused ? "warn" : "ok"); if (!logPaused) { flushLog(); } return; }
+    if (act === "logcopy") return copyText($("#logpre").textContent);
     const confirmMsg = { stop: `Stop ${e}?`, restart: `Restart ${e}?`, update: `Update ${e}? It stops while updating and starts again after.`, rollback: `Roll ${e} back to its previous version?` }[act];
     if (confirmMsg && !confirm(confirmMsg)) return;
     const j = await post(`/api/${act}`, { engine: e });

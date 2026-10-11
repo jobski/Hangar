@@ -470,7 +470,8 @@ class Manager:
         f.flush()
         baseline = resources.vram_used()
         job.write(f"starting {p.id} on port {eng.port}")
-        env = {**os.environ, **launch.env}
+        # Python engines block-buffer stdout into a file; unbuffered, their log follows live
+        env = {**os.environ, "PYTHONUNBUFFERED": "1", **launch.env}
         try:
             proc = subprocess.Popen(launch.cmd, cwd=launch.cwd, env=env, stdin=subprocess.DEVNULL, stdout=f,
                                     stderr=subprocess.STDOUT, creationflags=CREATE_FLAGS | BREAKAWAY)
@@ -781,9 +782,34 @@ class Manager:
             self.stop_flag.wait(600)
 
     # ---- reading
+    def log_path(self, engine: str) -> Path:
+        inst = self.instances.get(engine)
+        return Path(inst.log_path) if inst and inst.log_path else self.logs_dir / f"{engine}.log"
+
+    def follow_log(self, engine: str, pos: int | None, ident=None, lines: int = 200) -> tuple[bytes, int, object]:
+        """One step of following a log: (new bytes, new position, file identity). pos=None starts with the last lines.
+        The file is opened per call, not held, so the rotation at engine start (a rename) still works on Windows.
+        A new file (rotated, or the engine moved to another log) is read from its start."""
+        path = self.log_path(engine)
+        try:
+            st = path.stat()
+        except OSError:
+            return (("\n".join(self.tail_log(engine, lines)) + "\n").encode() if pos is None else b""), 0, None
+        cur = (str(path), st.st_dev, st.st_ino)     # not ctime: Windows tunnelling copies it onto a re-created file
+        if pos is None:
+            return ("\n".join(self.tail_log(engine, lines)) + "\n").encode(), st.st_size, cur
+        if cur != ident or st.st_size < pos:
+            pos = 0
+        if st.st_size == pos:
+            return b"", pos, cur
+        with open(path, "rb") as f:
+            f.seek(pos)
+            data = f.read(min(st.st_size - pos, 2**20))
+        return data, pos + len(data), cur
+
     def tail_log(self, engine: str, lines: int = 100) -> list[str]:
         inst = self.instances.get(engine)
-        path = Path(inst.log_path) if inst and inst.log_path else self.logs_dir / f"{engine}.log"
+        path = self.log_path(engine)
         if not path.exists():
             return [f"(no log yet at {path})" + ("; this engine was started outside the manager" if inst and not inst.ours else "")]
         with open(path, "rb") as f:
@@ -791,7 +817,7 @@ class Manager:
             size = f.tell()
             f.seek(max(0, size - 256 * 1024))
             data = f.read().decode("utf-8", errors="replace")
-        return data.splitlines()[-lines:]
+        return data.splitlines()[-lines:] if lines > 0 else []
 
     def live(self, inst: Instance) -> dict:
         now = time.time()

@@ -6,7 +6,8 @@
     llmctl switch <profile>       (same as start)
     llmctl stop <engine|all> | restart <engine>
     llmctl check [engine] | update <engine> | rollback <engine>
-    llmctl logs <engine> [lines] | jobs | job <id> | events
+    llmctl logs <engine> [lines] [-f]      -f keeps printing new lines (Ctrl+C to stop)
+    llmctl jobs | job <id> | events
     llmctl stats [day|week|month|year|all]
 
   models
@@ -163,7 +164,28 @@ def cmd_rollback(a):
 
 
 def cmd_logs(a):
-    print(_call("GET", f"/api/logs/{a[0]}", params={"lines": int(a[1]) if len(a) > 1 else 100}))
+    follow = "-f" in a or "--follow" in a
+    pl = [x for x in a if x not in ("-f", "--follow")]
+    if not pl:
+        sys.exit("usage: llmctl logs <engine> [lines] [-f]")
+    lines = int(pl[1]) if len(pl) > 1 else 100
+    if not follow:
+        print(_call("GET", f"/api/logs/{pl[0]}", params={"lines": lines}))
+        return
+    url, tok = _conn()
+    try:
+        with httpx.stream("GET", f"{url}/api/logs/{pl[0]}/stream", params={"lines": lines},
+                          headers={"Authorization": f"Bearer {tok}"}, timeout=httpx.Timeout(10, read=None)) as r:
+            if r.status_code >= 400:
+                r.read()
+                sys.exit(f"error {r.status_code}: {r.text}")
+            for chunk in r.iter_text():
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+    except KeyboardInterrupt:
+        pass
+    except httpx.HTTPError as e:
+        sys.exit(f"log stream ended: {e}")
 
 
 def cmd_jobs(_):

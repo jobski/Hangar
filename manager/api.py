@@ -1,12 +1,14 @@
 """REST API + web UI + MCP, all behind one token (Authorization: Bearer <token>, or ?token= for the web page)."""
 from __future__ import annotations
 
+import codecs
 import contextlib
 import hmac
 from pathlib import Path
 
+import anyio
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from mcp.server.transport_security import TransportSecuritySettings
 
 from . import clients
@@ -96,6 +98,26 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         guard(mgr.engine, engine)
         return "\n".join(mgr.tail_log(engine, min(lines, 5000)))
 
+    @app.get("/api/logs/{engine}/stream")
+    async def logs_stream(engine: str, request: Request, lines: int = 200):
+        """The log as it is written: the last `lines` lines, then new output until the client disconnects."""
+        guard(mgr.engine, engine)
+
+        async def follow():
+            dec = codecs.getincrementaldecoder("utf-8")("replace")
+            data, pos, ident = mgr.follow_log(engine, None, lines=min(lines, 5000))
+            yield data.decode("utf-8", "replace")
+            while not await request.is_disconnected():
+                await anyio.sleep(0.5)
+                data, pos, new = await anyio.to_thread.run_sync(mgr.follow_log, engine, pos, ident)
+                if new != ident and ident is not None and new is not None:
+                    yield "\n--- new log file ---\n"
+                ident = new
+                if data:
+                    yield dec.decode(data)
+
+        return StreamingResponse(follow(), media_type="text/plain; charset=utf-8",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/api/jobs")
     def jobs(limit: int = 20):

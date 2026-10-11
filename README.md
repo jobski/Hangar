@@ -87,10 +87,11 @@ llmctl search qwen3 coder             llmctl files unsloth/Qwen3-8B-GGUF
 llmctl download unsloth/Qwen3-8B-GGUF "*Q4_K_M*"
 llmctl download qwen3:8b --ollama     llmctl downloads
 llmctl custom tiel-coder-35b --ctx 65536 -- --temp 0.6
+llmctl logs strata -f                 (follow the log live; Ctrl+C stops)
 ```
 
 REST: everything is under `/api` (interactive docs at `/api/docs`). Actions return a job; add `?wait=60` to wait for
-it.
+it. `GET /api/logs/<engine>/stream` follows an engine log as plain text until you disconnect.
 
 ## Adding a model
 
