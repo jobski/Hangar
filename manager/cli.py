@@ -366,13 +366,14 @@ def cmd_budget(a):
 def cmd_machines(_):
     res = _call("GET", "/api/peers")
     rows = [{**res["self"], "online": True, "this": True}] + res["peers"]
+    w = max(len(m.get("name") or "") for m in rows) + 2
     for m in rows:
         s = m.get("summary") or {}
         state = "this machine" if m.get("this") else ("online" if m["online"] else f"OFFLINE ({m.get('error')})")
         run = ", ".join(f"{r['profile']}" + (f" {r['gen_tps']:.1f} tok/s" if r.get("gen_tps") else "") for r in s.get("running", []))
         mem = f"{_mib(s.get('vram_used_mib'))} / {_mib(s.get('vram_total_mib'))} GPU" if s.get("vram_total_mib") else ""
         name = (m.get("machine") or {}).get("name") or m.get("name")
-        print(f"{m.get('name', name):14s} {state:14s} {(m.get('machine') or m).get('os', ''):8s} {mem:22s} {run or 'idle'}")
+        print(f"{m.get('name', name):{w}s} {state:14s} {(m.get('machine') or m).get('os', ''):8s} {mem:22s} {run or 'idle'}")
 
 
 def cmd_peer(a):

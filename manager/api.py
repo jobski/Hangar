@@ -307,7 +307,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         return {"self": {**machine_info(mgr.cfg), "summary": summary(mgr.status())}, "peers": peers.public()}
 
     @app.post("/api/peers")
-    def peers_add(name: str = Body(..., embed=True), url: str = Body(..., embed=True), token_: str = Body("", alias="token", embed=True),
+    def peers_add(name: str | None = Body(None, embed=True), url: str = Body(..., embed=True), token_: str = Body("", alias="token", embed=True),
                   reciprocal_url: str | None = Body(None, embed=True)):
         """Add a peer (checked first). reciprocal_url: how that peer reaches this machine - then it gets this one too."""
         res = guard(peers.add, name, url, token_)

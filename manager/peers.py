@@ -17,7 +17,13 @@ from pathlib import Path
 
 import httpx
 
-NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+def slug_name(raw: str) -> str:
+    """Any name people (or host names) come with, as a peer name: "Jobo's MacBook Pro" -> jobos-macbook-pro,
+    "Jobos-MacBook-Pro.local" -> jobos-macbook-pro. Empty when nothing usable is left."""
+    s = re.sub(r"\.(local|lan|home)$", "", (raw or "").strip().lower())
+    s = re.sub(r"['’`]", "", s)
+    s = re.sub(r"[^a-z0-9_-]+", "-", s).strip("-_")
+    return s[:32].strip("-_")
 
 
 def normalize_url(raw: str) -> tuple[str, str | None]:
@@ -44,7 +50,7 @@ def normalize_url(raw: str) -> tuple[str, str | None]:
 
 
 def machine_name(cfg: dict) -> str:
-    return str(cfg["manager"].get("name") or socket.gethostname()).lower()
+    return slug_name(str(cfg["manager"].get("name") or socket.gethostname())) or "hangar"
 
 
 def machine_info(cfg: dict) -> dict:
@@ -76,24 +82,25 @@ class Peers:
         return out
 
     def get(self, name: str) -> dict:
-        p = self.all().get(name)
+        p = self.all().get(name) or self.all().get(slug_name(name))
         if not p:
             raise KeyError(f"no peer called {name}")
         return p
 
-    def add(self, name: str, url: str, token: str, check: bool = True) -> dict:
-        name = name.strip().lower()
-        if not NAME.match(name):
-            raise ValueError("a peer name is 1-32 lowercase letters, digits, - or _")
-        if name == machine_name(self.cfg):
-            raise ValueError(f"{name} is this machine's own name")
-        if name in (self.cfg.get("peers") or {}):
-            raise ValueError(f"{name} is set in config.yaml; change it there")
+    def add(self, name: str | None, url: str, token: str, check: bool = True) -> dict:
+        """Add a peer. Any name is tidied into a peer name (none: the machine's own name, as it reports it)."""
         url, pasted = normalize_url(url)
         token = (token or "").strip() or pasted or ""
         if not token:
             raise ValueError("the machine's token is needed (data/token.txt there, or paste its dashboard link)")
         info = self.probe(url, token) if check else None
+        name = slug_name(name or "") or slug_name(((info or {}).get("machine") or {}).get("name", ""))
+        if not name:
+            raise ValueError("give the machine a name, e.g. macbook")
+        if name == machine_name(self.cfg):
+            raise ValueError(f"{name} is this machine's own name; give the other machine a different one")
+        if name in (self.cfg.get("peers") or {}):
+            raise ValueError(f"{name} is set in config.yaml; change it there")
         saved = self._saved()
         saved[name] = {"url": url, "token": token}
         self.file.write_text(json.dumps(saved, indent=1), encoding="utf-8")
@@ -102,6 +109,7 @@ class Peers:
 
     def remove(self, name: str):
         saved = self._saved()
+        name = name if name in saved else slug_name(name)
         if name not in saved:
             raise KeyError(f"no UI-managed peer called {name}" + (" (it is in config.yaml)" if name in self.all() else ""))
         del saved[name]
