@@ -13,7 +13,7 @@ manager:
 
 resources:
   vram_reserve_mib: 2048       # leave room for macOS and apps sharing the same memory
-  memory_budget_gb: 15         # what Hangar's engines may use here; new profiles get the largest context that fits
+  # memory_budget_gb: 15       # what Hangar's engines may use here; new profiles get the largest context that fits
   ram_reserve_mib: 4096
   vram_release_timeout_s: 30
   sample_interval_s: 5
@@ -61,6 +61,8 @@ engines:
     host: 0.0.0.0
 
 profiles:
+  # ~18 GB of weights plus the context: fine on a 32 GB+ Mac with no budget (or one of 22 GB+). Under a 10-15 GB
+  # budget pick a smaller coder or quant instead; the Models page marks which quants fit.
   qwen3-coder-30b:
     engine: llamacpp
     description: Qwen3-Coder 30B-A3B Instruct Q4_K_M, 64K context
