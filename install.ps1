@@ -36,8 +36,18 @@
         $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$($env:GITHUB_TOKEN)"))
         $auth = @('-c', "http.extraHeader=Authorization: Basic $b64")
     }
+    # the Hangar on the port is this install when it accepts this install's token (each install makes its own);
+    # the listening process is the base Python, not the venv's, so its command line cannot tell
+    function Ours {
+        $tf = Join-Path $dir 'data\token.txt'
+        if (-not (Test-Path $tf)) { return $false }
+        $t = (Get-Content $tf | Select-Object -First 1).Trim()
+        try { Invoke-WebRequest "http://127.0.0.1:$port/api/jobs?limit=1" -Headers @{Authorization = "Bearer $t"} -UseBasicParsing -TimeoutSec 3 | Out-Null; return $true } catch { return $false }
+    }
+    $restart = $false
     if (Test-Path (Join-Path $dir '.git')) {
         Say "Updating $dir to $ref"
+        $restart = Ours
         git @auth -C $dir fetch --quiet origin $ref
         git -C $dir checkout --quiet $ref 2>$null
         if ($LASTEXITCODE -ne 0) { git -C $dir checkout --quiet -B $ref "origin/$ref" }
@@ -66,7 +76,13 @@
     }
 
     # ---- start it, and with Windows
-    if (-not $env:HANGAR_NO_START) {
+    if ($restart) {
+        Say 'Restarting Hangar to run the update (engines keep running)'
+        $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($c) { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue }
+        for ($i = 0; $i -lt 15 -and (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
+    }
+    if (-not $env:HANGAR_NO_START -or $restart) {
         & (Join-Path $dir 'scripts\start.ps1')
         for ($i = 0; $i -lt 30; $i++) {
             try { Invoke-WebRequest "http://127.0.0.1:$port/api/ping" -UseBasicParsing -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 1 }

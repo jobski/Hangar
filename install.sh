@@ -46,8 +46,16 @@ auth() {
         git "$@"
     fi
 }
+# the Hangar on the port is this install when it accepts this install's token (each install makes its own)
+ours() {
+    [ -f "$DIR/data/token.txt" ] || return 1
+    curl -fs -o /dev/null -H "Authorization: Bearer $(cat "$DIR/data/token.txt")" "http://127.0.0.1:$PORT/api/jobs?limit=1"
+}
+RESTART=""
 if [ -d "$DIR/.git" ]; then
     say "Updating $DIR to $REF"
+    git -C "$DIR" config core.fileMode false          # executable bits set here are not "local changes"
+    ours && RESTART=1
     auth -C "$DIR" fetch --quiet origin "$REF"
     git -C "$DIR" checkout --quiet "$REF" 2>/dev/null || git -C "$DIR" checkout --quiet -B "$REF" "origin/$REF"
     git -C "$DIR" merge --quiet --ff-only "origin/$REF" || warn "local changes in $DIR; kept them and did not update"
@@ -56,6 +64,7 @@ elif [ -e "$DIR" ]; then
 else
     say "Downloading Hangar ($REF) into $DIR"
     auth clone --quiet --branch "$REF" "$URL" "$DIR" || die "could not clone $URL (private repo? set GITHUB_TOKEN)"
+    git -C "$DIR" config core.fileMode false
 fi
 cd "$DIR"
 
@@ -79,8 +88,15 @@ if [ -z "${HANGAR_NO_PATH:-}" ]; then
     esac
 fi
 
-# ---- start it
-if [ -z "${HANGAR_NO_START:-}" ]; then
+# ---- start it (an updated Hangar that was running is restarted, so the new code runs)
+if [ -n "$RESTART" ]; then
+    say "Restarting Hangar to run the update (engines keep running)"
+    PID=$(lsof -tnP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)
+    [ -n "$PID" ] && kill "$PID" 2>/dev/null
+    i=0
+    while [ $i -lt 15 ] && lsof -tnP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; do sleep 1; i=$((i + 1)); done
+fi
+if [ -z "${HANGAR_NO_START:-}" ] || [ -n "$RESTART" ]; then
     sh scripts/start.sh
     i=0
     while [ $i -lt 30 ] && ! curl -fs "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1; do sleep 1; i=$((i + 1)); done

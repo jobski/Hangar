@@ -21,11 +21,18 @@ param([switch]$Yes, [switch]$Purge)
         if ($a -notmatch '^(y|yes)$') { Write-Host 'Nothing removed.'; return }
     }
 
+    # the Hangar on the port is this install when it accepts this install's token (each install makes its own);
+    # the listening process is the base Python, not the venv's, so its command line cannot tell
+    function Ours {
+        $tf = Join-Path $dir 'data\token.txt'
+        if (-not (Test-Path $tf)) { return $false }
+        $t = (Get-Content $tf | Select-Object -First 1).Trim()
+        try { Invoke-WebRequest "http://127.0.0.1:$port/api/jobs?limit=1" -Headers @{Authorization = "Bearer $t"} -UseBasicParsing -TimeoutSec 3 | Out-Null; return $true } catch { return $false }
+    }
     # only what belongs to this install: another Hangar (a second copy, or a different port) is left alone
     $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($c) {
-        $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $($c.OwningProcess)"
-        if ($proc -and ("$($proc.ExecutablePath) $($proc.CommandLine)" -like "*$dir\*")) {
+        if (Ours) {
             Say 'Stopping the engines and the manager'
             & (Join-Path $dir 'hangar.cmd') stop all *> $null
             Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
