@@ -3,8 +3,8 @@
 #
 #   sh ~/hangar/uninstall.sh                 (or: curl -fsSL https://raw.githubusercontent.com/jobski/hangar/main/uninstall.sh | sh)
 #
-# Stops the engines it runs and the manager, removes start-at-login, the `hangar` command and the PATH line the
-# installer added, and deletes the install folder. Your config.yaml, profiles.yaml and data/ (token, stats) are first
+# Stops the engines it runs and the manager, removes the `hangar` command, the PATH line the installer added and any
+# LaunchAgent an earlier version made, and deletes the install folder. Your config.yaml, profiles.yaml and data/ (token, stats) are first
 # copied to ~/hangar-backup-<date>; --purge skips that. Model files (models.dir) and engine folders are never touched.
 #
 #   --yes     do not ask        --purge   no backup        HANGAR_DIR=...   a different install folder
@@ -38,7 +38,7 @@ if [ -n "$PID" ] && ps -o command= -p "$PID" | grep -qF "$DIR/"; then
     kill "$PID" 2>/dev/null || true
 fi
 
-say "Removing start-at-login, the command and the PATH line"
+say "Removing the command, the PATH line and any old LaunchAgent"
 AGENT="$HOME/Library/LaunchAgents/dev.hangar.manager.plist"
 if [ -f "$AGENT" ] && grep -qF "$DIR" "$AGENT"; then
     launchctl bootout "gui/$(id -u)/dev.hangar.manager" 2>/dev/null || true

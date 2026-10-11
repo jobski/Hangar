@@ -590,7 +590,6 @@ function renderStatus(s) {
   v += `<div class="vital"><span class="k">Out</span><span class="v ${out ? "ok-t" : ""}">${tps(out)} tok/s</span></div>`;
   $("#vitals").innerHTML = v;
   if (s.machine) {
-    $("#autostartlbl").textContent = s.machine.os === "windows" ? "Start with Windows" : "Start at login";
     if (!MACHINE) SELF = s.machine;
   }
 
@@ -1072,6 +1071,8 @@ async function addMachineDialog() {
 // ---- start with Windows
 async function renderAutostart() {
   const a = await api("/api/autostart");
+  $("#autostartsw").hidden = a.supported === false;            // Windows only: macOS security tools quarantine LaunchAgents
+  if (a.supported === false) return;
   $("#autostart").checked = a.enabled; $("#autostart").disabled = false;
   $("#autostartsw").title = a.enabled ? `Starts when you sign in (${a.shortcut})` : "Start Hangar when you sign in";
   if (a.stale) toast("The autostart shortcut points at another copy of Hangar. Switch it off and on to fix it.", true);

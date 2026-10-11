@@ -17,4 +17,4 @@ if [ ! -f config.yaml ]; then
 fi
 chmod +x hangar scripts/*.sh
 .venv/bin/python -c "from manager import config; c = config.load(); print('Token:', config.token(c))"
-echo "Done. Start it with scripts/start.sh, and ./hangar autostart on to run it at login."
+echo "Done. Start it with scripts/start.sh (again after a restart)."

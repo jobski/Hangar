@@ -281,12 +281,15 @@ def build(mgr: Manager) -> MCPServer:
         mgr.store.event("peer", f"removed peer {name}")
         return "removed"
 
-    @mcp.tool(description="Whether Hangar starts when the user signs in (Windows or macOS). enabled: true to turn it on, false "
+    @mcp.tool(description="Whether Hangar starts when the user signs in to Windows (not available on macOS). enabled: true to turn it on, false "
                           "to turn it off, omit to just report. Only the manager starts; engines start on demand.")
     async def autostart_windows(enabled: bool | None = None) -> str:
         if enabled is None:
             return _j(await run(autostart.status))
-        res = await run(autostart.enable if enabled else autostart.disable)
+        try:
+            res = await run(autostart.enable if enabled else autostart.disable)
+        except ValueError as e:
+            return str(e)
         mgr.store.event("autostart", "starts with Windows" if enabled else "no longer starts with Windows")
         return _j(res)
 

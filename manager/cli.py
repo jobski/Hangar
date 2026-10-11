@@ -26,7 +26,7 @@
     hangar hosts                                    addresses other machines can use for --host
 
   this PC
-    hangar autostart [on|off]                       start Hangar when you sign in (no argument: show)
+    hangar autostart [on|off]                       start Hangar when you sign in to Windows (no argument: show)
     hangar budget [GB|off]                          memory Hangar's engines may use here (no argument: show)
 
   other machines (peers: other Hangars, e.g. a Mac running MLX)
@@ -338,6 +338,10 @@ def cmd_autostart(a):
     if a and a[0] not in ("on", "off"):
         sys.exit("usage: hangar autostart [on|off]")
     s = _call("POST", "/api/autostart", json={"enabled": a[0] == "on"}) if a else _call("GET", "/api/autostart")
+    if not s.get("supported", True):
+        print(s["note"] + (f"\nleft over from an earlier version: {s['leftover']} (hangar autostart off removes it)"
+                           if s.get("leftover") else ""))
+        return
     print(("starts with Windows" if s["enabled"] else "does not start with Windows") + f"  ({s['shortcut']})")
     if s.get("stale"):
         print("the shortcut points at another copy of Hangar; run: hangar autostart on")

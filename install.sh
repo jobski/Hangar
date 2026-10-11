@@ -7,8 +7,9 @@
 #
 # Settings (environment variables):
 #   HANGAR_DIR=~/hangar      where it goes          HANGAR_REF=main     branch or tag to install
-#   HANGAR_NO_START=1        do not start it         HANGAR_NO_AUTOSTART=1   do not start it at login
-#   HANGAR_NO_PATH=1         do not put `hangar` on your PATH
+#   HANGAR_NO_START=1        do not start it         HANGAR_NO_PATH=1        do not put `hangar` on your PATH
+# It does not set Hangar to start at login: security tools such as SentinelOne quarantine LaunchAgents made by
+# scripts. Start it with scripts/start.sh after a restart (or add that to Login Items yourself).
 # Running it again updates an existing install in place; config.yaml, profiles and stats are kept.
 set -eu
 
@@ -78,18 +79,16 @@ if [ -z "${HANGAR_NO_PATH:-}" ]; then
     esac
 fi
 
-# ---- start it, and at every login
+# ---- start it
 if [ -z "${HANGAR_NO_START:-}" ]; then
     sh scripts/start.sh
     i=0
     while [ $i -lt 30 ] && ! curl -fs "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1; do sleep 1; i=$((i + 1)); done
-    if [ -z "${HANGAR_NO_AUTOSTART:-}" ]; then
-        ./hangar autostart on || warn "could not turn on start-at-login; try: hangar autostart on"
-    fi
 fi
 
 TOKEN=$(cat data/token.txt 2>/dev/null || true)
 say "Hangar is installed in $DIR"
 echo "    Dashboard: http://localhost:$PORT/?token=$TOKEN"
 echo "    Settings:  $DIR/config.yaml   (apply with: scripts/stop.sh && scripts/start.sh)"
+echo "    After a restart: sh $DIR/scripts/start.sh"
 echo "    Remove:    sh $DIR/uninstall.sh"

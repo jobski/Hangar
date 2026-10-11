@@ -34,7 +34,8 @@ command line.
 ## Install
 
 One line, from a terminal. It downloads Hangar into `~/hangar`, makes its Python environment and `config.yaml`, puts the
-`hangar` command on your PATH, starts it, and turns on start-at-login. Running it again updates in place.
+`hangar` command on your PATH and starts it; on Windows it also turns on start with Windows. Running it again updates
+in place.
 
 ```sh
 # macOS / Linux
@@ -47,11 +48,11 @@ irm https://raw.githubusercontent.com/jobski/hangar/main/install.ps1 | iex
 ```
 
 Options are environment variables: `HANGAR_DIR` (install folder), `HANGAR_REF` (branch or tag, default `main`),
-`HANGAR_NO_START=1`, `HANGAR_NO_AUTOSTART=1`, `HANGAR_NO_PATH=1`.
+`HANGAR_NO_START=1`, `HANGAR_NO_PATH=1`, and on Windows `HANGAR_NO_AUTOSTART=1`.
 
 **Uninstall.** `sh ~/hangar/uninstall.sh` on macOS/Linux, `& "$HOME\hangar\uninstall.ps1"` on Windows (or pipe the
-`uninstall.*` URL the same way). It stops the engines it runs and the manager, removes start-at-login, the command
-and the PATH entry, and deletes the folder. `config.yaml`, `profiles.yaml` and `data/` (token, stats) are copied to
+`uninstall.*` URL the same way). It stops the engines it runs and the manager, removes start with Windows (or an old
+macOS LaunchAgent), the command and the PATH entry, and deletes the folder. `config.yaml`, `profiles.yaml` and `data/` (token, stats) are copied to
 `~/hangar-backup-<date>` first unless you pass `--purge` (`-Purge`, or `HANGAR_PURGE=1`); `--yes` (`-Yes`) skips the
 question. Model files and engine folders are never touched, and another Hangar install on the same machine is left
 alone.
@@ -92,15 +93,17 @@ git clone https://github.com/jobski/hangar.git ~/hangar && cd ~/hangar
 scripts/setup.sh                 # .venv, requirements, config.yaml from config.example.mac.yaml, prints the token
 open -e config.yaml              # paths, ports, profiles
 scripts/start.sh                 # runs in the background on port 9000 (--foreground to watch it)
-./hangar autostart on            # start it whenever you log in (a LaunchAgent; no admin)
 ./hangar update llamacpp         # installs llama.cpp's Metal build into ~/llama.cpp, and keeps it updated
 ```
 
 For a coding assistant, llama.cpp (`llama-server` with Metal) is the best fit: Hangar installs and updates it, reads
 its token counts and speeds, and agents get tool calling (`--jinja`) and prompt caching. `config.example.mac.yaml`
 has a Qwen3-Coder 30B-A3B profile; download the GGUF from the Models page (e.g. `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`,
-`Q4_K_M`, about 18 GB) and it suits a 32 GB+ Mac. Autostart on macOS writes
-`~/Library/LaunchAgents/dev.hangar.manager.plist`, which runs the manager at login with its output in `logs/`.
+`Q4_K_M`, about 18 GB) and it suits a 32 GB+ Mac.
+
+**No start at login on macOS.** Endpoint security tools such as SentinelOne quarantine LaunchAgents written by
+scripts, so Hangar does not make one: after a restart, run `scripts/start.sh` (or add it to Login Items yourself).
+If an earlier version left `~/Library/LaunchAgents/dev.hangar.manager.plist` behind, `hangar autostart off` removes it.
 
 **MLX.** The `mlx` engine runs mlx-lm's server (`mlx_lm.server`) the way you would by hand, one profile per model:
 `model:` is a Hugging Face repo id such as `mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` or a local folder, and

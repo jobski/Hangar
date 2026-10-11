@@ -295,7 +295,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.post("/api/autostart")
     def autostart_set(enabled: bool = Body(..., embed=True)):
-        res = autostart.enable() if enabled else autostart.disable()
+        res = guard(autostart.enable) if enabled else autostart.disable()
         mgr.store.event("autostart", "starts with Windows" if enabled else "no longer starts with Windows")
         return res
 
