@@ -11,7 +11,7 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import clients
+from . import autostart, clients
 from . import config as config_mod
 from .core import Manager
 from .mcp_server import build as build_mcp
@@ -271,6 +271,17 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
             snip = _snippet(client or kind, host, profiles, False)
         res = guard(clients.apply, kind, snip)
         mgr.store.event("connect", f"wrote {kind} settings to {res['file']}")
+        return res
+
+    # ---- start with Windows
+    @app.get("/api/autostart")
+    def autostart_status():
+        return autostart.status()
+
+    @app.post("/api/autostart")
+    def autostart_set(enabled: bool = Body(..., embed=True)):
+        res = autostart.enable() if enabled else autostart.disable()
+        mgr.store.event("autostart", "starts with Windows" if enabled else "no longer starts with Windows")
         return res
 
     @app.post("/api/reload-config")

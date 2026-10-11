@@ -6,7 +6,7 @@ import json
 import anyio
 from mcp.server.mcpserver import MCPServer
 
-from . import clients
+from . import autostart, clients
 from .core import Manager
 
 INSTRUCTIONS = """Manages local LLM engines (llama.cpp, Strata, ...) on one PC with one GPU.
@@ -181,5 +181,14 @@ def build(mgr: Manager) -> MCPServer:
         snip = clients.MODEL_CLIENTS[client](entries, False)
         snip["hosts"] = await run(clients.hosts)
         return _j(snip)
+
+    @mcp.tool(description="Whether Hangar starts when the user signs in to Windows. enabled: true to turn it on, false "
+                          "to turn it off, omit to just report. Only the manager starts; engines start on demand.")
+    async def autostart_windows(enabled: bool | None = None) -> str:
+        if enabled is None:
+            return _j(await run(autostart.status))
+        res = await run(autostart.enable if enabled else autostart.disable)
+        mgr.store.event("autostart", "starts with Windows" if enabled else "no longer starts with Windows")
+        return _j(res)
 
     return mcp

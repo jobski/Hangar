@@ -24,6 +24,9 @@
     hangar connect <client> [--host H] [--apply]   config for opencode, qwen, pi, codex, claude, aider, continue, generic
     hangar connect mcp [client] [--host H] [--apply]   this manager as an MCP server (claude, codex, qwen, opencode, ...)
     hangar hosts                                    addresses other machines can use for --host
+
+  this PC
+    hangar autostart [on|off]                       start Hangar when you sign in to Windows (no argument: show)
 """
 from __future__ import annotations
 
@@ -316,6 +319,15 @@ def cmd_connect(a):
         print(f"\n# {snip['notes']}")
 
 
+def cmd_autostart(a):
+    if a and a[0] not in ("on", "off"):
+        sys.exit("usage: hangar autostart [on|off]")
+    s = _call("POST", "/api/autostart", json={"enabled": a[0] == "on"}) if a else _call("GET", "/api/autostart")
+    print(("starts with Windows" if s["enabled"] else "does not start with Windows") + f"  ({s['shortcut']})")
+    if s.get("stale"):
+        print("the shortcut points at another copy of Hangar; run: hangar autostart on")
+
+
 def cmd_login(a):
     if len(a) < 2:
         sys.exit("usage: hangar login <url> <token>")
@@ -329,7 +341,7 @@ COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "s
             "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
             "stats": cmd_stats, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
             "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom,
-            "connect": cmd_connect, "hosts": cmd_hosts}
+            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart}
 NEEDS_ARG = {"plan", "start", "switch", "restart", "update", "rollback", "logs", "job", "search", "files", "download",
              "new-profile", "custom", "connect"}
 

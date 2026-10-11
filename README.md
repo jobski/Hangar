@@ -38,8 +38,20 @@ cd E:\llm-manager
 .\scripts\setup.ps1              # .venv, requirements, config.yaml from the example, prints the token
 notepad config.yaml              # paths, ports, API keys, profiles
 .\scripts\start.ps1              # runs in the background on port 9000 (-Foreground to watch it)
-.\scripts\install-autostart.ps1  # start it at every logon
+.\hangar.cmd autostart on         # start it whenever you sign in to Windows
 ```
+
+### Start with Windows
+
+Hangar can start itself whenever you sign in to Windows. Turn it on or off with the **Start with Windows** switch on
+the Overview page, with `hangar autostart on|off` (no argument shows the current state), with the MCP tool
+`autostart_windows`, or with `POST /api/autostart {"enabled": true}`. `scripts\install-autostart.ps1 [-Remove]` does
+the same without the manager running.
+
+It puts a `Hangar.lnk` shortcut in your Startup folder (`shell:startup`) that runs `scripts\start.ps1` with no
+window. No admin rights are needed. Only the manager starts; engines still start on demand, or when a client asks for a
+profile. Because it is a sign-in shortcut, Hangar runs once you sign in, not before. If you move the folder, switch it
+off and on again so the shortcut points at the new place (the page warns when it is stale).
 
 Open `http://<pc>:9000` and paste the token from `data\token.txt`. Opening `http://<pc>:9000/?token=<token>` once
 also signs a device in.
@@ -61,7 +73,7 @@ claude mcp add --transport http hangar http://<pc>:9000/mcp --header "Authorizat
 Tools: `status`, `list_profiles`, `plan`, `start`, `switch_model`, `stop`, `restart`, `run_custom`, `check_updates`,
 `update_engine`, `rollback_engine`, `job_status`, `logs`, `stats`, `stats_series`, `events`, `list_models`,
 `search_models`, `repo_files`, `download_model`, `downloads_status`, `cancel_download`, `create_profile_from_model`,
-`save_profile`, `copy_profile`, `delete_profile`, `client_config`.
+`save_profile`, `copy_profile`, `delete_profile`, `client_config`, `autostart_windows`.
 
 ### Connecting coding agents and other apps
 
@@ -90,6 +102,7 @@ hangar search qwen3 coder             hangar files unsloth/Qwen3-8B-GGUF
 hangar download unsloth/Qwen3-8B-GGUF "*Q4_K_M*"
 hangar download qwen3:8b --ollama     hangar downloads
 hangar custom tiel-coder-35b --ctx 65536 -- --temp 0.6
+hangar autostart on                   (start with Windows; off to stop)
 hangar logs strata -f                 (follow the log live; Ctrl+C stops)
 ```
 
