@@ -77,6 +77,13 @@ has a Qwen3-Coder 30B-A3B profile; download the GGUF from the Models page (e.g. 
 `Q4_K_M`, about 18 GB) and it suits a 32 GB+ Mac. Autostart on macOS writes
 `~/Library/LaunchAgents/dev.hangar.manager.plist`, which runs the manager at login with its output in `logs/`.
 
+**MLX.** The `mlx` engine runs mlx-lm's server (`mlx_lm.server`) the way you would by hand, one profile per model:
+`model:` is a Hugging Face repo id such as `mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` or a local folder, and
+every MLX model already in your Hugging Face cache shows up as a profile by itself. Update installs the newest mlx-lm
+from PyPI into the engine's Python (rollback reinstalls the one before). It is often a little faster at generating
+than llama.cpp, but mlx-lm has no metrics page or API key, so Hangar shows it running, its memory and its log, not
+token counts, and anyone who can reach its port can use it (keep `host: 127.0.0.1` if only this Mac needs it).
+
 ### Remote access
 
 Use [Tailscale](https://tailscale.com) (it is already installed on this PC): every device on your tailnet reaches

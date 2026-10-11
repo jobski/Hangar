@@ -50,6 +50,15 @@ engines:
     api_key: ${LLAMA_API_KEY}
     startup_timeout_s: 600
 
+  # mlx-lm's server (pip install mlx-lm): often a bit faster at generating on Apple Silicon, but it has no metrics page
+  # or API key, so Hangar shows it running, its memory and its log, without token counts. Every MLX model already in
+  # your Hugging Face cache (~/.cache/huggingface/hub) becomes a profile on its own (mlx-<name>).
+  mlx:
+    plugin: mlx
+    python: ~/.venvs/mlx/bin/python     # the Python that has mlx-lm installed: python3 -m venv ~/.venvs/mlx && ~/.venvs/mlx/bin/pip install mlx-lm
+    port: 8082
+    host: 0.0.0.0
+
 profiles:
   qwen3-coder-30b:
     engine: llamacpp
@@ -58,6 +67,11 @@ profiles:
     alias: qwen3-coder-30b
     ctx: 65536
     args: [--jinja, -ngl, "99", -fa, "on", --cache-type-k, q8_0, --cache-type-v, q8_0, --parallel, "1"]
+
+  qwen3-coder-30b-mlx:          # what you run today with mlx_lm.server, now started and stopped by Hangar
+    engine: mlx
+    description: Qwen3-Coder 30B-A3B Instruct 4-bit (MLX)
+    model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
 
 # Other Hangars this one can see and control (milestone 3, peering):
 # peers:

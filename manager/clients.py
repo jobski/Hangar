@@ -73,6 +73,10 @@ def model_entries(mgr, profile_ids: list[str] | None, host: str) -> list[dict]:
             e.update(model=rc.get("model_name") or p.id, api_key=key if isinstance(key, str) else (key[0] if key else ""),
                      vision=bool(rc.get("vision")), reasoning=True,
                      context=int(arg_value(rc.get("args", []), "--max-context") or 131072), output=32768)
+        elif eng.plugin == "mlx":
+            # mlx_lm.server answers to the model it was started with, by its repo id or path; it has no API key
+            e.update(model=str(p.cfg.get("model") or p.id), api_key="", provider_name="MLX (local)",
+                     context=int(p.cfg.get("ctx") or 32768))
         else:
             e.update(api_key=eng.api_key)
         e["output"] = min(e["output"], max(1024, e["context"] // 4))
