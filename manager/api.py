@@ -7,14 +7,16 @@ import hmac
 from pathlib import Path
 
 import anyio
+import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from mcp.server.transport_security import TransportSecuritySettings
 
 from . import autostart, clients
 from . import config as config_mod
 from .core import Manager
 from .mcp_server import build as build_mcp
+from .peers import Peers, machine_info, summary
 
 WEB = Path(__file__).parent / "web"
 OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
@@ -23,6 +25,7 @@ OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
 def create_app(mgr: Manager | None = None) -> FastAPI:
     mgr = mgr or Manager()
     token = config_mod.token(mgr.cfg)
+    peers = mgr.peers = Peers(mgr.cfg)
     mcp = build_mcp(mgr)
     # the token check below protects /mcp; the Host-header check would block access by Tailscale name or LAN IP
     mcp_app = mcp.streamable_http_app(streamable_http_path="/mcp", stateless_http=True, host="0.0.0.0",
@@ -31,8 +34,11 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(app):
         mgr.start_background()
+        peers.start()
         async with mcp.session_manager.run():
             yield
+        peers.shutdown()
+        await proxy.aclose()
         mgr.shutdown()
 
     app = FastAPI(title="Hangar", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -283,6 +289,63 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         res = autostart.enable() if enabled else autostart.disable()
         mgr.store.event("autostart", "starts with Windows" if enabled else "no longer starts with Windows")
         return res
+
+    # ---- peers: other Hangars, and any of their API calls through /api/peers/<name>/<path>
+    proxy = httpx.AsyncClient(timeout=httpx.Timeout(30, read=660))     # ?wait= on a peer's job can take minutes
+
+    @app.get("/api/peers")
+    def peers_list():
+        return {"self": {**machine_info(mgr.cfg), "summary": summary(mgr.status())}, "peers": peers.public()}
+
+    @app.post("/api/peers")
+    def peers_add(name: str = Body(..., embed=True), url: str = Body(..., embed=True), token_: str = Body(..., alias="token", embed=True),
+                  reciprocal_url: str | None = Body(None, embed=True)):
+        """Add a peer (checked first). reciprocal_url: how that peer reaches this machine - then it gets this one too."""
+        res = guard(peers.add, name, url, token_)
+        if reciprocal_url:
+            try:
+                r = httpx.post(res["url"] + "/api/peers", headers={"Authorization": f"Bearer {token_}"}, timeout=15,
+                               json={"name": machine_info(mgr.cfg)["name"], "url": reciprocal_url, "token": token})
+                res["reciprocal"] = "added" if r.status_code == 200 else f"failed: {r.json().get('detail', r.status_code)}"
+            except (httpx.HTTPError, ValueError) as e:
+                res["reciprocal"] = f"failed: {e}"
+        mgr.store.event("peer", f"added peer {res['name']} ({res['url']})")
+        return res
+
+    @app.delete("/api/peers/{name}")
+    def peers_remove(name: str):
+        guard(peers.remove, name)
+        mgr.store.event("peer", f"removed peer {name}")
+        return {"removed": name}
+
+    @app.api_route("/api/peers/{name}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"], include_in_schema=False)
+    async def peers_proxy(name: str, path: str, request: Request):
+        if path == "peers" or path.startswith("peers/"):
+            raise HTTPException(400, "a peer's own peers are not reachable through it; add them here")
+        p = guard(peers.get, name)
+        body = await request.body()
+        req = proxy.build_request(request.method, f"{p['url']}/api/{path}", params=request.query_params, content=body or None,
+                                  headers={"Authorization": f"Bearer {p['token']}",
+                                           "Content-Type": request.headers.get("content-type", "application/json")})
+        try:
+            r = await proxy.send(req, stream=True)
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"{name} is unreachable ({type(e).__name__})")
+        if r.status_code == 401:            # not ours: a 401 here would sign the browser out of this Hangar
+            await r.aclose()
+            raise HTTPException(502, f"{name} refused the saved token; remove the peer and add it with its current token")
+        if path.endswith("/stream"):
+            async def relay():
+                try:
+                    async for chunk in r.aiter_raw():
+                        yield chunk
+                finally:
+                    await r.aclose()
+            return StreamingResponse(relay(), status_code=r.status_code, media_type=r.headers.get("content-type"),
+                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        content = await r.aread()
+        await r.aclose()
+        return Response(content, status_code=r.status_code, media_type=r.headers.get("content-type"))
 
     @app.post("/api/reload-config")
     def reload_config():

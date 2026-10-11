@@ -272,6 +272,31 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 #dlgbody { padding: 16px; }
 .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .facts .stat .sv { font-size: 16px; }
+/* ---- machines */
+.msw { position: relative; }
+.msw > button { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px 0 9px; border-radius: 8px; border: 1px solid var(--line2); background: var(--panel); color: var(--ink); font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; max-width: 220px; }
+.msw > button:hover { border-color: var(--faint); }
+.msw > button .os { font: 500 10.5px var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.msw > button.remote { border-color: color-mix(in srgb, var(--s3) 60%, transparent); background: color-mix(in srgb, var(--s3) 12%, var(--panel)); }
+.msw > button svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2.2; opacity: .6; }
+.menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; min-width: 290px; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.45); padding: 5px; animation: fade .12s ease; }
+.menu .mi { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; padding: 8px 10px; border-radius: 7px; border: 0; background: none; color: var(--ink); text-align: left; cursor: pointer; font-size: 13px; }
+.menu .mi:hover { background: var(--panel2); }
+.menu .mi.on { background: var(--panel2); box-shadow: inset 2px 0 0 var(--accent); }
+.menu .mi .sub { display: block; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu .mi .os { font: 500 10.5px var(--mono); color: var(--faint); text-transform: uppercase; }
+.menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 2px; }
+.remotebar { display: flex; align-items: center; gap: 10px; padding: 7px 18px; font-size: 12.5px; color: var(--ink2); background: color-mix(in srgb, var(--s3) 13%, var(--bg)); border-bottom: 1px solid color-mix(in srgb, var(--s3) 35%, var(--line)); position: sticky; top: var(--top); z-index: 25; }
+.remotebar b { color: var(--ink); }
+.fleet { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 1px; background: var(--line); }
+.mcd { background: var(--panel); padding: 13px 16px; cursor: pointer; min-width: 0; text-align: left; border: 0; color: inherit; font: inherit; }
+.mcd:hover { background: var(--panel2); }
+.mcd.on { box-shadow: inset 0 2px 0 var(--accent); }
+.mcd .mh2 { display: flex; align-items: center; gap: 8px; font-weight: 650; }
+.mcd .run { margin-top: 8px; font-size: 12.5px; color: var(--ink2); display: grid; gap: 3px; }
+.mcd .run .num { color: var(--accent); }
+.mcd.off { opacity: .7; }
+
 .toasts { position: fixed; right: 18px; bottom: 18px; z-index: 50; display: grid; gap: 8px; }
 .toast { background: var(--panel2); color: var(--ink); border: 1px solid var(--line2); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 8px; font-size: 13px; max-width: min(420px, calc(100vw - 36px)); box-shadow: 0 12px 30px rgba(0,0,0,.35); animation: fade .2s ease; overflow-wrap: anywhere; }
 .toast.err { border-left-color: var(--bad); }
@@ -300,6 +325,9 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
   .side .foot { display: none; }
   .brand { width: auto; } .brand small { display: none; }
   .vitals { display: none; }
+  .msw > button { max-width: 150px; } .msw > button .os { display: none; }
+  .menu { position: fixed; left: 8px; right: 8px; top: calc(var(--top) + 4px); min-width: 0; }
+  .remotebar { padding: 7px 14px; top: var(--top); }
   .top { gap: 10px; padding: 0 14px; } .top #jobpill { max-width: 40vw; overflow: hidden; text-overflow: ellipsis; }
   .ph { padding: 10px 14px; } .pb { padding: 12px 14px; } .eng { padding: 14px; }
   .vh h1 { font-size: 18px; }
@@ -328,12 +356,14 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 
 <div id="app" hidden>
 <header class="top">
-  <div class="brand"><img class="mark" src="/favicon.svg" alt="">Hangar <small id="hostname"></small></div>
+  <div class="brand"><img class="mark" src="/favicon.svg" alt="">Hangar</div>
+  <div class="msw" id="msw"><button id="mswbtn" aria-haspopup="true"><span class="dot" id="mswdot"></span><span id="mswname">…</span><span class="os" id="mswos"></span><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button><div class="menu" id="mswmenu" hidden></div></div>
   <div class="vitals" id="vitals"></div>
   <span id="jobpill" class="pill warn" hidden></span>
   <span id="conn" class="pill"><span class="dot"></span>connecting</span>
 </header>
 
+<div class="remotebar" id="remotebar" hidden><span class="dot" id="rbdot"></span><span>Viewing <b id="rbname"></b> — everything on this page, including Start and Stop, runs there.</span><span class="sp"></span><button class="btn sm" data-machine="">Back to <span id="rbself"></span></button></div>
 <div class="shell">
 <nav class="side" id="side">
   <button class="nav" data-view="overview"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
@@ -348,7 +378,8 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 <main class="content">
   <!-- overview -->
   <section class="view" id="v-overview">
-    <div class="vh"><div><h1>Overview</h1><p>Engines, the machine, and what is happening right now.</p></div><span class="sp"></span><label class="switch" id="autostartsw" title="Start Hangar when you sign in to Windows"><input type="checkbox" id="autostart" disabled><span class="track"></span>Start with Windows</label><button class="btn" id="chk"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Check updates</button></div>
+    <div class="vh"><div><h1>Overview</h1><p>Engines, the machine, and what is happening right now.</p></div><span class="sp"></span><label class="switch" id="autostartsw" title="Start Hangar when you sign in"><input type="checkbox" id="autostart" disabled><span class="track"></span><span id="autostartlbl">Start with Windows</span></label><button class="btn" id="chk"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Check updates</button></div>
+    <div class="panel" id="fleetsec" hidden><div class="ph"><h3>Machines</h3><span class="sp"></span><span class="meta" id="fleetmeta"></span><button class="btn ghost sm" data-act="maddshow">+ Add machine</button></div><div class="fleet" id="fleet"></div></div>
     <div class="panel job" id="jobsec" hidden>
       <div class="ph"><span id="jobspin"></span><h3 style="color:var(--ink)" id="jobtitle"></h3><span class="sp"></span><span id="jobstate" class="tag"></span></div>
       <div class="pb"><pre class="term" id="joblog"></pre></div>
@@ -437,7 +468,11 @@ if (new URLSearchParams(location.search).get("token")) { store.set("llmm-token",
 let period = store.get("llmm-period", "day"), bucket = store.get("llmm-bucket", "day"), watchJob = null, lastStatus = null;
 let view = (location.hash.slice(1) || store.get("llmm-view", "overview"));
 
+// the machine being viewed: "" is this one; a peer's calls go through this Hangar at /api/peers/<name>/...
+let MACHINE = store.get("llmm-machine", ""), SELF = null, PEERS = [];
+const route = path => MACHINE && path.startsWith("/api/") && !path.startsWith("/api/peers") ? `/api/peers/${encodeURIComponent(MACHINE)}/` + path.slice(5) : path;
 async function api(path, opts = {}) {
+  path = route(path);
   const r = await fetch(path, { ...opts, headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) } });
   if (r.status === 401) { showLogin(); throw new Error("unauthorized"); }
   const ct = r.headers.get("content-type") || "";
@@ -545,7 +580,10 @@ function renderStatus(s) {
   $("#engmeta").textContent = `${nrun} of ${s.engines.length} running`;
   v += `<div class="vital"><span class="k">Out</span><span class="v ${out ? "ok-t" : ""}">${tps(out)} tok/s</span></div>`;
   $("#vitals").innerHTML = v;
-  $("#hostname").textContent = location.hostname;
+  if (s.machine) {
+    $("#autostartlbl").textContent = s.machine.os === "windows" ? "Start with Windows" : "Start at login";
+    if (!MACHINE) SELF = s.machine;
+  }
 
   if (s.job) watchJob = s.job.id;
   $("#conn").className = "pill ok"; $("#conn").innerHTML = `<span class="dot ok"></span>connected`;
@@ -823,7 +861,7 @@ async function streamLog(engine) {
   logState("live", "ok");
   const ctl = logAbort = new AbortController();
   try {
-    const r = await fetch(`/api/logs/${encodeURIComponent(engine)}/stream?lines=400`, { headers: { "Authorization": "Bearer " + TOKEN }, signal: ctl.signal, cache: "no-store" });
+    const r = await fetch(route(`/api/logs/${encodeURIComponent(engine)}/stream?lines=400`), { headers: { "Authorization": "Bearer " + TOKEN }, signal: ctl.signal, cache: "no-store" });
     if (!r.ok) throw new Error((await r.text()) || r.statusText);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
     for (;;) {
@@ -865,6 +903,20 @@ async function startProfile(id) {
 
 document.addEventListener("click", async ev => {
   if (ev.target.closest("[data-close]")) return $("#dlg").close();
+  const rm = ev.target.closest("[data-act=mremove]");
+  if (rm) {
+    ev.preventDefault(); ev.stopPropagation();
+    if (!confirm(`Remove ${rm.dataset.name} from this Hangar? Nothing changes on ${rm.dataset.name} itself.`)) return;
+    try {
+      const r = await fetch(`/api/peers/${encodeURIComponent(rm.dataset.name)}`, { method: "DELETE", headers: { "Authorization": "Bearer " + TOKEN } });
+      if (!r.ok) throw new Error((await r.json()).detail);
+      if (MACHINE === rm.dataset.name) switchMachine(""); else renderMachines();
+    } catch (e) { fail(e); }
+    return;
+  }
+  const mb = ev.target.closest("[data-machine]");
+  if (mb) { ev.preventDefault(); return switchMachine(mb.dataset.machine); }
+  if (ev.target.closest("[data-act=maddshow]")) { ev.preventDefault(); return addMachineDialog(); }
   const b = ev.target.closest("[data-act],[data-period],[data-bucket],[data-job],[data-cnkind],[data-cnclient],[data-view]");
   if (!b) return;
   ev.preventDefault();
@@ -907,17 +959,96 @@ document.addEventListener("click", async ev => {
     watchJob = j.id; renderJob();
   } catch (err) { fail(err); }
 });
+// ---- machines (this one and its peers)
+const OS = { windows: "win", macos: "mac", linux: "linux" };
+async function renderMachines() {
+  const res = await fetch("/api/peers", { headers: { "Authorization": "Bearer " + TOKEN } }).then(r => r.json());
+  SELF = { ...res.self }; PEERS = res.peers;
+  if (MACHINE && !PEERS.some(p => p.name === MACHINE)) return switchMachine("");
+  const cur = MACHINE ? PEERS.find(p => p.name === MACHINE) : null;
+  $("#mswname").textContent = MACHINE || SELF.name;
+  $("#mswos").textContent = OS[(cur ? (cur.machine || {}).os : SELF.os)] || "";
+  $("#mswdot").className = "dot " + (cur ? (cur.online ? "ok" : "bad") : "ok");
+  $("#mswbtn").className = MACHINE ? "remote" : "";
+  $("#remotebar").hidden = !MACHINE;
+  if (MACHINE) { $("#rbname").textContent = MACHINE; $("#rbself").textContent = SELF.name; $("#rbdot").className = "dot " + (cur && cur.online ? "ok" : "bad"); }
+  const runline = sm => (sm && sm.running.length) ? sm.running.map(r => `${esc(r.profile)}${r.gen_tps ? ` <span class="num">${r.gen_tps.toFixed(1)} tok/s</span>` : ""}`).join(" · ") : "idle";
+  const item = (name, os, online, sm, sub, on) => `<button class="mi ${on ? "on" : ""}" data-machine="${esc(name)}"><span class="dot ${online ? "ok" : "bad"}"></span>
+      <span style="min-width:0"><b>${esc(name)}</b><span class="sub">${sub}</span></span><span class="os">${esc(OS[os] || os || "")}</span></button>`;
+  $("#mswmenu").innerHTML = item(SELF.name, SELF.os, true, SELF.summary, "this machine · " + runline(SELF.summary), !MACHINE) +
+    PEERS.map(p => item(p.name, (p.machine || {}).os, p.online, p.summary, p.online ? runline(p.summary) : esc(p.error || "offline"), MACHINE === p.name)).join("") +
+    `<hr><button class="mi" data-act="maddshow"><span></span><span>+ Add machine…</span><span></span></button>`;
+  // the fleet panel shows every machine, whichever one is being viewed
+  $("#fleetsec").hidden = !PEERS.length;
+  if (PEERS.length) {
+    const card = (name, os, online, sm, err, isSelf, src) => {
+      const vp = sm && sm.vram_total_mib ? sm.vram_used_mib / sm.vram_total_mib * 100 : 0;
+      return `<button class="mcd ${online ? "" : "off"} ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
+        <div class="mh2"><span class="dot ${online ? "ok" : "bad"}"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="sp"></span>
+          ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
+        ${online && sm ? `<div class="run"><span>${runline(sm)}</span>${sm.gpu ? `<span class="small muted">${esc(sm.gpu)}</span>` : ""}</div>
+          <div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div><div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM</div>`
+          : `<div class="run bad-t">${esc(err || "offline")}</div>`}</button>`;
+    };
+    $("#fleet").innerHTML = card(SELF.name, SELF.os, true, SELF.summary, null, true) + PEERS.map(p => card(p.name, (p.machine || {}).os, p.online, p.summary, p.error, false, p.source)).join("");
+    $("#fleetmeta").textContent = `${PEERS.filter(p => p.online).length + 1} of ${PEERS.length + 1} online`;
+  }
+}
+function switchMachine(name) {
+  if (name === MACHINE) { $("#mswmenu").hidden = true; return; }
+  MACHINE = name; store.set("llmm-machine", name);
+  $("#mswmenu").hidden = true;
+  PROFILES = []; watchJob = null; cnSnip = null; CN_READY = false; lastStatus = null;
+  ["#engines", "#machine", "#profiles", "#library", "#downloads", "#events", "#ovevents", "#jobs", "#dlresults"].forEach(id => { const el = $(id); if (el) el.innerHTML = ""; });
+  $("#jobsec").hidden = true;
+  renderMachines().catch(() => { });
+  refreshFast().then(() => refreshSlow());
+  renderAutostart().catch(() => { });
+  if (view === "connect") { CN_READY = true; renderConnectHosts().then(renderConnect).catch(fail); }
+  toast(name ? `Viewing ${name}` : `Back to ${SELF ? SELF.name : "this machine"}`);
+}
+$("#mswbtn").onclick = e => { e.stopPropagation(); $("#mswmenu").hidden = !$("#mswmenu").hidden; };
+document.addEventListener("click", e => { if (!e.target.closest("#msw")) $("#mswmenu").hidden = true; });
+async function addMachineDialog() {
+  $("#mswmenu").hidden = true;
+  let hosts = [];
+  try { hosts = await fetch("/api/connect/hosts", { headers: { "Authorization": "Bearer " + TOKEN } }).then(r => r.json()); } catch { }
+  const port = location.port || 9000;
+  dialog("Add a machine", `
+    <p class="small muted" style="margin:0 0 14px">Another Hangar this one can see and control, e.g. your Mac. Its token is in <span class="mono">data/token.txt</span> there (<span class="mono">cat ~/hangar/data/token.txt</span>).</p>
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+      <label class="fld">Name<input id="pmname" class="input" placeholder="macbook" autocomplete="off"></label>
+      <label class="fld">Address<input id="pmurl" class="input mono" placeholder="http://macbook:9000" autocomplete="off"></label>
+    </div>
+    <label class="fld" style="margin-top:12px">Its token<input id="pmtok" class="input mono" type="password" autocomplete="off"></label>
+    <label class="chk" style="margin-top:14px"><input type="checkbox" id="pmboth" checked> Also add this machine there, reached at</label>
+    <select id="pmself" class="input" style="margin:6px 0 0 23px;max-width:calc(100% - 23px)">${hosts.filter(h => h.host !== "127.0.0.1").map(h => `<option value="http://${esc(h.host)}:${port}">http://${esc(h.host)}:${port} — ${esc(h.label)}</option>`).join("")}</select>
+    <div class="row" style="margin-top:16px"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="pmgo">Add</button></div>`);
+  $("#pmgo").onclick = async () => {
+    $("#pmgo").disabled = true;
+    try {
+      const r = await fetch("/api/peers", { method: "POST", headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: $("#pmname").value.trim(), url: $("#pmurl").value.trim(), token: $("#pmtok").value.trim(), reciprocal_url: $("#pmboth").checked ? $("#pmself").value : null }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || j.error || r.statusText);
+      $("#dlg").close();
+      toast(`Added ${j.name}` + (j.reciprocal ? ` · on ${j.name}: ${j.reciprocal}` : ""), j.reciprocal && j.reciprocal !== "added");
+      renderMachines().catch(() => { });
+    } catch (e) { fail(e); $("#pmgo").disabled = false; }
+  };
+}
+
 // ---- start with Windows
 async function renderAutostart() {
   const a = await api("/api/autostart");
   $("#autostart").checked = a.enabled; $("#autostart").disabled = false;
-  $("#autostartsw").title = a.enabled ? `Starts when you sign in to Windows (${a.shortcut})` : "Start Hangar when you sign in to Windows";
+  $("#autostartsw").title = a.enabled ? `Starts when you sign in (${a.shortcut})` : "Start Hangar when you sign in";
   if (a.stale) toast("The autostart shortcut points at another copy of Hangar. Switch it off and on to fix it.", true);
 }
 $("#autostart").onchange = async () => {
   const on = $("#autostart").checked;
   $("#autostart").disabled = true;
-  try { await post("/api/autostart", { enabled: on }); toast(on ? "Hangar will start when you sign in to Windows" : "Hangar will no longer start with Windows"); }
+  try { await post("/api/autostart", { enabled: on }); toast((MACHINE ? MACHINE + ": " : "") + (on ? "Hangar will start when you sign in" : "Hangar will no longer start at sign-in")); }
   catch (e) { $("#autostart").checked = !on; fail(e); }
   finally { renderAutostart().catch(() => { $("#autostart").disabled = false; }); }
 };
@@ -925,7 +1056,7 @@ $("#chk").onclick = async () => { try { const j = await post("/api/check-updates
 
 async function refreshFast() {
   try { renderStatus(await api("/api/status")); await renderJob(); }
-  catch (e) { if (e.message !== "unauthorized") { $("#conn").className = "pill bad"; $("#conn").innerHTML = `<span class="dot bad"></span>offline`; } }
+  catch (e) { if (e.message !== "unauthorized") { $("#conn").className = "pill bad"; $("#conn").innerHTML = `<span class="dot bad"></span>${MACHINE ? esc(MACHINE) + " offline" : "offline"}`; } }
 }
 async function refreshSlow() {
   try { await Promise.all([renderProfiles(), view === "usage" ? renderStats() : null, renderEvents(), renderLive(), renderLibrary(), pollDownloads()]); } catch (e) { }
@@ -947,9 +1078,11 @@ async function boot() {
   try { await api("/api/status"); } catch (e) { return; }
   $("#app").hidden = false; $("#login").hidden = true;
   setView(view);
+  await renderMachines().catch(() => { });
   await refreshFast(); refreshSlow(); renderAutostart().catch(() => { });
   timers.forEach(clearInterval);
-  timers = [setInterval(refreshFast, 3000), setInterval(refreshSlow, 30000), setInterval(() => { if (view === "overview") renderLive().catch(() => { }); }, 10000)];
+  timers = [setInterval(refreshFast, 3000), setInterval(refreshSlow, 30000), setInterval(() => { if (view === "overview") renderLive().catch(() => { }); }, 10000),
+            setInterval(() => renderMachines().catch(() => { }), 5000)];
 }
 boot();
 </script>

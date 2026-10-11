@@ -21,6 +21,7 @@ from pathlib import Path
 import psutil
 
 from . import config as config_mod
+from .peers import machine_info
 from . import engines as engines_mod
 from . import models as models_mod
 from . import resources
@@ -871,7 +872,7 @@ class Manager:
         warn = []
         if snap["ram_percent"] >= self.cfg["resources"]["warn_ram_percent"]:
             warn.append(f"RAM is {snap['ram_percent']:.0f}% used")
-        return {"time": time.time(), "engines": engines, "resources": snap, "warnings": warn,
+        return {"time": time.time(), "machine": machine_info(self.cfg), "engines": engines, "resources": snap, "warnings": warn,
                 "job": self.current_job.public(10) if self.current_job else None,
                 "queued": self.queue.qsize()}
 

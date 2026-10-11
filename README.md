@@ -120,6 +120,29 @@ from PyPI into the engine's Python (rollback reinstalls the one before). It is o
 than llama.cpp, but mlx-lm has no metrics page or API key, so Hangar shows it running, its memory and its log, not
 token counts, and anyone who can reach its port can use it (keep `host: 127.0.0.1` if only this Mac needs it).
 
+### Several machines (peers)
+
+Each machine runs its own Hangar; peering lets one dashboard, CLI and MCP server see and control all of them — say a
+Windows PC with CUDA and a Mac with MLX. Add a machine from **Overview → Machines → + Add machine** (or the machine
+switcher in the top bar): its name, the address this machine reaches it at (`http://macbook:9000`; Tailscale names
+work well), and its token (`data/token.txt` on that machine). Ticking *Also add this machine there* pairs both ways in
+one go.
+
+```
+hangar peer add macbook http://macbook:9000 <its token> --both http://my-pc:9000
+hangar machines                              # every machine: online, what runs and how fast, memory
+hangar --on macbook status                   # any command on a peer: start, stop, logs -f, connect, ...
+```
+
+The **machine switcher** at the top switches the whole dashboard to that machine — engines, profiles, models, logs,
+Connect, usage — with a strip saying which one you are acting on. Behind it, `/api/peers/<name>/<path>` relays any API
+call (live log streams included) to that peer with its token. In MCP, `machines` lists them and `status`,
+`list_profiles`, `plan`, `start`, `switch_model`, `stop`, `restart`, `check_updates`, `update_engine`, `job_status`,
+`logs`, `stats`, `events` and `client_config` take `machine="macbook"`; `add_machine`/`remove_machine` manage the list.
+Peers can also be written in `config.yaml` (`peers: {macbook: {url: ..., token: ...}}`); `manager.name` sets how a
+machine is called (default: its host name). Peers of a peer are not reachable through it — add each machine where you
+want to see it.
+
 ### Remote access
 
 Use [Tailscale](https://tailscale.com) (it is already installed on this PC): every device on your tailnet reaches
@@ -137,7 +160,7 @@ claude mcp add --transport http hangar http://<pc>:9000/mcp --header "Authorizat
 Tools: `status`, `list_profiles`, `plan`, `start`, `switch_model`, `stop`, `restart`, `run_custom`, `check_updates`,
 `update_engine`, `rollback_engine`, `job_status`, `logs`, `stats`, `stats_series`, `events`, `list_models`,
 `search_models`, `repo_files`, `download_model`, `downloads_status`, `cancel_download`, `create_profile_from_model`,
-`save_profile`, `copy_profile`, `delete_profile`, `client_config`, `autostart_windows`.
+`save_profile`, `copy_profile`, `delete_profile`, `client_config`, `autostart_windows`, `machines`, `add_machine`, `remove_machine`.
 
 ### Connecting coding agents and other apps
 

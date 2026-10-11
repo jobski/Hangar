@@ -26,7 +26,13 @@
     hangar hosts                                    addresses other machines can use for --host
 
   this PC
-    hangar autostart [on|off]                       start Hangar when you sign in to Windows (no argument: show)
+    hangar autostart [on|off]                       start Hangar when you sign in (no argument: show)
+
+  other machines (peers: other Hangars, e.g. a Mac running MLX)
+    hangar machines                                 this machine and its peers: online, what runs, memory
+    hangar peer add <name> <url> <token> [--both <url-of-this-machine>]   --both adds this machine there too
+    hangar peer remove <name>
+    hangar --on <machine> <command> ...             run any command on a peer, e.g. hangar --on macbook status
 """
 from __future__ import annotations
 
@@ -53,8 +59,16 @@ def _conn() -> tuple[str, str]:
     return url.rstrip("/"), tok or ""
 
 
+ON: str | None = None      # --on <machine>: send every call to that peer through this Hangar
+
+
+def _path(path: str) -> str:
+    return path.replace("/api/", f"/api/peers/{ON}/", 1) if ON and path.startswith("/api/") else path
+
+
 def _call(method: str, path: str, **kw):
     url, tok = _conn()
+    path = _path(path)
     try:
         r = httpx.request(method, url + path, headers={"Authorization": f"Bearer {tok}"}, timeout=660, **kw)
     except httpx.HTTPError as e:
@@ -179,7 +193,7 @@ def cmd_logs(a):
         return
     url, tok = _conn()
     try:
-        with httpx.stream("GET", f"{url}/api/logs/{pl[0]}/stream", params={"lines": lines},
+        with httpx.stream("GET", url + _path(f"/api/logs/{pl[0]}/stream"), params={"lines": lines},
                           headers={"Authorization": f"Bearer {tok}"}, timeout=httpx.Timeout(10, read=None)) as r:
             if r.status_code >= 400:
                 r.read()
@@ -328,6 +342,31 @@ def cmd_autostart(a):
         print("the shortcut points at another copy of Hangar; run: hangar autostart on")
 
 
+def cmd_machines(_):
+    res = _call("GET", "/api/peers")
+    rows = [{**res["self"], "online": True, "this": True}] + res["peers"]
+    for m in rows:
+        s = m.get("summary") or {}
+        state = "this machine" if m.get("this") else ("online" if m["online"] else f"OFFLINE ({m.get('error')})")
+        run = ", ".join(f"{r['profile']}" + (f" {r['gen_tps']:.1f} tok/s" if r.get("gen_tps") else "") for r in s.get("running", []))
+        mem = f"{_mib(s.get('vram_used_mib'))} / {_mib(s.get('vram_total_mib'))} GPU" if s.get("vram_total_mib") else ""
+        name = (m.get("machine") or {}).get("name") or m.get("name")
+        print(f"{m.get('name', name):14s} {state:14s} {(m.get('machine') or m).get('os', ''):8s} {mem:22s} {run or 'idle'}")
+
+
+def cmd_peer(a):
+    pl = [x for x in a if not x.startswith("--")]
+    if pl[:1] == ["add"] and len(pl) >= 4:
+        both = a[a.index("--both") + 1] if "--both" in a and a.index("--both") + 1 < len(a) else None
+        res = _call("POST", "/api/peers", json={"name": pl[1], "url": pl[2], "token": pl[3], "reciprocal_url": both})
+        print(f"added {res['name']} ({res['url']})" + (f"; on {res['name']}: {res['reciprocal']}" if res.get("reciprocal") else ""))
+    elif pl[:1] == ["remove"] and len(pl) >= 2:
+        _call("DELETE", f"/api/peers/{pl[1]}")
+        print(f"removed {pl[1]}")
+    else:
+        sys.exit("usage: hangar peer add <name> <url> <token> [--both <url-of-this-machine>] | hangar peer remove <name>")
+
+
 def cmd_login(a):
     if len(a) < 2:
         sys.exit("usage: hangar login <url> <token>")
@@ -341,13 +380,21 @@ COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "s
             "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
             "stats": cmd_stats, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
             "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom,
-            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart}
+            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines,
+            "peer": cmd_peer}
 NEEDS_ARG = {"plan", "start", "switch", "restart", "update", "rollback", "logs", "job", "search", "files", "download",
              "new-profile", "custom", "connect"}
 
 
 def main(argv=None) -> int:
+    global ON
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--on" in argv:
+        i = argv.index("--on")
+        if i + 1 >= len(argv):
+            sys.exit("--on needs a machine name (see: hangar machines)")
+        ON = argv[i + 1].lower()
+        del argv[i:i + 2]
     if not argv or argv[0] in ("-h", "--help", "help") or argv[0] not in COMMANDS:
         print(__doc__)
         return 0 if not argv or argv[0] in ("-h", "--help", "help") else 2
