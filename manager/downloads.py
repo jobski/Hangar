@@ -2,9 +2,13 @@
 
 Downloads run on their own threads (not the engine job queue), resume from a .part file after an interruption, and
 use aria2c with parallel connections when it is installed and enabled.
+
+Each download leaves a record (.hangar-download.json) in its folder until it completes, so one that was cut off - a
+restart, a crash, a reboot - is found again later and can be resumed or discarded (leftovers()).
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -177,6 +181,9 @@ def annotate(files: list[dict]) -> dict:
     return {"groups": sorted(groups.values(), key=lambda g: (g["mmproj"], g["size"])), "files": files}
 
 
+RECORD = ".hangar-download.json"
+
+
 # ----------------------------------------------------------------------------------------------- downloads
 @dataclass
 class Download:
@@ -260,21 +267,28 @@ class Downloader:
 
     # ---- downloading
     def start(self, source: str, repo: str, include: list[str] | None = None, folder: str | None = None,
-              revision: str | None = None, make_profile: bool = False) -> Download:
+              revision: str | None = None, make_profile: bool = False, files: list[dict] | None = None) -> Download:
+        """files: the exact files (as listed before), e.g. to resume a download from its record."""
         source = self._src(source)
         src = SOURCES[source]
-        files = src.files(repo, revision)
-        if include:
-            pats = [re.compile(_glob_re(p), re.I) for p in include]
-            files = [f for f in files if any(p.search(f["path"]) for p in pats)]
-        elif source in ("huggingface", "modelscope"):
-            raise ValueError("say which files: include=[\"*Q4_K_M*\"] (list_files shows the quants)")
+        if not files:
+            files = src.files(repo, revision)
+            if include:
+                pats = [re.compile(_glob_re(p), re.I) for p in include]
+                files = [f for f in files if any(p.search(f["path"]) for p in pats)]
+            elif source in ("huggingface", "modelscope"):
+                raise ValueError("say which files: include=[\"*Q4_K_M*\"] (list_files shows the quants)")
         if not files:
             raise ValueError("no files match")
         dest = Path(folder) if folder and Path(folder).is_absolute() else self.library_dir / (folder or folder_name_for(
             repo.split(":")[0] if source == "ollama" else Path(urlparse(repo).path).stem if source == "url" else repo))
+        if any(x.folder == str(dest) and x.state in ("queued", "running") for x in self.items.values()):
+            raise ValueError(f"{dest.name} is already downloading")
         d = Download(source=source, repo=repo, files=files, folder=str(dest), revision=revision, make_profile=make_profile)
         d.total_bytes = sum(f.get("size") or 0 for f in files)
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / RECORD).write_text(json.dumps({"source": source, "repo": repo, "revision": revision, "make_profile": make_profile,
+                                               "files": files, "started": time.time()}, indent=1), encoding="utf-8")
         self.items[d.id] = d
         threading.Thread(target=self._run, args=(d,), daemon=True, name=f"dl-{d.id}").start()
         return d
@@ -320,6 +334,7 @@ class Downloader:
                     base_done += f.get("size") or (target.stat().st_size if target.exists() else 0)
                     d.done_bytes = base_done
                 self._notes(d, dest)
+                (dest / RECORD).unlink(missing_ok=True)
                 d.state, d.current = "done", ""
                 d.write(f"done: {dest}")
                 if self.on_done:
@@ -332,6 +347,82 @@ class Downloader:
                 d.write("FAILED: " + d.error)
             finally:
                 d.finished = time.time()
+
+    # ---- downloads that stopped without finishing (and are not running now)
+    def leftovers(self) -> list[dict]:
+        """Unfinished downloads in the library: folders with a download record, .part files, aria2 control files.
+        resumable when Hangar knows what was being downloaded (the record)."""
+        busy = {x.folder for x in self.items.values() if x.state in ("queued", "running")}
+        out = []
+        if not self.library_dir.is_dir():
+            return out
+        for folder in sorted(p for p in self.library_dir.iterdir() if p.is_dir()):
+            if str(folder) in busy:
+                continue
+            rec = None
+            try:
+                rec = json.loads((folder / RECORD).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+            files = []
+            if rec:
+                for f in rec.get("files", []):
+                    name, size = Path(f["path"]).name, f.get("size") or 0
+                    t, part = folder / name, folder / (name + ".part")
+                    have = part.stat().st_size if part.exists() else t.stat().st_size if t.exists() else 0
+                    done = t.exists() and not part.exists() and not (folder / (name + ".aria2")).exists() and (not size or have >= size)
+                    files.append({"name": name, "have": have, "size": size, "complete": done})
+                if all(f["complete"] for f in files):     # everything is there: only the record was left behind
+                    (folder / RECORD).unlink(missing_ok=True)
+                    continue
+            else:
+                for p in sorted(folder.iterdir()):
+                    if p.suffix == ".part":
+                        files.append({"name": p.name[:-5], "have": p.stat().st_size, "size": 0, "complete": False})
+                    elif p.suffix == ".aria2" and (folder / p.stem).exists():
+                        files.append({"name": p.stem, "have": (folder / p.stem).stat().st_size, "size": 0, "complete": False})
+                if not files:
+                    continue
+            mtime = max([p.stat().st_mtime for p in folder.iterdir()] or [0])
+            out.append({"folder": str(folder), "name": folder.name, "source": (rec or {}).get("source"),
+                        "repo": (rec or {}).get("repo"), "resumable": bool(rec), "files": files,
+                        "have_bytes": sum(f["have"] for f in files), "total_bytes": sum(f["size"] for f in files),
+                        "last_activity": mtime})
+        return out
+
+    def _leftover(self, folder: str) -> dict:
+        lo = next((x for x in self.leftovers() if x["folder"] == folder or x["name"] == folder), None)
+        if not lo:
+            raise KeyError(f"no unfinished download in {folder}")
+        return lo
+
+    def resume(self, folder: str) -> Download:
+        lo = self._leftover(folder)
+        if not lo["resumable"]:
+            raise ValueError(f"{lo['name']} has partial files but no record of what was being downloaded: start the same "
+                             "download again from the Models page and it continues from them")
+        rec = json.loads((Path(lo["folder"]) / RECORD).read_text(encoding="utf-8"))
+        return self.start(rec["source"], rec["repo"], folder=lo["folder"], revision=rec.get("revision"),
+                          make_profile=rec.get("make_profile", False), files=rec["files"])
+
+    def discard(self, folder: str) -> dict:
+        """Delete what an unfinished download left: partial files and the record; finished files stay. A folder left
+        empty (or with only its notes) goes too."""
+        lo = self._leftover(folder)
+        f_dir = Path(lo["folder"])
+        removed = []
+        for f in lo["files"]:
+            if f["complete"]:
+                continue
+            for p in (f_dir / (f["name"] + ".part"), f_dir / (f["name"] + ".aria2"), f_dir / f["name"]):
+                if p.exists():
+                    p.unlink()
+                    removed.append(p.name)
+        (f_dir / RECORD).unlink(missing_ok=True)
+        if f_dir.is_dir() and all(p.name == "notes.md" for p in f_dir.iterdir()):
+            shutil.rmtree(f_dir)
+            removed.append(f_dir.name + "/")
+        return {"folder": str(f_dir), "removed": removed}
 
     def _http(self, d: Download, url: str, headers: dict, target: Path, base_done: int, size: int):
         part = target.with_name(target.name + ".part")

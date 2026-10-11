@@ -201,7 +201,21 @@ def build(mgr: Manager) -> MCPServer:
 
     @mcp.tool(description="Progress of downloads (bytes, speed, ETA, state).")
     async def downloads_status() -> str:
-        return _j(mgr.downloader.list())
+        return _j({"downloads": await run(mgr.downloader.list), "unfinished": await run(mgr.downloader.leftovers)})
+
+    @mcp.tool(description="Resume an unfinished download (downloads_status lists them under unfinished) by its folder.")
+    async def resume_download(folder: str) -> str:
+        try:
+            return _j((await run(mgr.downloader.resume, folder)).public())
+        except (KeyError, ValueError) as e:
+            return str(e).strip("'\"")
+
+    @mcp.tool(description="Delete what an unfinished download left behind (its partial files; finished files stay).")
+    async def discard_download(folder: str) -> str:
+        try:
+            return _j(await run(mgr.downloader.discard, folder))
+        except (KeyError, ValueError) as e:
+            return str(e).strip("'\"")
 
     @mcp.tool(description="Cancel a download (partial files stay; downloading again resumes).")
     async def cancel_download(download_id: str) -> str:

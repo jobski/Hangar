@@ -186,6 +186,30 @@ class Manager:
         threading.Thread(target=self._collector, name="collector", daemon=True).start()
         threading.Thread(target=self._update_checker, name="update-check", daemon=True).start()
         self.store.event("manager", "manager started")
+        threading.Timer(5, self._check_leftovers).start()
+
+    def _check_leftovers(self):
+        """Downloads cut off before this start (restart, crash, reboot): say so, and resume them if configured."""
+        try:
+            left = self.downloader.leftovers()
+        except OSError:
+            return
+        if not left:
+            return
+        auto = (self.cfg.get("downloads") or {}).get("auto_resume")
+        resumed = []
+        for lo in left:
+            if auto and lo["resumable"]:
+                try:
+                    self.downloader.resume(lo["folder"])
+                    resumed.append(lo["name"])
+                except (ValueError, KeyError, OSError) as e:
+                    self.store.event("download", f"could not resume {lo['name']}: {e}", level="warn")
+        rest = [lo["name"] for lo in left if lo["name"] not in resumed]
+        if resumed:
+            self.store.event("download", f"resumed unfinished downloads: {', '.join(resumed)}")
+        if rest:
+            self.store.event("download", f"unfinished downloads: {', '.join(rest)} (Models page: resume or discard)", level="warn")
 
     def shutdown(self):
         self.stop_flag.set()

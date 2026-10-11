@@ -213,6 +213,17 @@ hangar logs strata -f                 (follow the log live; Ctrl+C stops)
 REST: everything is under `/api` (interactive docs at `/api/docs`). Actions return a job; add `?wait=60` to wait for
 it. `GET /api/logs/<engine>/stream` follows an engine log as plain text until you disconnect.
 
+### Unfinished downloads
+
+Each download keeps a small record (`.hangar-download.json`) in its folder until it completes. When Hangar starts it
+looks for downloads that were cut off — by a restart, a crash or a reboot — and lists them on the Models page under
+**Downloads** as *unfinished*, with how much is there: **Resume** continues from what is on disk (with aria2 when it is
+installed), **Discard** deletes the partial files and leaves finished ones. Partial files without a record (from an
+older version, say) are listed too; start the same download again to continue them, or discard them. Set
+`downloads.auto_resume: true` to have them resumed when Hangar starts. From a terminal: `hangar downloads`, then
+`hangar downloads resume <folder|all>` or `hangar downloads discard <folder>`; over MCP, `downloads_status`,
+`resume_download` and `discard_download`.
+
 ## Adding a model
 
 1. **Get models** in the web page: search, tick a quant (and the mmproj if you want vision), Download. Tick *make a

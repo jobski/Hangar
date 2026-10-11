@@ -16,7 +16,8 @@
     hangar files <repo> [--modelscope|--ollama]    a repo's quants and sizes
     hangar download <repo> <pattern>... [--modelscope|--ollama|--url] [--no-profile]
           e.g. hangar download unsloth/Qwen3-8B-GGUF "*Q4_K_M*"     hangar download qwen3:8b --ollama
-    hangar downloads                                progress
+    hangar downloads                                progress, and unfinished downloads
+    hangar downloads resume <folder|all> | discard <folder>   pick up or clean up an unfinished one
     hangar new-profile <model.gguf> [name] [ctx]    a llama.cpp profile from the template
     hangar custom <profile> [--ctx N] [-- extra llama args...]   one-off run with changes
 
@@ -284,7 +285,18 @@ def cmd_download(a):
     print("follow it with: hangar downloads")
 
 
-def cmd_downloads(_):
+def cmd_downloads(a):
+    if a and a[0] in ("resume", "discard"):
+        if len(a) < 2:
+            sys.exit(f"usage: hangar downloads {a[0]} <folder>" + (" | all" if a[0] == "resume" else ""))
+        left = _call("GET", "/api/downloads")["leftovers"]
+        targets = [lo["folder"] for lo in left if lo["resumable"]] if a[1] == "all" and a[0] == "resume" else [a[1]]
+        for t in targets:
+            r = _call("POST", f"/api/downloads/leftovers/{a[0]}", json={"folder": t})
+            print(f"resumed {r['repo']} into {r['folder']} (id {r['id']})" if a[0] == "resume" else f"removed {', '.join(r['removed']) or 'nothing'}")
+        if not targets:
+            print("nothing to resume")
+        return
     res = _call("GET", "/api/downloads")
     print(f"aria2c: {res['aria2'] or 'not installed (single connection downloads)'}")
     for d in res["items"]:
@@ -293,6 +305,11 @@ def cmd_downloads(_):
         print(f"{d['id']}  {d['state']:9s} {pct:5.1f}%  {_mib(d['done_bytes'] / 2**20)} / {_mib(d['total_bytes'] / 2**20)}"
               f"  {d['speed'] / 2**20:.1f} MiB/s{eta}  {d['repo']}" + (f"  -> profile {d['result']['profile']}" if d["result"].get("profile") else "")
               + (f"  {d['error']}" if d["error"] else ""))
+    for lo in res.get("leftovers", []):
+        frac = lo["have_bytes"] / lo["total_bytes"] * 100 if lo["total_bytes"] else None
+        pct = (f"{frac:.1f}%" if frac < 10 else f"{frac:.0f}%") if frac is not None else _mib(lo["have_bytes"] / 2**20)
+        print(f"unfinished {lo['name']}: {pct} of {lo['repo'] or 'unknown source'}"
+              + ("  (hangar downloads resume|discard " + lo["name"] + ")" if lo["resumable"] else "  (no record: start it again to continue, or discard)"))
 
 
 def cmd_new_profile(a):

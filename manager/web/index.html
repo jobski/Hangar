@@ -706,10 +706,21 @@ async function renderDownloads() {
   const res = await api("/api/downloads");
   const act = res.items.filter(d => ["queued", "running"].includes(d.state) || Date.now() / 1000 - (d.finished || 0) < 3600);
   const running = act.filter(d => ["queued", "running"].includes(d.state));
-  $("#dlpanel").hidden = !act.length && !!res.aria2;
-  $("#dlmeta").textContent = running.length ? `${running.length} active` : "";
-  $("#cnt-models").textContent = running.length ? `↓ ${running.length}` : "";
-  $("#downloads").innerHTML = act.map(d => {
+  const left = res.leftovers || [];
+  $("#dlpanel").hidden = !act.length && !left.length && !!res.aria2;
+  $("#dlmeta").textContent = [running.length ? `${running.length} active` : "", left.length ? `${left.length} unfinished` : ""].filter(Boolean).join(" · ");
+  $("#cnt-models").textContent = running.length ? `↓ ${running.length}` : left.length ? `⏸ ${left.length}` : "";
+  // downloads that stopped without finishing (a restart, a crash, a reboot) and are not running now
+  const unfinished = left.map(lo => {
+    const pct = lo.total_bytes ? Math.min(100, lo.have_bytes / lo.total_bytes * 100) : 0;
+    return `<div class="dl"><div class="row"><b class="mono" style="font-size:13px">${esc(lo.repo || lo.name)}</b><span class="tag warn">unfinished</span><span class="sp"></span>
+      <span class="num small muted">${mib(lo.have_bytes / 1048576)}${lo.total_bytes ? " / " + mib(lo.total_bytes / 1048576) : ""} · ${ago(lo.last_activity)}</span>
+      ${lo.resumable ? `<button class="btn sm primary" data-act="loresume" data-folder="${esc(lo.folder)}">Resume</button>` : ""}
+      <button class="btn sm ghost danger" data-act="lodiscard" data-folder="${esc(lo.folder)}" data-name="${esc(lo.name)}">Discard</button></div>
+      ${lo.total_bytes ? `<div class="bar warn"><i style="width:${pct}%"></i></div>` : ""}
+      <div class="small muted" style="margin-top:6px;overflow-wrap:anywhere">${esc(lo.files.filter(f => !f.complete).map(f => f.name).join(", "))}${lo.resumable ? "" : " · no record of where it came from: start the same download again to continue it"}</div></div>`;
+  }).join("");
+  $("#downloads").innerHTML = unfinished + act.map(d => {
     const pct = d.total_bytes ? d.done_bytes / d.total_bytes * 100 : 0, live = ["queued", "running"].includes(d.state);
     return `<div class="dl"><div class="row"><b class="mono" style="font-size:13px">${esc(d.repo)}</b><span class="tag ${stateTag(d.state)}">${esc(d.state)}</span><span class="sp"></span>
       <span class="num small muted">${mib(d.done_bytes / 1048576)} / ${mib(d.total_bytes / 1048576)}${d.state === "running" ? ` · <span class="ok-t">${(d.speed / 1048576).toFixed(1)} MiB/s</span>${d.eta_seconds ? " · " + dur(d.eta_seconds) : ""}` : ""}</span>
@@ -987,6 +998,12 @@ document.addEventListener("click", async ev => {
       if (!files.length) return toast("Tick at least one file", true);
       await post("/api/downloads", { source: $("#dlsrc").value, repo: b.dataset.repo, include: files, make_profile: $("#dlprof").checked });
       $("#dlresults").innerHTML = ""; return pollDownloads();
+    }
+    if (act === "loresume") { await post("/api/downloads/leftovers/resume", { folder: b.dataset.folder }); toast("Resumed"); return pollDownloads(); }
+    if (act === "lodiscard") {
+      if (!confirm(`Discard the unfinished download in ${b.dataset.name}? Its partial files are deleted; finished files stay.`)) return;
+      const r = await post("/api/downloads/leftovers/discard", { folder: b.dataset.folder });
+      toast(`Removed ${r.removed.length} partial file${r.removed.length === 1 ? "" : "s"}`); renderLibrary(); return renderDownloads();
     }
     if (act === "dlcancel") { await post(`/api/downloads/${b.dataset.id}/cancel`, {}); return renderDownloads(); }
     if (act === "mprof") { const r = await post("/api/profiles/from-model", { model: b.dataset.model }); await renderProfiles(); const np = PROFILES.find(x => x.id === r.id); toast(`Profile ${r.id} created` + (np && np.description.includes(" · ") ? ": " + np.description.split(" · ")[1] : "")); return editProfile(np, false); }

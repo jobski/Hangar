@@ -233,7 +233,18 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.get("/api/downloads")
     def downloads():
-        return {"items": mgr.downloader.list(), "aria2": mgr.downloader.aria2_path(), "aria2_hint": mgr.downloader.aria2_hint()}
+        return {"items": mgr.downloader.list(), "leftovers": mgr.downloader.leftovers(),
+                "aria2": mgr.downloader.aria2_path(), "aria2_hint": mgr.downloader.aria2_hint()}
+
+    @app.post("/api/downloads/leftovers/resume")
+    def leftover_resume(folder: str = Body(..., embed=True)):
+        return guard(mgr.downloader.resume, folder).public()
+
+    @app.post("/api/downloads/leftovers/discard")
+    def leftover_discard(folder: str = Body(..., embed=True)):
+        res = guard(mgr.downloader.discard, folder)
+        mgr.store.event("download", f"discarded the unfinished download in {Path(res['folder']).name}")
+        return res
 
     @app.post("/api/downloads")
     def download(source: str = Body("huggingface", embed=True), repo: str = Body(..., embed=True),

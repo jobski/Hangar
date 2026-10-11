@@ -33,6 +33,7 @@ downloads:
   max_parallel: 2
   aria2: auto                  # brew install aria2 for parallel connections
   aria2_connections: 16
+  auto_resume: false           # resume downloads that a restart/crash/reboot cut off, when Hangar starts
 
 templates:
   llamacpp:
