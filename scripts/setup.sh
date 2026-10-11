@@ -10,8 +10,10 @@ fi
 .venv/bin/python -m pip install --upgrade pip -q
 .venv/bin/python -m pip install -r requirements.txt -q
 if [ ! -f config.yaml ]; then
-    cp config.example.mac.yaml config.yaml
-    echo "Made config.yaml from config.example.mac.yaml - check the paths in it."
+    EXAMPLE=config.example.yaml
+    [ "$(uname)" = "Darwin" ] && EXAMPLE=config.example.mac.yaml
+    cp "$EXAMPLE" config.yaml
+    echo "Made config.yaml from $EXAMPLE - check the paths in it."
 fi
 chmod +x hangar scripts/*.sh
 .venv/bin/python -c "from manager import config; c = config.load(); print('Token:', config.token(c))"

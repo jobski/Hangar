@@ -31,7 +31,43 @@ command line.
 - **Housekeeping.** Optional stop-when-idle per profile (frees the GPU), restart on crash (at most 3 an hour), and
   engines that were already running get picked up when the manager starts, including ones started by hand.
 
-## Set up
+## Install
+
+One line, from a terminal. It downloads Hangar into `~/hangar`, makes its Python environment and `config.yaml`, puts the
+`hangar` command on your PATH, starts it, and turns on start-at-login. Running it again updates in place.
+
+```sh
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/jobski/hangar/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/jobski/hangar/main/install.ps1 | iex
+```
+
+While the repository is private, those URLs need a GitHub token that can read it (a fine-grained token with
+*Contents: read*):
+
+```sh
+curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://raw.githubusercontent.com/jobski/hangar/main/install.sh | GITHUB_TOKEN=$GITHUB_TOKEN sh
+```
+
+```powershell
+$env:GITHUB_TOKEN = '<token>'; irm -Headers @{Authorization = "token $env:GITHUB_TOKEN"} https://raw.githubusercontent.com/jobski/hangar/main/install.ps1 | iex
+```
+
+Options are environment variables: `HANGAR_DIR` (install folder), `HANGAR_REF` (branch or tag, default `main`),
+`HANGAR_NO_START=1`, `HANGAR_NO_AUTOSTART=1`, `HANGAR_NO_PATH=1`.
+
+**Uninstall.** `sh ~/hangar/uninstall.sh` on macOS/Linux, `& "$HOME\hangar\uninstall.ps1"` on Windows (or pipe the
+`uninstall.*` URL the same way). It stops the engines it runs and the manager, removes start-at-login, the command
+and the PATH entry, and deletes the folder. `config.yaml`, `profiles.yaml` and `data/` (token, stats) are copied to
+`~/hangar-backup-<date>` first unless you pass `--purge` (`-Purge`, or `HANGAR_PURGE=1`); `--yes` (`-Yes`) skips the
+question. Model files and engine folders are never touched, and another Hangar install on the same machine is left
+alone.
+
+## Set up by hand
 
 ```powershell
 cd E:\llm-manager
