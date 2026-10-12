@@ -227,6 +227,23 @@ class Downloader:
         self.aria2_connections = int(dc.get("aria2_connections", 16))
         self.items: dict[str, Download] = {}
         self.on_done = on_done
+        # folders downloaded into outside the library (e.g. a Strata model folder), so leftovers() finds them too
+        self.known_file = Path(cfg["manager"]["data_dir"]) / "download-folders.json" if cfg.get("manager") else None
+
+    def _known_folders(self) -> list[Path]:
+        try:
+            return [Path(x) for x in json.loads(self.known_file.read_text(encoding="utf-8"))]
+        except (OSError, ValueError, AttributeError, TypeError):
+            return []
+
+    def _remember_folder(self, folder: Path):
+        if not self.known_file or folder.parent == self.library_dir:
+            return
+        known = {str(x) for x in self._known_folders()} | {str(folder)}
+        try:
+            self.known_file.write_text(json.dumps(sorted(known), indent=1), encoding="utf-8")
+        except OSError:
+            pass
 
     def aria2_path(self) -> str | None:
         if self.aria2 == "off":
@@ -287,6 +304,7 @@ class Downloader:
         d = Download(source=source, repo=repo, files=files, folder=str(dest), revision=revision, make_profile=make_profile)
         d.total_bytes = sum(f.get("size") or 0 for f in files)
         dest.mkdir(parents=True, exist_ok=True)
+        self._remember_folder(dest)
         (dest / RECORD).write_text(json.dumps({"source": source, "repo": repo, "revision": revision, "make_profile": make_profile,
                                                "files": files, "started": time.time()}, indent=1), encoding="utf-8")
         self.items[d.id] = d
@@ -354,9 +372,9 @@ class Downloader:
         resumable when Hangar knows what was being downloaded (the record)."""
         busy = {x.folder for x in self.items.values() if x.state in ("queued", "running")}
         out = []
-        if not self.library_dir.is_dir():
-            return out
-        for folder in sorted(p for p in self.library_dir.iterdir() if p.is_dir()):
+        folders = sorted(p for p in self.library_dir.iterdir() if p.is_dir()) if self.library_dir.is_dir() else []
+        folders += [p for p in self._known_folders() if p.is_dir() and p not in folders]
+        for folder in folders:
             if str(folder) in busy:
                 continue
             rec = None
@@ -457,7 +475,10 @@ class Downloader:
         cmd = [exe, "--continue=true", f"--max-connection-per-server={self.aria2_connections}",
                f"--split={self.aria2_connections}", "--min-split-size=8M", "--file-allocation=none",
                "--summary-interval=2", "--console-log-level=warn", "--download-result=hide", "--auto-file-renaming=false",
-               "--allow-overwrite=true", "-d", str(target.parent), "-o", target.name]
+               "--allow-overwrite=true", "-d", str(target.parent), "-o", target.name,
+               # CDNs publish IPv6 addresses, and aria2 does not fall back to IPv4 the way other clients do: on a
+               # machine without an IPv6 route every connection fails ("unreachable network")
+               "--disable-ipv6=true"]
         for k, v in headers.items():
             cmd.append(f"--header={k}: {v}")
         cmd.append(url)
