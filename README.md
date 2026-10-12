@@ -112,6 +112,29 @@ from PyPI into the engine's Python (rollback reinstalls the one before). It is o
 than llama.cpp, but mlx-lm has no metrics page or API key, so Hangar shows it running, its memory and its log, not
 token counts, and anyone who can reach its port can use it (keep `host: 127.0.0.1` if only this Mac needs it).
 
+### Roles and the gateway (main, helper, backups)
+
+Give models a *role* — `main`, `helper`, or any name — and point your tools at the role instead of a server. Each
+Hangar has an OpenAI- and Anthropic-compatible **gateway** at `http://<machine>:9000/v1` (API key: the Hangar token,
+as `Authorization: Bearer` or `x-api-key`); the model name is the role.
+
+- A role is an ordered list of targets, each a profile on this machine or on a peer: the first is the primary, the
+  rest are backups. A request goes to the first target that is up; if none is, to `main`, then to anything running.
+  If a target fails before it answers, the next one gets the request.
+- A backup marked *start when needed* is started once the targets before it have been down for 30 s — only if it
+  fits next to what runs (nothing is stopped for it, and the memory budget holds). Once the primary is back, Hangar
+  stops a backup it started after 10 minutes without requests.
+- On a machine where `main` takes the whole GPU (Strata here), set no backup: the role falls back to `main`, which
+  is already loaded.
+- A peer's target goes through that peer's own gateway with its token (its engine keys stay there); a peer on an
+  older Hangar is reached on its engine's port directly.
+
+Set roles on the Overview's **Roles** panel (badges on the engine cards show which roles a model serves), or
+`hangar role set helper macbook/qwen3-coder-30b-a3b-instruct-ud-q4_k_xl this/gemma-3-4b --auto`, `hangar roles`,
+`hangar role rm <name>`; over MCP, `roles` and `set_role`. The **Connect** page includes a `hangar` provider whose
+models are the roles, with the smallest context among each role's targets, so the settings it gives work whichever
+target answers.
+
 ### Reasoning effort
 
 How hard a thinking model thinks before it answers. A running engine that supports it shows **Reasoning: <level>**
@@ -193,7 +216,7 @@ claude mcp add --transport http hangar http://<pc>:9000/mcp --header "Authorizat
 Tools: `status`, `list_profiles`, `plan`, `start`, `switch_model`, `stop`, `restart`, `run_custom`, `check_updates`,
 `update_engine`, `rollback_engine`, `job_status`, `logs`, `stats`, `stats_series`, `events`, `list_models`,
 `search_models`, `repo_files`, `download_model`, `downloads_status`, `cancel_download`, `create_profile_from_model`,
-`save_profile`, `copy_profile`, `delete_profile`, `client_config`, `autostart_windows`, `machines`, `add_machine`, `remove_machine`, `memory_budget`.
+`save_profile`, `copy_profile`, `delete_profile`, `client_config`, `autostart_windows`, `machines`, `add_machine`, `remove_machine`, `memory_budget`, `roles`, `set_role`, `reasoning_effort`.
 
 ### Connecting coding agents and other apps
 

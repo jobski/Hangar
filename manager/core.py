@@ -1040,7 +1040,8 @@ class Manager:
         return {"time": time.time(), "machine": machine_info(self.cfg), "budget": self.budget_public(),
                 "engines": engines, "resources": snap, "warnings": warn,
                 "job": self.current_job.public(10) if self.current_job else None,
-                "queued": self.queue.qsize()}
+                "queued": self.queue.qsize(),
+                "roles": self.roles.public() if getattr(self, "roles", None) else []}
 
     def profiles_public(self) -> list[dict]:
         self.refresh_profiles()

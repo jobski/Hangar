@@ -29,6 +29,10 @@
 
   this PC
     hangar autostart [on|off]                       start Hangar when you sign in to Windows (no argument: show)
+    hangar roles                                    roles (main, helper, ...) and which model serves each now
+    hangar role set <name> <machine/profile> [<machine/profile> ...] [--auto]   first = primary, then backups;
+          --auto starts backups when needed (machine "this" = here). e.g. hangar role set helper macbook/qwen3-coder this/gemma-3-4b --auto
+    hangar role rm <name>
     hangar reasoning <engine> [level] [--restart]  a thinking model's effort: none/low/medium/high/...; show without level
     hangar budget [GB|off]                          memory Hangar's engines may use here (no argument: show)
 
@@ -397,6 +401,31 @@ def cmd_reasoning(a):
           + ("changes apply at once" if r["live"] else "a change restarts the engine") + ")")
 
 
+def cmd_roles(_):
+    for r in _call("GET", "/api/roles"):
+        chain = " > ".join(f"{t['machine'] or 'this'}/{t['profile']} [{t['state']}{', auto' if t['auto_start'] else ''}]"
+                           + (" *" if t["serving"] else "") for t in r["targets"]) or ("(whatever runs here)" if r["name"] == "main" else "(none)")
+        s = r["serving"]
+        now = f"{s['machine'] or 'this'}/{s['profile']}" + (" (fallback)" if r["fallback"] else "") if s else "NOTHING UP"
+        print(f"{r['name']:10s} {chain}\n{'':10s} serving now: {now}")
+
+
+def cmd_role(a):
+    pl = [x for x in a if not x.startswith("--")]
+    if pl[:1] == ["set"] and len(pl) >= 3:
+        targets = []
+        for i, spec in enumerate(pl[2:]):
+            machine, _, prof = spec.rpartition("/")
+            targets.append({"machine": "" if machine in ("", "this") else machine, "profile": prof, "auto_start": i > 0 and "--auto" in a})
+        _call("POST", "/api/roles", json={"name": pl[1], "targets": targets})
+        cmd_roles([])
+    elif pl[:1] in (["rm"], ["remove"]) and len(pl) >= 2:
+        _call("DELETE", f"/api/roles/{pl[1]}")
+        print(f"removed role {pl[1]}")
+    else:
+        sys.exit("usage: hangar role set <name> <machine/profile> [...] [--auto] | hangar role rm <name>")
+
+
 def cmd_budget(a):
     if a and a[0] not in ("off", "none"):
         try:
@@ -463,7 +492,7 @@ COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "s
             "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
             "stats": cmd_stats, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
             "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom,
-            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines, "pair-code": cmd_pair_code, "budget": cmd_budget, "reasoning": cmd_reasoning,
+            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines, "pair-code": cmd_pair_code, "budget": cmd_budget, "roles": cmd_roles, "role": cmd_role, "reasoning": cmd_reasoning,
             "peer": cmd_peer}
 NEEDS_ARG = {"plan", "start", "switch", "restart", "update", "rollback", "logs", "job", "search", "files", "download",
              "new-profile", "custom", "connect"}

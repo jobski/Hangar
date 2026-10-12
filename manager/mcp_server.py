@@ -272,6 +272,30 @@ def build(mgr: Manager) -> MCPServer:
         except (KeyError, ValueError) as e:
             return str(e).strip("'\"")
 
+    @mcp.tool(description="Roles (main, helper, ...): each an ordered list of targets (machine/profile); clients ask "
+                          "this Hangar's gateway (/v1, model = the role's name) and get the first target that is up, "
+                          "else main, else anything running. Shows which model serves each role now.")
+    async def roles(machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "GET", "roles")
+        return _j(await run(mgr.roles.public))
+
+    @mcp.tool(description="Set a role: targets in order, each \"machine/profile\" (\"this/<profile>\" for this machine); the "
+                          "first is the primary, the rest backups. auto_start_backups: start a backup when the targets "
+                          "before it have been down 30 s (only if it fits next to what runs). An empty list deletes it.")
+    async def set_role(name: str, targets: list[str], auto_start_backups: bool = False) -> str:
+        try:
+            if not targets:
+                await run(mgr.roles.delete, name)
+                return _j(await run(mgr.roles.public))
+            ts = []
+            for i, spec in enumerate(targets):
+                m, _, p = spec.rpartition("/")
+                ts.append({"machine": "" if m in ("", "this") else m, "profile": p, "auto_start": i > 0 and auto_start_backups})
+            return _j(await run(mgr.roles.save, name, ts))
+        except (KeyError, ValueError) as e:
+            return str(e).strip("'\"")
+
     @mcp.tool(description="The memory budget: how much of the machine (VRAM + RAM together, GB) Hangar's engines may use. "
                           "Starts that would go over it are refused (force overrides) and new profiles get the largest "
                           "context that fits. gb: set it; clear=True: no budget; neither: just report.")
