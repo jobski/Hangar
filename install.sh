@@ -58,7 +58,15 @@ if [ -d "$DIR/.git" ]; then
     ours && RESTART=1
     auth -C "$DIR" fetch --quiet origin "$REF"
     git -C "$DIR" checkout --quiet "$REF" 2>/dev/null || git -C "$DIR" checkout --quiet -B "$REF" "origin/$REF"
-    git -C "$DIR" merge --quiet --ff-only "origin/$REF" || warn "local changes in $DIR; kept them and did not update"
+    if ! git -C "$DIR" merge --quiet --ff-only "origin/$REF" 2>/dev/null; then
+        # not a fast-forward: either real local edits (kept), or the repo's history was rewritten upstream (nothing
+        # local to lose: config.yaml, data/ and models are not tracked), in which case take GitHub's version
+        if git -C "$DIR" diff --quiet && git -C "$DIR" diff --cached --quiet; then
+            git -C "$DIR" reset --quiet --hard "origin/$REF" && say "Took the repository's rewritten history"
+        else
+            warn "local changes in $DIR; kept them and did not update"
+        fi
+    fi
 elif [ -e "$DIR" ]; then
     die "$DIR exists and is not a Hangar checkout; set HANGAR_DIR to install somewhere else"
 else

@@ -51,8 +51,15 @@
         git @auth -C $dir fetch --quiet origin $ref
         git -C $dir checkout --quiet $ref 2>$null
         if ($LASTEXITCODE -ne 0) { git -C $dir checkout --quiet -B $ref "origin/$ref" }
-        git -C $dir merge --quiet --ff-only "origin/$ref"
-        if ($LASTEXITCODE -ne 0) { Warn "local changes in $dir; kept them and did not update" }
+        git -C $dir merge --quiet --ff-only "origin/$ref" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            # not a fast-forward: real local edits (kept), or history rewritten upstream (config.yaml, data\ and
+            # models are not tracked, so nothing is lost by taking GitHub's version)
+            git -C $dir diff --quiet; $clean = ($LASTEXITCODE -eq 0)
+            git -C $dir diff --cached --quiet; $clean = $clean -and ($LASTEXITCODE -eq 0)
+            if ($clean) { git -C $dir reset --quiet --hard "origin/$ref"; Say "Took the repository's rewritten history" }
+            else { Warn "local changes in $dir; kept them and did not update" }
+        }
     } elseif (Test-Path $dir) {
         throw "$dir exists and is not a Hangar checkout; set HANGAR_DIR to install somewhere else"
     } else {
