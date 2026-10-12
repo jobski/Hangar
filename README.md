@@ -224,6 +224,7 @@ hangar download qwen3:8b --ollama     hangar downloads
 hangar custom tiel-coder-35b --ctx 65536 -- --temp 0.6
 hangar autostart on                   (start with Windows; off to stop)
 hangar logs strata -f                 (follow the log live; Ctrl+C stops)
+hangar start last [engine]            (start what that engine ran last; also a Run button on a stopped engine's card)
 ```
 
 REST: everything is under `/api` (interactive docs at `/api/docs`). Actions return a job; add `?wait=60` to wait for

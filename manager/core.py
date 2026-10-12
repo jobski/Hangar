@@ -422,6 +422,19 @@ class Manager:
         self._reasoning_cache.pop(engine, None)
         return out
 
+    def _last_run(self, engine: str) -> dict | None:
+        """What a stopped engine ran last, to start it again in one click: the newest run of a profile that still
+        exists and is not a one-off custom run; runs that never got ready count only if nothing else did."""
+        rows = self.store.recent_sessions(engine)
+        for want_ready in (True, False):
+            for r in rows:
+                p = self.profiles.get(r["profile"])
+                if p and p.source != "custom" and (r["ready"] or not want_ready):
+                    return {"profile": p.id, "description": p.description, "stopped": r["stopped"],
+                            "stop_reason": r["stop_reason"],
+                            "ran_seconds": (r["stopped"] - r["started"]) if r["stopped"] and r["started"] else None}
+        return None
+
     def _reasoning_now(self, engine: str) -> dict | None:
         """The running engine's reasoning level for the status, asked at most every 15 s (Strata answers over HTTP)."""
         hit = self._reasoning_cache.get(engine)
@@ -1018,6 +1031,7 @@ class Manager:
                 except psutil.Error:
                     pass
                 e["port_taken_by"] = owner
+                e["last"] = self._last_run(name)
             e["version"] = e["update"].get("current")
             engines.append(e)
         warn = []

@@ -578,6 +578,8 @@ function renderStatus(s) {
     const rz = run && run.reasoning;
     if (rz) acts += `<button class="btn sm" data-act="reason" data-e="${esc(e.name)}" title="how hard the model thinks${rz.live ? " (changes at once)" : " (a change restarts it)"}"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2Z"/></svg>Reasoning: ${esc(rz.level)}</button>`;
     if (run) acts += `<button class="btn sm danger" data-act="stop" data-e="${esc(e.name)}">${ICON.stop}Stop</button><button class="btn sm" data-act="restart" data-e="${esc(e.name)}">${ICON.restart}Restart</button>`;
+    const last = !run && e.last && !e.port_taken_by ? e.last : null;
+    if (last) acts += `<button class="btn sm primary" data-act="start" data-p="${esc(last.profile)}" title="start ${esc(last.profile)} again">${ICON.play}Run ${esc(last.profile)}</button>`;
     if (e.can_update) acts += `<button class="btn sm ${up.available ? "" : "ghost"}" data-act="update" data-e="${esc(e.name)}">Update${up.available ? " now" : ""}</button>`;
     if (e.can_rollback) acts += `<button class="btn sm ghost" data-act="rollback" data-e="${esc(e.name)}">Roll back</button>`;
     acts += `<button class="btn sm" data-act="logs" data-e="${esc(e.name)}">${ICON.logs}Logs</button>`;
@@ -597,6 +599,8 @@ function renderStatus(s) {
           <div class="stat"><div class="sv">${num(ss.prompt_tokens)}</div><div class="sl">in since start</div></div>
           <div class="stat"><div class="sv">${gb(run.ram_mib)}<small>GB</small></div><div class="sl">RAM · CPU ${run.cpu_percent.toFixed(0)}%</div></div>
         </div>`;
+    } else if (last) {
+      h += `<div class="esub">Last: <b>${esc(last.profile)}</b>${last.description ? ` · ${esc(last.description.split(" · ")[0])}` : ""}${last.stopped ? ` · stopped ${ago(last.stopped)}` : ""}${last.ran_seconds ? ` after ${dur(last.ran_seconds)}` : ""}${last.stop_reason && !/request|stop/i.test(last.stop_reason) ? ` <span class="warn-t">(${esc(last.stop_reason)})</span>` : ""}</div>`;
     } else if (e.port_taken_by) {
       h += `<div class="warnbox">${ICON.warn}<span>Port ${e.port} is used by ${esc(e.port_taken_by.name)} (pid ${e.port_taken_by.pid}), not by this manager.</span></div>`;
     }

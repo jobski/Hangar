@@ -3,6 +3,7 @@
     hangar login http://my-pc:9000 <token>    remember where the manager is (saved in ~/.hangar.json)
     hangar status | profiles | plan <profile>
     hangar start <profile> [--force] [--no-update | --update]
+    hangar start last [engine]    what that engine (or the last one stopped) ran last
     hangar switch <profile>       (same as start)
     hangar stop <engine|all> | restart <engine>
     hangar check [engine] | update <engine> | rollback <engine>
@@ -142,7 +143,9 @@ def cmd_status(_):
                   + ("" if run["managed"] else "  (started outside the manager)"))
         else:
             other = e.get("port_taken_by")
-            print(f"{e['name']:10s} :{e['port']}  stopped" + (f" (port used by {other['name']} pid {other['pid']})" if other else "") + v)
+            last = e.get("last")
+            print(f"{e['name']:10s} :{e['port']}  stopped" + (f" (port used by {other['name']} pid {other['pid']})" if other else "") + v
+                  + (f"  last: {last['profile']} (hangar start last {e['name']})" if last else ""))
     if s["job"]:
         print(f"\nrunning job: {s['job']['title']} ({s['job']['state']})")
 
@@ -164,6 +167,15 @@ def _start_args(a):
 
 
 def cmd_start(a):
+    if a and a[0] == "last":
+        engines = [e for e in _call("GET", "/api/status")["engines"] if not e["running"] and e.get("last")]
+        if len(a) > 1 and not a[1].startswith("--"):
+            engines = [e for e in engines if e["name"] == a[1]]
+        if not engines:
+            sys.exit("nothing to start again: " + ("that engine is running or has no earlier run" if len(a) > 1 else "every engine is running or has no earlier run"))
+        e = max(engines, key=lambda e: e["last"]["stopped"] or 0)
+        print(f"starting {e['last']['profile']} again on {e['name']}")
+        a = [e["last"]["profile"]] + [x for x in a[1:] if x.startswith("--")]
     return _follow(_call("POST", "/api/start", json=_start_args(a)))
 
 
