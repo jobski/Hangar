@@ -111,6 +111,20 @@ class Engine:
             return None
         return parse_prometheus(r.text)
 
+    # ---- reasoning effort: how hard a thinking model thinks
+    def reasoning_levels(self, profile: Profile) -> list[str] | None:
+        """The levels this engine can set for this profile ("default" = the model's own); None when it cannot."""
+        return None
+
+    def reasoning_get(self, profile: Profile) -> str:
+        """The level in effect now. Engines that set it at launch read it from the profile (reasoning_effort)."""
+        return str(profile.cfg.get("reasoning_effort") or "default")
+
+    def reasoning_set(self, profile: Profile, level: str) -> bool:
+        """Apply a level to the running engine. True when it took effect now; False when it needs a restart (the
+        level is then kept with the profile and used at the next launch)."""
+        return False
+
     def progress(self, lines: list[str]) -> dict | None:
         """What a request is doing right now, from the engine's own progress lines in its log (the last lines given,
         newest last), for engines whose counters only move when a request ends. {phase, gen_tps, tokens} or

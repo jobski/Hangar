@@ -85,6 +85,9 @@ class LlamaCppEngine(Engine):
             cmd.append("--metrics")
         if self.api_key:
             cmd += ["--api-key", self.api_key]
+        lvl = c.get("reasoning_effort")
+        if lvl and lvl != "default" and not {"--reasoning", "-rea", "--reasoning-effort"} & set(args) and self._has_reasoning():
+            cmd += ["--reasoning", "off"] if lvl == "none" else ["--reasoning-effort", str(lvl)]
         return Launch(cmd=cmd + args, cwd=str(self.dir), env={k: str(v) for k, v in (c.get("env") or {}).items()})
 
     def health(self, profile):
@@ -122,6 +125,34 @@ class LlamaCppEngine(Engine):
         ram = max(0.0, files + kv - vram) + 1024
         return Estimate(vram, ram, greedy, f"estimated from file sizes and a {ctx // 1024}K context ({kv:.0f} MiB of KV "
                                            "cache); replaced by measured use after a run")
+
+    # ---- reasoning effort: --reasoning-effort (and --reasoning off for none), so a change needs a restart
+    LEVELS = ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+    def _has_reasoning(self) -> bool:
+        """Whether this llama-server build has --reasoning-effort (newer builds; older ones refuse unknown flags)."""
+        try:
+            key = self.exe.stat().st_mtime
+        except OSError:
+            return False
+        if getattr(self, "_reasoning_probe", (None,))[0] != key:
+            try:
+                out = subprocess.run([str(self.exe), "--help"], capture_output=True, text=True, timeout=30,
+                                     creationflags=NO_WINDOW)
+                ok = "--reasoning-effort" in (out.stdout + out.stderr)
+            except (OSError, subprocess.SubprocessError):
+                ok = False
+            self._reasoning_probe = (key, ok)
+        return self._reasoning_probe[1]
+
+    def reasoning_levels(self, profile):
+        return self.LEVELS if self._has_reasoning() else None
+
+    def reasoning_get(self, profile):
+        args = [str(a) for a in profile.cfg.get("args", [])]
+        if arg_value(args, "--reasoning", "-rea") == "off":
+            return "none"
+        return arg_value(args, "--reasoning-effort") or str(profile.cfg.get("reasoning_effort") or "default")
 
     # ---- updates
     def version(self) -> str | None:

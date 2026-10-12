@@ -290,6 +290,16 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         mgr.store.event("connect", f"wrote {kind} settings to {res['file']}")
         return res
 
+    # ---- reasoning effort of a thinking model (live on Strata; a restart on llama.cpp)
+    @app.get("/api/reasoning")
+    def reasoning_get(engine: str, profile: str | None = None):
+        return guard(mgr.reasoning, engine, profile)
+
+    @app.post("/api/reasoning")
+    def reasoning_set(engine: str = Body(..., embed=True), level: str = Body(..., embed=True),
+                      profile: str | None = Body(None, embed=True), restart: bool = Body(False, embed=True)):
+        return guard(mgr.set_reasoning, engine, level, profile, restart)
+
     # ---- memory budget: how much of this machine (VRAM + RAM) Hangar's engines may use
     @app.get("/api/budget")
     def budget_get():

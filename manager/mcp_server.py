@@ -256,6 +256,22 @@ def build(mgr: Manager) -> MCPServer:
         snip["hosts"] = await run(clients.hosts)
         return _j(snip)
 
+    @mcp.tool(description="A thinking model's reasoning effort on an engine: omit level to see it and the levels "
+                          "(Strata: default/none/low/medium/high, applied at once; llama.cpp: default/none/minimal/low/"
+                          "medium/high/xhigh/max, applied at the next start, or now with restart=true).")
+    async def reasoning_effort(engine: str, level: str | None = None, restart: bool = False,
+                               machine: str | None = None) -> str:
+        if machine:
+            if level is None:
+                return await peer(machine, "GET", "reasoning", {"engine": engine})
+            return await peer(machine, "POST", "reasoning", body={"engine": engine, "level": level, "restart": restart})
+        try:
+            if level is None:
+                return _j(await run(mgr.reasoning, engine))
+            return _j(await run(mgr.set_reasoning, engine, level, None, restart))
+        except (KeyError, ValueError) as e:
+            return str(e).strip("'\"")
+
     @mcp.tool(description="The memory budget: how much of the machine (VRAM + RAM together, GB) Hangar's engines may use. "
                           "Starts that would go over it are refused (force overrides) and new profiles get the largest "
                           "context that fits. gb: set it; clear=True: no budget; neither: just report.")

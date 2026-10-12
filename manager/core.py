@@ -6,6 +6,7 @@ single worker thread, so two remote requests can never race each other; each job
 from __future__ import annotations
 
 import collections
+import dataclasses
 import json
 import os
 import queue
@@ -114,6 +115,7 @@ class Manager:
         self.data_dir: Path = self.cfg["manager"]["data_dir"]
         self.logs_dir: Path = self.cfg["manager"]["logs_dir"]
         self.store = Store(self.data_dir / "stats.db")
+        self._reasoning_cache: dict = {}
         self.lock = threading.RLock()            # guards instances / profiles
         self.instances: dict[str, Instance] = {}
         self.engines: dict[str, Engine] = {}
@@ -371,6 +373,68 @@ class Manager:
         pid = self.profile_from_model(str(mains[0]), name=Path(d.folder).name)
         return {"profile": pid}
 
+    # ---- reasoning effort, per profile (kept in data/settings.json; engines that set it live are asked directly)
+    def effective(self, p: Profile) -> Profile:
+        """The profile as it launches: with the reasoning level chosen for it from the dashboard/CLI/MCP."""
+        lvl = (self._settings().get("reasoning") or {}).get(p.id)
+        return dataclasses.replace(p, cfg={**p.cfg, "reasoning_effort": lvl}) if lvl else p
+
+    def reasoning(self, engine: str, profile: str | None = None) -> dict:
+        eng = self.engine(engine)
+        inst = self.instances.get(engine)
+        pid = profile or (inst.profile if inst else None)
+        if not pid:
+            raise ValueError(f"{engine} is not running; name a profile")
+        p = self.effective(self.profile(pid))
+        levels = eng.reasoning_levels(p)
+        running = bool(inst and inst.profile == pid)
+        return {"engine": engine, "profile": pid, "supported": bool(levels), "levels": levels or [],
+                "level": eng.reasoning_get(p) if levels else None, "running": running,
+                "live": type(eng).reasoning_set is not Engine.reasoning_set}
+
+    def set_reasoning(self, engine: str, level: str, profile: str | None = None, restart: bool = False) -> dict:
+        info = self.reasoning(engine, profile)
+        if not info["supported"]:
+            raise ValueError(f"{engine} cannot set a reasoning effort" + (" (this llama.cpp build is too old: update it)"
+                                                                          if self.engines[engine].plugin == "llamacpp" else ""))
+        if level not in info["levels"]:
+            raise ValueError(f"reasoning effort for {engine}: one of {', '.join(info['levels'])}")
+        p = self.profile(info["profile"])
+        if info["live"]:
+            if not info["running"]:
+                raise ValueError(f"{engine} sets the reasoning effort while it runs: start {p.id} first")
+            self.engines[engine].reasoning_set(self.effective(p), level)
+            self.store.event("reasoning", f"{p.id}: reasoning effort {level} (live)", engine, p.id)
+            self._reasoning_cache.pop(engine, None)
+            return {**self.reasoning(engine, p.id), "applied": "now"}
+        s = self._settings()
+        r = s.setdefault("reasoning", {})
+        if level == "default":
+            r.pop(p.id, None)
+        else:
+            r[p.id] = level
+        (self.data_dir / "settings.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
+        self.store.event("reasoning", f"{p.id}: reasoning effort {level}" + (" (restarting)" if restart and info["running"] else ""),
+                         engine, p.id)
+        out = {**self.reasoning(engine, p.id), "applied": "next start"}
+        if info["running"] and restart:
+            out.update(applied="restart", job=self.restart(engine).id)
+        self._reasoning_cache.pop(engine, None)
+        return out
+
+    def _reasoning_now(self, engine: str) -> dict | None:
+        """The running engine's reasoning level for the status, asked at most every 15 s (Strata answers over HTTP)."""
+        hit = self._reasoning_cache.get(engine)
+        if hit and time.time() - hit[0] < 15:
+            return hit[1]
+        try:
+            r = self.reasoning(engine)
+            val = {"level": r["level"], "levels": r["levels"], "live": r["live"]} if r["supported"] else None
+        except (ValueError, KeyError):
+            val = None
+        self._reasoning_cache[engine] = (time.time(), val)
+        return val
+
     # ---- the memory budget: how much of this machine Hangar's engines may use (VRAM + RAM together)
     def _settings(self) -> dict:
         try:
@@ -540,7 +604,7 @@ class Manager:
         return {"profile": p.id, "engine": eng.name, "port": eng.port, "url": f"http://<this-pc>:{eng.port}"}
 
     def _spawn(self, job: Job, eng: Engine, p: Profile):
-        launch = eng.launch(p)
+        launch = eng.launch(self.effective(p))
         log_path = self.logs_dir / f"{eng.name}.log"
         if log_path.exists() and log_path.stat().st_size > 50 * 2**20:
             log_path.replace(log_path.with_suffix(".old.log"))
@@ -944,7 +1008,8 @@ class Manager:
                                 "started": inst.started, "ready": inst.ready,
                                 "uptime_seconds": time.time() - inst.started, "ram_mib": inst.ram_mib,
                                 "cpu_percent": inst.cpu_percent, "vram_mib_est": inst.peak_vram,
-                                "stats": self.live(inst)}
+                                "stats": self.live(inst),
+                                "reasoning": self._reasoning_now(name) if inst.state == "ready" else None}
             else:
                 owner = None
                 try:

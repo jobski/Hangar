@@ -575,6 +575,8 @@ function renderStatus(s) {
     const upd = up.available ? `<span class="tag warn" title="${esc(up.latest)}">↑ ${esc(up.latest)}</span>` : up.error ? `<span class="tag bad" title="${esc(up.error)}">update check failed</span>` : "";
     const dot = run ? (run.state === "ready" ? "ok" : "warn") : "";
     let acts = "";
+    const rz = run && run.reasoning;
+    if (rz) acts += `<button class="btn sm" data-act="reason" data-e="${esc(e.name)}" title="how hard the model thinks${rz.live ? " (changes at once)" : " (a change restarts it)"}"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2Z"/></svg>Reasoning: ${esc(rz.level)}</button>`;
     if (run) acts += `<button class="btn sm danger" data-act="stop" data-e="${esc(e.name)}">${ICON.stop}Stop</button><button class="btn sm" data-act="restart" data-e="${esc(e.name)}">${ICON.restart}Restart</button>`;
     if (e.can_update) acts += `<button class="btn sm ${up.available ? "" : "ghost"}" data-act="update" data-e="${esc(e.name)}">Update${up.available ? " now" : ""}</button>`;
     if (e.can_rollback) acts += `<button class="btn sm ghost" data-act="rollback" data-e="${esc(e.name)}">Roll back</button>`;
@@ -1016,6 +1018,7 @@ document.addEventListener("click", async ev => {
       return toast(`Written to ${r.file}` + (r.backup ? " (backup kept)" : ""));
     }
     if (act === "logs") return streamLog(e);
+    if (act === "reason") return reasoningDialog(e);
     if (act === "logpause") { logPaused = !logPaused; b.textContent = logPaused ? "Resume" : "Pause"; logState(logPaused ? "paused" : "live", logPaused ? "warn" : "ok"); if (!logPaused) flushLog(); return; }
     if (act === "logcopy") return copyText($("#logpre").textContent);
     const confirmMsg = { stop: `Stop ${e}?`, restart: `Restart ${e}?`, update: `Update ${e}? It stops while updating and starts again after.`, rollback: `Roll ${e} back to its previous version?` }[act];
@@ -1168,6 +1171,32 @@ async function addMachineDialog() {
     } catch (e) { fail(e); $("#pmgo").disabled = false; }
   };
   setTimeout(() => $("#pmcode").focus(), 50);
+}
+
+// ---- reasoning effort of the running model
+async function reasoningDialog(engine) {
+  const r = await api(`/api/reasoning?engine=${encodeURIComponent(engine)}`);
+  if (!r.supported) return toast(`${engine} cannot set a reasoning effort`, true);
+  const hint = { default: "the model's own", none: "no thinking", minimal: "", low: "brief", medium: "", high: "", xhigh: "", max: "" };
+  dialog(`Reasoning effort · ${r.profile}`, `
+    <p class="small muted" style="margin:0 0 12px">How hard the model thinks before it answers. Less thinking answers sooner and uses fewer tokens; more is better for hard problems. ${r.live ? "This engine changes it at once, for every client that does not ask for its own." : "llama.cpp sets it when it starts, so a change restarts the model (a few seconds for it to load again)."}</p>
+    <div class="seg" id="rzseg" style="flex-wrap:wrap">${r.levels.map(l => `<button class="${l === r.level ? "on" : ""}" data-lvl="${esc(l)}" title="${esc(hint[l] || "")}">${esc(l)}</button>`).join("")}</div>
+    <div class="small muted" style="margin-top:10px">Now: <b>${esc(r.level)}</b>${r.level === "default" ? " (the model's own setting)" : ""}</div>`);
+  document.querySelectorAll("#rzseg [data-lvl]").forEach(btn => btn.onclick = async () => {
+    const level = btn.dataset.lvl;
+    if (level === r.level) return $("#dlg").close();
+    let restart = false;
+    if (!r.live) {
+      restart = confirm(`Restart ${engine} now with reasoning effort "${level}"? Requests in progress are cut off. Cancel keeps it for the next start.`);
+    }
+    try {
+      const res = await post("/api/reasoning", { engine, level, restart });
+      $("#dlg").close();
+      if (res.job) { watchJob = res.job; renderJob(); }
+      toast(`${res.profile}: reasoning effort ${res.level} — ` + ({ now: "applied", restart: "restarting", "next start": "applies at the next start" }[res.applied]));
+      refreshFast();
+    } catch (e) { fail(e); }
+  });
 }
 
 // ---- start with Windows

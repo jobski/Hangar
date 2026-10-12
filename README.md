@@ -112,6 +112,22 @@ from PyPI into the engine's Python (rollback reinstalls the one before). It is o
 than llama.cpp, but mlx-lm has no metrics page or API key, so Hangar shows it running, its memory and its log, not
 token counts, and anyone who can reach its port can use it (keep `host: 127.0.0.1` if only this Mac needs it).
 
+### Reasoning effort
+
+How hard a thinking model thinks before it answers. A running engine that supports it shows **Reasoning: <level>**
+next to Stop/Restart; press it to change the level.
+
+- **Strata** (`default`, `none`, `low`, `medium`, `high`): changes at once, for every client that does not ask for its
+  own level, through Strata's shared Chat settings (which it keeps between starts; its other settings stay as they are).
+- **llama.cpp** (`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`): set when it starts
+  (`--reasoning-effort`, or `--reasoning off` for none), so the dashboard offers to restart it; the level is kept per
+  profile, also for profiles that are not running. Needs a llama.cpp build that has `--reasoning-effort` (update it if
+  the button is missing). A level in the profile's own `args` wins.
+- MLX models do not offer it.
+
+`hangar reasoning strata low`, `hangar reasoning llamacpp high --restart` (no level: show it); over MCP,
+`reasoning_effort` (with `machine=` for a peer). A client can still set its own level per request.
+
 ### Memory budget
 
 Tell Hangar how much of a machine its engines may use, VRAM and RAM together — say 15 GB on a Mac you also work on.

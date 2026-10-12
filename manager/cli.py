@@ -28,6 +28,7 @@
 
   this PC
     hangar autostart [on|off]                       start Hangar when you sign in to Windows (no argument: show)
+    hangar reasoning <engine> [level] [--restart]  a thinking model's effort: none/low/medium/high/...; show without level
     hangar budget [GB|off]                          memory Hangar's engines may use here (no argument: show)
 
   other machines (peers: other Hangars, e.g. a Mac running MLX)
@@ -366,6 +367,24 @@ def cmd_autostart(a):
         print("the shortcut points at another copy of Hangar; run: hangar autostart on")
 
 
+def cmd_reasoning(a):
+    pl = [x for x in a if not x.startswith("--")]
+    if not pl:
+        sys.exit("usage: hangar reasoning <engine> [level] [--restart]")
+    if len(pl) > 1:
+        r = _call("POST", "/api/reasoning", json={"engine": pl[0], "level": pl[1], "restart": "--restart" in a})
+        how = {"now": "applied now", "restart": f"restarting {pl[0]} (job {r.get('job')})",
+               "next start": "applies at the next start" + (f"; add --restart to apply it now" if r["running"] else "")}[r["applied"]]
+        print(f"{r['profile']}: reasoning effort {r['level']} - {how}")
+        return
+    r = _call("GET", "/api/reasoning", params={"engine": pl[0]})
+    if not r["supported"]:
+        print(f"{pl[0]} ({r['profile']}) cannot set a reasoning effort")
+        return
+    print(f"{r['profile']}: reasoning effort {r['level']}  (levels: {', '.join(r['levels'])}; "
+          + ("changes apply at once" if r["live"] else "a change restarts the engine") + ")")
+
+
 def cmd_budget(a):
     if a and a[0] not in ("off", "none"):
         try:
@@ -432,7 +451,7 @@ COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "s
             "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
             "stats": cmd_stats, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
             "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom,
-            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines, "pair-code": cmd_pair_code, "budget": cmd_budget,
+            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines, "pair-code": cmd_pair_code, "budget": cmd_budget, "reasoning": cmd_reasoning,
             "peer": cmd_peer}
 NEEDS_ARG = {"plan", "start", "switch", "restart", "update", "rollback", "logs", "job", "search", "files", "download",
              "new-profile", "custom", "connect"}
