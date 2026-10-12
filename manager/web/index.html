@@ -409,7 +409,7 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
   <section class="view" id="v-overview">
     <div class="vh"><div><h1>Overview</h1><p>Engines, the machine, and what is happening right now.</p></div><span class="sp"></span><label class="switch" id="autostartsw" title="Start Hangar when you sign in"><input type="checkbox" id="autostart" disabled><span class="track"></span><span id="autostartlbl">Start with Windows</span></label><button class="btn" id="chk"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Check updates</button></div>
     <div class="panel" id="fleetsec" hidden><div class="ph"><h3>Machines</h3><span class="sp"></span><span class="meta" id="fleetmeta"></span><button class="btn ghost sm" data-act="mshare" id="mshareb">Share this machine</button><button class="btn ghost sm" data-act="maddshow" id="maddb">+ Add machine</button></div><div class="fleet" id="fleet"></div></div>
-    <div class="panel roles" id="rolesec" hidden><div class="ph"><h3>Roles</h3><span class="sp"></span><span class="meta" id="rolemeta"></span><button class="btn ghost sm" data-act="roleedit" data-role="" id="roleadd">+ Role</button></div><div id="roles"></div></div>
+    <div class="panel roles" id="rolesec" hidden><div class="ph"><h3>Roles</h3><span class="sp"></span><span class="meta" id="rolemeta"></span><button class="btn ghost sm" data-act="gwinfo" id="gwbtn">Use it (endpoint)</button><button class="btn ghost sm" data-act="roleedit" data-role="" id="roleadd">+ Role</button></div><div id="roles"></div></div>
     <div class="panel job" id="jobsec" hidden>
       <div class="ph"><span id="jobspin"></span><h3 style="color:var(--ink)" id="jobtitle"></h3><span class="sp"></span><span id="jobstate" class="tag"></span></div>
       <div class="pb"><pre class="term" id="joblog"></pre></div>
@@ -1044,6 +1044,7 @@ document.addEventListener("click", async ev => {
     if (act === "logs") return streamLog(e);
     if (act === "reason") return reasoningDialog(e);
     if (act === "roleedit") return roleDialog(b.dataset.role);
+    if (act === "gwinfo") return gatewayDialog();
     if (act === "logpause") { logPaused = !logPaused; b.textContent = logPaused ? "Resume" : "Pause"; logState(logPaused ? "paused" : "live", logPaused ? "warn" : "ok"); if (!logPaused) flushLog(); return; }
     if (act === "logcopy") return copyText($("#logpre").textContent);
     const confirmMsg = { stop: `Stop ${e}?`, restart: `Restart ${e}?`, update: `Update ${e}? It stops while updating and starts again after.`, rollback: `Roll ${e} back to its previous version?` }[act];
@@ -1205,12 +1206,18 @@ function renderRoles(rs) {
   $("#rolesec").hidden = false;
   $("#roleadd").hidden = !!MACHINE;
   const port = location.port || 9000;
-  $("#rolemeta").innerHTML = MACHINE ? "edit them on that machine" : `gateway <span class="mono">http://${esc(location.hostname)}:${port}/v1</span> · model = role`;
+  $("#rolemeta").innerHTML = MACHINE ? "edit them on that machine" : `OpenAI-compatible: <span class="mono">http://${esc(location.hostname)}:${port}/v1</span> · model = role name`;
+  $("#gwbtn").hidden = !!MACHINE;
+  const main = rs.find(r => r.name === "main");
+  const mainT = main && (main.targets[0] || main.serving);
   const stc = st => ({ ready: "ok", starting: "warn", offline: "bad", unknown: "bad" }[st] || "");
   const chip = (t, extra) => `<span class="tchip ${t.serving ? "serving" : ""}" title="${esc(t.state || "")}${t.started_by_hangar ? " · started by Hangar as a backup" : ""}"><span class="dot ${stc(t.state)}"></span><span class="m">${esc(t.machine || "this")}</span><span class="p">${esc(t.profile)}</span>${extra || ""}</span>`;
   $("#roles").innerHTML = rs.map(r => {
     const ts = r.targets.map((t, i) => chip(t, i ? `<span class="k">${t.auto_start ? "backup · auto" : "backup"}</span>` : "")).join(`<span class="arr">→</span>`);
-    const fb = r.fallback && r.serving ? `<span class="arr">→</span>${chip({ ...r.serving, state: "ready", serving: true }, `<span class="k">${r.name === "main" ? "running" : "fallback"}</span>`)}` : "";
+    // what happens when every target is down: main answers (shown always, lit when it is answering)
+    let fb = "";
+    if (r.fallback && r.serving) fb = `<span class="arr">→</span>${chip({ ...r.serving, state: "ready", serving: true }, `<span class="k">${r.name === "main" ? "running" : "fallback · answering"}</span>`)}`;
+    else if (r.name !== "main" && mainT) fb = `<span class="arr">→</span><span class="tchip" style="opacity:.6" title="used automatically when the targets before it are down"><span class="m">then main</span><span class="p">${esc(mainT.machine || "this")}/${esc(mainT.profile)}</span></span>`;
     const none = !r.serving ? `<span class="tag bad">nothing up</span>` : "";
     const empty = !r.targets.length ? `<span class="small muted">${r.name === "main" ? "not set: whatever runs here" : "no targets"}</span>` : "";
     return `<div class="rrow"><span class="rname">${esc(r.name)}</span><div class="chain">${ts}${empty}${fb}${none}${r.down_for ? `<span class="small warn-t">primary down ${dur(r.down_for)}</span>` : ""}</div>
@@ -1295,6 +1302,30 @@ async function roleDialog(name) {
     if (!confirm(`Delete the role ${name}? Clients asking for it get an error until it exists again.`)) return;
     try { await api(`/api/roles/${encodeURIComponent(name)}`, { method: "DELETE" }); $("#dlg").close(); refreshFast(); } catch (e) { fail(e); }
   };
+}
+
+// ---- how to use the gateway: base URL, key, model names
+async function gatewayDialog() {
+  let hosts = [];
+  try { hosts = await fetch("/api/connect/hosts", { headers: { "Authorization": "Bearer " + TOKEN } }).then(r => r.json()); } catch { }
+  const port = location.port || 9000;
+  const names = ROLES.map(r => r.name);
+  const urls = hosts.map(h => ({ url: `http://${h.host}:${port}/v1`, label: h.label }));
+  dialog("Hangar gateway (OpenAI-compatible)", `
+    <p class="small muted" style="margin:0 0 12px">Point any OpenAI- or Anthropic-compatible tool here. The model name is a role; Hangar sends each request to whichever model has that role right now, and to <b>main</b> when that one is down.</p>
+    <div class="facts" style="grid-template-columns:1fr">
+      <div class="stat"><div class="sl">Base URL</div><select id="gwurl" class="input mono" style="width:100%;margin-top:6px">${urls.map(u => `<option value="${esc(u.url)}">${esc(u.url)} — ${esc(u.label)}</option>`).join("")}</select></div>
+      <div class="stat"><div class="sl">API key (this Hangar's token)</div><div class="codebox" style="margin-top:6px"><span class="c">${esc(TOKEN.slice(0, 6))}••••••••••••</span><button class="btn sm" data-copy="key">${ICON.copy}Copy</button></div></div>
+      <div class="stat"><div class="sl">Models</div><div style="margin-top:6px">${names.map(n => `<span class="tag ok" style="margin-right:6px">${esc(n)}</span>`).join("")}<span class="small muted">or a running profile's id</span></div></div>
+    </div>
+    <div class="code" style="margin-top:12px"><div class="chd"><span class="path">test it</span><button class="btn sm" data-copy="curl">${ICON.copy}Copy</button></div><pre id="gwcurl"></pre></div>
+    <div class="note">${ICON.info}<span>For opencode, Qwen Code and others, the <b>Connect</b> page gives ready-made settings: its <b>Hangar roles</b> provider uses this endpoint. Anthropic-style clients use the same base URL without <span class="mono">/v1</span> and send the key as <span class="mono">x-api-key</span>.</span></div>`);
+  const curl = () => [`curl ${$("#gwurl").value}/chat/completions`,
+    `  -H "Authorization: Bearer <token>" -H "Content-Type: application/json"`,
+    `  -d '{"model":"helper","messages":[{"role":"user","content":"hi"}]}'`].join(" \\\n");
+  const draw = () => { $("#gwcurl").textContent = curl(); };
+  $("#gwurl").onchange = draw; draw();
+  document.querySelectorAll("#dlgbody [data-copy]").forEach(b => b.onclick = () => copyText(b.dataset.copy === "key" ? TOKEN : curl().replace("<token>", TOKEN)));
 }
 
 // ---- reasoning effort of the running model
