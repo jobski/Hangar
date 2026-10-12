@@ -9,3 +9,6 @@ logs/
 .venv/
 __pycache__/
 *.pyc
+
+# this machine's notes and helper scripts (machine names, paths): never published
+local/
