@@ -111,6 +111,10 @@ class Engine:
             return None
         return parse_prometheus(r.text)
 
+    def has_vision(self, profile: Profile) -> bool:
+        """Whether this profile can take images."""
+        return bool(profile.cfg.get("vision"))
+
     # ---- reasoning effort: how hard a thinking model thinks
     def reasoning_levels(self, profile: Profile) -> list[str] | None:
         """The levels this engine can set for this profile ("default" = the model's own); None when it cannot."""

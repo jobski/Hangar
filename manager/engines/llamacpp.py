@@ -145,6 +145,9 @@ class LlamaCppEngine(Engine):
             self._reasoning_probe = (key, ok)
         return self._reasoning_probe[1]
 
+    def has_vision(self, profile):
+        return bool(profile.cfg.get("mmproj"))           # a vision projector next to the model
+
     def reasoning_levels(self, profile):
         return self.LEVELS if self._has_reasoning() else None
 

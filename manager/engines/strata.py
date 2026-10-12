@@ -136,6 +136,10 @@ class StrataEngine(Engine):
     # the run config's "reasoning_effort" is the level when those name none
     LEVELS = ["default", "none", "low", "medium", "high"]
 
+    def has_vision(self, profile):
+        rc = self._run_config(profile)
+        return bool(rc.get("vision")) and "--vision" in [str(a) for a in rc.get("args", [])]
+
     def reasoning_levels(self, profile):
         return self.LEVELS
 

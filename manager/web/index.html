@@ -164,6 +164,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
 .gauge .gs b { font: 500 12px var(--mono); color: var(--ink2); }
 .warnbox { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--warn); background: var(--warn-dim); border-radius: 7px; padding: 8px 10px; margin-top: 10px; }
 .errbox { color: var(--bad); background: var(--bad-dim); }
+.warnbox svg { width: 15px; height: 15px; flex: none; margin-top: 1px; stroke: currentColor; fill: none; stroke-width: 2; }
 
 /* ---- engines */
 .eng { padding: 16px; border-top: 1px solid var(--line); }
@@ -533,6 +534,7 @@ const ICON = {
   logs: '<svg viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 17h7"/></svg>',
   copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>',
   info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
   warn: '<svg viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>',
 };
 
@@ -600,7 +602,7 @@ function renderStatus(s) {
     if (e.can_rollback) acts += `<button class="btn sm ghost" data-act="rollback" data-e="${esc(e.name)}">Roll back</button>`;
     acts += `<button class="btn sm" data-act="logs" data-e="${esc(e.name)}">${ICON.logs}Logs</button>`;
     h += `<div class="eng ${run ? "" : "off"}"><div class="eh"><span class="dot ${dot}"></span><span class="en">${esc(e.name)}</span>
-      ${run ? `<span class="tag ${stateTag(run.state)}">${esc(run.state)}</span>` : `<span class="tag">stopped</span>`}<span class="tag">:${e.port}</span>${ver}${upd}<div class="acts">${acts}</div></div>`;
+      ${run ? `<span class="tag ${stateTag(run.state)}">${esc(run.state)}</span>` : `<span class="tag">stopped</span>`}${run && run.vision ? `<span class="tag info" title="this model takes images">${ICON.eye}vision enabled</span>` : ""}<span class="tag">:${e.port}</span>${ver}${upd}<div class="acts">${acts}</div></div>`;
     if (run) {
       nrun++;
       const st = run.stats, w1 = st.window["1m"], w5 = st.window["5m"], ss = st.since_start, busy = (st.gauges || {}).requests_processing;
@@ -673,7 +675,7 @@ async function renderProfiles() {
     const n = p.needs || {};
     return `<div class="lrow"><div class="main"><div class="t"><span class="dot ${p.running ? "ok" : ""}"></span>${esc(p.id)}</div>
         ${p.description ? `<div class="d">${esc(p.description)}</div>` : ""}
-        <div class="tags">${rolesOf(p.id).map(r => `<span class="tag ok" title="${esc(r.backup ? "backup for " + r.name : r.name)}">${esc(r.backup ? r.name + " · backup" : r.name)}</span>`).join("")}${BUDGET.budget_mib && (n.vram_mib || 0) + (n.ram_mib || 0) > BUDGET.budget_mib ? `<span class="tag bad" title="needs ~${gb((n.vram_mib || 0) + (n.ram_mib || 0))} GB">over budget</span>` : ""}<span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
+        <div class="tags">${p.vision ? `<span class="tag info" title="takes images">${ICON.eye}vision</span>` : ""}${rolesOf(p.id).map(r => `<span class="tag ok" title="${esc(r.backup ? "backup for " + r.name : r.name)}">${esc(r.backup ? r.name + " · backup" : r.name)}</span>`).join("")}${BUDGET.budget_mib && (n.vram_mib || 0) + (n.ram_mib || 0) > BUDGET.budget_mib ? `<span class="tag bad" title="needs ~${gb((n.vram_mib || 0) + (n.ram_mib || 0))} GB">over budget</span>` : ""}<span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
       ${needBar("VRAM", n.vram_mib, vt)}${needBar("RAM", n.ram_mib, rt)}
       <div class="acts">
         ${p.editable ? `<button class="btn sm ghost" data-act="pedit" data-p="${esc(p.id)}">Edit</button>` : ""}

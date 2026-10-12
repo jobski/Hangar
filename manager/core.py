@@ -422,6 +422,13 @@ class Manager:
         self._reasoning_cache.pop(engine, None)
         return out
 
+    def _vision(self, engine: str, pid: str) -> bool:
+        p = self.profiles.get(pid)
+        try:
+            return bool(p) and self.engines[engine].has_vision(self.effective(p))
+        except Exception:  # noqa: BLE001 - a run config that cannot be read just means no tag
+            return False
+
     def _last_run(self, engine: str) -> dict | None:
         """What a stopped engine ran last, to start it again in one click: the newest run of a profile that still
         exists and is not a one-off custom run; runs that never got ready count only if nothing else did."""
@@ -1022,6 +1029,7 @@ class Manager:
                                 "uptime_seconds": time.time() - inst.started, "ram_mib": inst.ram_mib,
                                 "cpu_percent": inst.cpu_percent, "vram_mib_est": inst.peak_vram,
                                 "stats": self.live(inst),
+                                "vision": self._vision(name, inst.profile),
                                 "reasoning": self._reasoning_now(name) if inst.state == "ready" else None}
             else:
                 owner = None
@@ -1050,6 +1058,7 @@ class Manager:
         for p in sorted(self.profiles.values(), key=lambda x: (x.engine, x.id)):
             d = p.public()
             d["running"] = p.id in running
+            d["vision"] = self._vision(p.engine, p.id)
             try:
                 d["needs"] = self.needs(p)
             except Exception as e:  # noqa: BLE001
