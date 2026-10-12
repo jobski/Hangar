@@ -673,11 +673,12 @@ async function renderProfiles() {
     const n = p.needs || {};
     return `<div class="lrow"><div class="main"><div class="t"><span class="dot ${p.running ? "ok" : ""}"></span>${esc(p.id)}</div>
         ${p.description ? `<div class="d">${esc(p.description)}</div>` : ""}
-        <div class="tags">${BUDGET.budget_mib && (n.vram_mib || 0) + (n.ram_mib || 0) > BUDGET.budget_mib ? `<span class="tag bad" title="needs ~${gb((n.vram_mib || 0) + (n.ram_mib || 0))} GB">over budget</span>` : ""}<span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
+        <div class="tags">${rolesOf(p.id).map(r => `<span class="tag ok" title="${esc(r.backup ? "backup for " + r.name : r.name)}">${esc(r.backup ? r.name + " · backup" : r.name)}</span>`).join("")}${BUDGET.budget_mib && (n.vram_mib || 0) + (n.ram_mib || 0) > BUDGET.budget_mib ? `<span class="tag bad" title="needs ~${gb((n.vram_mib || 0) + (n.ram_mib || 0))} GB">over budget</span>` : ""}<span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
       ${needBar("VRAM", n.vram_mib, vt)}${needBar("RAM", n.ram_mib, rt)}
       <div class="acts">
         ${p.editable ? `<button class="btn sm ghost" data-act="pedit" data-p="${esc(p.id)}">Edit</button>` : ""}
         ${p.discovered || p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcopy" data-p="${esc(p.id)}">Copy</button>`}
+        ${p.source === "custom" || MACHINE ? "" : `<button class="btn sm ghost" data-act="prole" data-p="${esc(p.id)}" title="make it main, helper, or a backup">Role</button>`}
         ${p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcustom" data-p="${esc(p.id)}">Custom run</button>`}
         ${p.editable ? `<button class="btn sm ghost danger" data-act="pdel" data-p="${esc(p.id)}">Delete</button>` : ""}
         <button class="btn sm ${p.running ? "" : "primary"}" data-act="start" data-p="${esc(p.id)}">${p.running ? ICON.restart + "Restart" : ICON.play + "Start"}</button></div></div>`;
@@ -1015,6 +1016,7 @@ document.addEventListener("click", async ev => {
     if (act === "pedit") return editProfile(prof(), false);
     if (act === "pcopy") return editProfile(prof(), true);
     if (act === "pcustom") return customRun(prof());
+    if (act === "prole") return profileRoleDialog(b.dataset.p);
     if (act === "pdel") { if (!confirm(`Delete profile ${b.dataset.p}? The model files stay.`)) return; await api(`/api/profiles/${encodeURIComponent(b.dataset.p)}`, { method: "DELETE" }); return renderProfiles(); }
     if (act === "dlrepo") return dlFiles(b.dataset.repo);
     if (act === "dlgo") {
@@ -1214,6 +1216,41 @@ function renderRoles(rs) {
     return `<div class="rrow"><span class="rname">${esc(r.name)}</span><div class="chain">${ts}${empty}${fb}${none}${r.down_for ? `<span class="small warn-t">primary down ${dur(r.down_for)}</span>` : ""}</div>
       ${MACHINE ? "<span></span>" : `<button class="btn sm ghost" data-act="roleedit" data-role="${esc(r.name)}">Edit</button>`}</div>`;
   }).join("");
+}
+// the roles a profile on this machine has: [{name, backup}]
+const rolesOf = pid => (ROLES || []).flatMap(r => r.targets.map((t, i) => ({ t, i })).filter(x => !x.t.machine && x.t.profile === pid).map(x => ({ name: r.name, backup: x.i > 0 })));
+// one click from a profile: make it a role's primary (its backups stay) or add it as a backup
+function profileRoleDialog(pid) {
+  const names = [...new Set(["main", "helper", ...ROLES.map(r => r.name)])];
+  const has = rolesOf(pid);
+  dialog(`Role for ${pid}`, `
+    <p class="small muted" style="margin:0 0 12px">Tools ask Hangar's gateway for <b>main</b> or <b>helper</b> and get whichever profile has that role. ${has.length ? `Now: <b>${has.map(r => r.backup ? r.name + " (backup)" : r.name).map(esc).join(", ")}</b>.` : "It has no role now."}</p>
+    <div style="display:grid;gap:8px">${names.map(n => {
+      const r = ROLES.find(x => x.name === n), cur = r && r.targets[0];
+      const isPrimary = cur && !cur.machine && cur.profile === pid;
+      return `<div class="row" style="border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+        <b class="mono" style="min-width:70px">${esc(n)}</b><span class="small muted" style="flex:1;min-width:0;overflow-wrap:anywhere">${cur ? `now ${esc(cur.machine || "this")}/${esc(cur.profile)}` : "not set"}</span>
+        ${isPrimary ? `<span class="tag ok">this one</span><button class="btn sm ghost danger" data-rp="clear" data-rn="${esc(n)}">Remove</button>`
+          : `<button class="btn sm primary" data-rp="primary" data-rn="${esc(n)}">Make ${esc(n)}</button>${cur ? `<button class="btn sm ghost" data-rp="backup" data-rn="${esc(n)}" title="used when the profiles before it are down; started when needed">Backup</button>` : ""}`}</div>`;
+    }).join("")}</div>
+    <div class="row" style="margin-top:12px"><input id="prnew" class="input mono grow" placeholder="another role, e.g. vision" autocapitalize="off" spellcheck="false"><button class="btn" data-rp="primary" data-rn="">Make it</button></div>`);
+  document.querySelectorAll("#dlgbody [data-rp]").forEach(btn => btn.onclick = async () => {
+    const name = btn.dataset.rn || ($("#prnew").value || "").trim().toLowerCase();
+    if (!name) return toast("Type the role's name first", true);
+    const r = ROLES.find(x => x.name === name);
+    let targets = (r ? r.targets : []).map(t => ({ machine: t.machine, profile: t.profile, auto_start: t.auto_start }))
+      .filter(t => t.machine || t.profile !== pid);
+    if (btn.dataset.rp === "primary") targets = [{ machine: "", profile: pid, auto_start: false }, ...targets];
+    else if (btn.dataset.rp === "backup") targets = [...targets, { machine: "", profile: pid, auto_start: true }];
+    if (targets[0]) targets[0].auto_start = false;
+    try {
+      if (!targets.length) await api(`/api/roles/${encodeURIComponent(name)}`, { method: "DELETE" });
+      else await post("/api/roles", { name, targets });
+      $("#dlg").close();
+      toast(btn.dataset.rp === "clear" ? `${pid} is no longer ${name}` : btn.dataset.rp === "backup" ? `${pid} is now a backup for ${name}` : `${pid} is now ${name}`);
+      await refreshFast(); renderProfiles();
+    } catch (e) { fail(e); }
+  });
 }
 async function roleDialog(name) {
   const r = ROLES.find(x => x.name === name) || { name: "", targets: [] };
