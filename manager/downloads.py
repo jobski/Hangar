@@ -346,7 +346,19 @@ class Downloader:
                             part.rename(target)
                             d.write(f"  continuing with aria2 from {target.stat().st_size / 2**30:.2f} GiB")
                         if aria:
-                            self._aria2(d, aria, url, src.headers(), target, base_done)
+                            try:
+                                self._aria2(d, aria, url, src.headers(), target, base_done)
+                            except _AriaFailed as e:
+                                ctl = target.with_name(target.name + ".aria2")
+                                if ctl.exists():
+                                    # aria2 has pieces of the file all over it: only aria2 can continue that
+                                    raise RuntimeError(f"{e}; its partial file is kept for aria2 to resume") from None
+                                # it never got going (e.g. it could not look the host up): what is on disk is still a
+                                # plain from-the-start file, so the built-in downloader carries on from it
+                                d.write(f"  {e}; continuing with the built-in downloader")
+                                if target.exists() and not part.exists():
+                                    target.rename(part)
+                                self._http(d, url, src.headers(), target, base_done, f.get("size") or 0)
                         else:
                             self._http(d, url, src.headers(), target, base_done, f.get("size") or 0)
                     base_done += f.get("size") or (target.stat().st_size if target.exists() else 0)
@@ -478,7 +490,10 @@ class Downloader:
                "--allow-overwrite=true", "-d", str(target.parent), "-o", target.name,
                # CDNs publish IPv6 addresses, and aria2 does not fall back to IPv4 the way other clients do: on a
                # machine without an IPv6 route every connection fails ("unreachable network")
-               "--disable-ipv6=true"]
+               "--disable-ipv6=true",
+               # aria2's own resolver (c-ares) misses macOS DNS - scoped resolvers, Tailscale MagicDNS - and fails
+               # with exit 19 ("name resolution failed"): use the system's, as every other program does
+               "--async-dns=false"]
         for k, v in headers.items():
             cmd.append(f"--header={k}: {v}")
         cmd.append(url)
@@ -496,7 +511,7 @@ class Downloader:
             elif line.strip() and "[#" not in line:
                 d.write("  aria2: " + line.strip()[:200])
         if p.wait() != 0:
-            raise RuntimeError(f"aria2c failed (exit {p.returncode})")
+            raise _AriaFailed(f"aria2c failed: {ARIA2_EXIT.get(p.returncode, 'error')} (exit {p.returncode})")
 
     @staticmethod
     def _notes(d: Download, dest: Path):
@@ -512,6 +527,19 @@ class Downloader:
 
 class _Cancelled(Exception):
     pass
+
+
+class _AriaFailed(Exception):
+    pass
+
+
+# aria2c's exit codes (man aria2c, "EXIT STATUS"), for messages people can act on
+ARIA2_EXIT = {1: "unknown error", 2: "timed out", 3: "file not found on the server", 5: "too slow", 6: "network problem",
+              7: "unfinished downloads", 8: "the server does not support resuming", 9: "not enough disk space",
+              13: "the file already exists", 14: "could not rename the file", 15: "could not open the existing file",
+              16: "could not create the file", 17: "file write error", 18: "could not create the folder",
+              19: "name resolution failed (DNS)", 22: "bad HTTP response", 23: "too many redirects",
+              24: "authorization failed (gated repo? log in to Hugging Face)", 28: "bad option", 32: "checksum mismatch"}
 
 
 def _bytes(v: str, unit: str) -> int:
