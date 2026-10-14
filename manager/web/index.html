@@ -689,9 +689,27 @@ async function renderProfiles() {
         ${p.discovered || p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcopy" data-p="${esc(p.id)}">Copy</button>`}
         ${p.source === "custom" || MACHINE ? "" : `<button class="btn sm ghost" data-act="prole" data-p="${esc(p.id)}" title="make it main, helper, or a backup">Role</button>`}
         ${p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcustom" data-p="${esc(p.id)}">Custom run</button>`}
-        ${p.editable ? `<button class="btn sm ghost danger" data-act="pdel" data-p="${esc(p.id)}">Delete</button>` : ""}
+        ${p.editable ? `<button class="btn sm ghost danger" data-act="pdel" data-p="${esc(p.id)}">Delete</button>` : p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pwhy" data-p="${esc(p.id)}" title="why this profile has no Delete">Delete?</button>`}
         <button class="btn sm ${p.running ? "" : "primary"}" data-act="start" data-p="${esc(p.id)}">${p.running ? ICON.restart + "Restart" : ICON.play + "Start"}</button></div></div>`;
   }).join("") : `<div class="empty">No profiles yet. Add some to config.yaml, or download a model.</div>`;
+}
+// profiles Hangar only reads (config.yaml, or found by an engine) are removed where they come from
+function whyNoDelete(p) {
+  if (!p) return;
+  const file = p.settings && p.settings.config;
+  const eng = esc(p.engine.charAt(0).toUpperCase() + p.engine.slice(1));
+  const body = p.source === "config"
+    ? `<p>This profile is written in <b>config.yaml</b> in the Hangar folder. Hangar never rewrites that file, so it can't delete the profile for you.</p>
+       <p>To remove it, delete its <code>${esc(p.id)}:</code> block under <code>profiles:</code> and restart Hangar. The model files stay; delete them from the Library.</p>`
+    : file
+    ? `<p>This profile is ${eng}'s own run config. Hangar lists every run config it finds in the ${eng} folder, and leaves ${eng}'s files alone.</p>
+       <p>To remove it, delete or rename the file (a name not ending in <code>.json</code>, such as <code>.json.off</code>, hides it):</p>
+       <p><code class="num" style="word-break:break-all">${esc(file)}</code></p>
+       <p>The model itself stays: the run config's <code>--pack</code> and <code>--native</code> paths are its prepared pack and GGUF files. Delete those too to free the space, unless another run config uses them.</p>`
+    : `<p>The ${eng} engine found this profile from its model files, and Hangar leaves the engine's files alone.</p>
+       <p>It disappears once the model is removed: from the Library, or from the ${eng} engine's own model folder.</p>`;
+  dialog(`Why ${p.id} has no Delete`, `<div class="small">${body}</div>
+    <div class="row" style="margin-top:16px"><span class="sp"></span><button class="btn" data-close>OK</button></div>`);
 }
 let PROFILES = [], BUDGET = {};
 function budgetDialog() {
@@ -1027,6 +1045,7 @@ document.addEventListener("click", async ev => {
     if (act === "pcopy") return editProfile(prof(), true);
     if (act === "pcustom") return customRun(prof());
     if (act === "prole") return profileRoleDialog(b.dataset.p);
+    if (act === "pwhy") return whyNoDelete(PROFILES.find(x => x.id === b.dataset.p));
     if (act === "pdel") { if (!confirm(`Delete profile ${b.dataset.p}? The model files stay.`)) return; await api(`/api/profiles/${encodeURIComponent(b.dataset.p)}`, { method: "DELETE" }); return renderProfiles(); }
     if (act === "dlrepo") return dlFiles(b.dataset.repo);
     if (act === "dlgo") {
