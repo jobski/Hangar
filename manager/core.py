@@ -590,8 +590,11 @@ class Manager:
             self._wait_vram_released(job)
 
         if update != "skip" and eng.can_update and self.cfg["updates"]["auto_before_start"]:
-            last = self._update_info(eng.name).get("checked", 0)
-            if update == "force" or time.time() - last > self.cfg["updates"]["min_interval_hours"] * 3600:
+            known = self._update_info(eng.name)
+            last = known.get("checked", 0)
+            # the interval only limits checking: an update a background check already found is installed now
+            if (update == "force" or known.get("available")
+                    or time.time() - last > self.cfg["updates"]["min_interval_hours"] * 3600):
                 try:
                     self._update(job, eng, start_after=False)
                 except Exception as e:  # noqa: BLE001 - an update problem must not keep the model from starting

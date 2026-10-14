@@ -18,7 +18,8 @@ command line.
   never collide.
 - **Updates.** llama.cpp updates from the official GitHub builds; the old build is kept for one-click rollback.
   Strata updates through its own `UPDATE.bat`. By default each engine checks for updates before it starts, at most
-  every 6 hours, and a failed update never stops the model from starting.
+  every 6 hours; an update the background check already found is installed on the next start, and a failed update
+  never stops the model from starting.
 - **Stats.** Live tok/s, tokens, requests, VRAM/RAM/CPU for whatever is running, plus totals for today, this week,
   this month, this year and all time. Both engines report the same `llamacpp:*` counters.
 - **Models.** A library folder (`E:\models`, one folder per model) and a downloader for **Hugging Face** (search, pick

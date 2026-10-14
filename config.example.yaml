@@ -17,7 +17,7 @@ resources:
 
 updates:
   auto_before_start: true      # check for (and install) engine updates before starting an engine...
-  min_interval_hours: 6        # ...at most this often per engine
+  min_interval_hours: 6        # ...checking at most this often per engine (a known update is always installed)
   background_check_hours: 6    # report available updates in the UI (0 = off)
 
 models:
