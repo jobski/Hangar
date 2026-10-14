@@ -1,6 +1,6 @@
 # Install (or update) Hangar on Windows, from PowerShell:
 #
-#   irm https://raw.githubusercontent.com/jobski/hangar/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/jobski/Hangar/main/install.ps1 | iex
 #
 # A private fork works too: set $env:GITHUB_TOKEN to a token that can read it (and HANGAR_REPO to the fork).
 #
@@ -11,7 +11,7 @@
 # Running it again updates an existing install in place; config.yaml, profiles and stats are kept.
 & {
     $ErrorActionPreference = 'Stop'
-    $repo = if ($env:HANGAR_REPO) { $env:HANGAR_REPO } else { 'jobski/hangar' }
+    $repo = if ($env:HANGAR_REPO) { $env:HANGAR_REPO } else { 'jobski/Hangar' }
     $ref = if ($env:HANGAR_REF) { $env:HANGAR_REF } else { 'main' }
     $dir = if ($env:HANGAR_DIR) { $env:HANGAR_DIR } else { Join-Path $HOME 'hangar' }
     $port = if ($env:HANGAR_PORT) { $env:HANGAR_PORT } else { 9000 }

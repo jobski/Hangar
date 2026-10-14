@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install (or update) Hangar on macOS or Linux:
 #
-#   curl -fsSL https://raw.githubusercontent.com/jobski/hangar/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/jobski/Hangar/main/install.sh | sh
 #
 # A private fork works too: pass a token that can read it in GITHUB_TOKEN (sent with the download and the clone).
 #
@@ -13,7 +13,7 @@
 # Running it again updates an existing install in place; config.yaml, profiles and stats are kept.
 set -eu
 
-REPO=${HANGAR_REPO:-jobski/hangar}
+REPO=${HANGAR_REPO:-jobski/Hangar}
 REF=${HANGAR_REF:-main}
 DIR=${HANGAR_DIR:-$HOME/hangar}
 PORT=${HANGAR_PORT:-9000}

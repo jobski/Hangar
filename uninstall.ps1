@@ -1,7 +1,7 @@
 # Remove Hangar from Windows:
 #
 #   & "$HOME\hangar\uninstall.ps1"            (add -Yes to skip the question, -Purge to keep no backup)
-#   irm https://raw.githubusercontent.com/jobski/hangar/main/uninstall.ps1 | iex      (asks; HANGAR_PURGE=1 for -Purge)
+#   irm https://raw.githubusercontent.com/jobski/Hangar/main/uninstall.ps1 | iex      (asks; HANGAR_PURGE=1 for -Purge)
 #
 # Stops the engines it runs and the manager, removes start-with-Windows and the PATH entry, and deletes the install
 # folder. Your config.yaml, profiles.yaml and data\ (token, stats) are first copied to $HOME\hangar-backup-<date>;

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Remove Hangar from macOS or Linux:
 #
-#   sh ~/hangar/uninstall.sh                 (or: curl -fsSL https://raw.githubusercontent.com/jobski/hangar/main/uninstall.sh | sh)
+#   sh ~/hangar/uninstall.sh                 (or: curl -fsSL https://raw.githubusercontent.com/jobski/Hangar/main/uninstall.sh | sh)
 #
 # Stops the engines it runs and the manager, removes the `hangar` command, the PATH line the installer added and any
 # LaunchAgent an earlier version made, and deletes the install folder. Your config.yaml, profiles.yaml and data/ (token, stats) are first

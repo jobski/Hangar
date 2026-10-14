@@ -39,12 +39,12 @@ in place.
 
 ```sh
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/jobski/hangar/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/jobski/Hangar/main/install.sh | sh
 ```
 
 ```powershell
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/jobski/hangar/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/jobski/Hangar/main/install.ps1 | iex
 ```
 
 Options are environment variables: `HANGAR_DIR` (install folder), `HANGAR_REF` (branch or tag, default `main`),
@@ -89,7 +89,7 @@ Hangar runs on a Mac too. On Apple Silicon the GPU shares the machine's memory, 
 from macOS's own statistics (no sudo; there is no temperature reading).
 
 ```sh
-git clone https://github.com/jobski/hangar.git ~/hangar && cd ~/hangar
+git clone https://github.com/jobski/Hangar.git ~/hangar && cd ~/hangar
 scripts/setup.sh                 # .venv, requirements, config.yaml from config.example.mac.yaml, prints the token
 open -e config.yaml              # paths, ports, profiles
 scripts/start.sh                 # runs in the background on port 9000 (--foreground to watch it)
