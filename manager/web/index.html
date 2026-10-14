@@ -471,7 +471,8 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
 
   <!-- usage -->
   <section class="view" id="v-usage">
-    <div class="vh"><div><h1>Usage</h1><p>Tokens, speed and run time, recorded per minute.</p></div><span class="sp"></span><div class="seg" id="periods"></div></div>
+    <div class="vh"><div><h1>Usage</h1><p>Tokens, speed and run time, recorded per minute.</p></div><span class="sp"></span><div class="seg" id="uscope" hidden></div><div class="seg" id="periods"></div></div>
+    <div class="small muted" id="umiss" hidden></div>
     <div class="kpis" id="totals"></div>
     <div class="panel"><div class="ph"><h3>Tokens over time</h3><span class="sp"></span><div class="seg" id="buckets"></div></div>
       <div class="pb"><svg id="series" class="chart" aria-label="tokens over time"></svg>
@@ -503,14 +504,14 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 let TOKEN = new URLSearchParams(location.search).get("token") || store.get("llmm-token", null);
 if (new URLSearchParams(location.search).get("token")) { store.set("llmm-token", TOKEN); history.replaceState(null, "", location.pathname + location.hash); }
-let period = store.get("llmm-period", "day"), bucket = store.get("llmm-bucket", "day"), watchJob = null, lastStatus = null;
+let period = store.get("llmm-period", "day"), bucket = store.get("llmm-bucket", "day"), uscope = store.get("llmm-uscope", "this"), watchJob = null, lastStatus = null;
 let view = (location.hash.slice(1) || store.get("llmm-view", "overview"));
 
 // the machine being viewed: "" is this one; a peer's calls go through this Hangar at /api/peers/<name>/...
 let MACHINE = store.get("llmm-machine", ""), SELF = null, PEERS = [];
 const route = path => MACHINE && path.startsWith("/api/") && !path.startsWith("/api/peers") ? `/api/peers/${encodeURIComponent(MACHINE)}/` + path.slice(5) : path;
 async function api(path, opts = {}) {
-  path = route(path);
+  if (!opts.local) path = route(path);
   const r = await fetch(path, { ...opts, headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) } });
   if (r.status === 401) { showLogin(); throw new Error("unauthorized"); }
   const ct = r.headers.get("content-type") || "";
@@ -879,22 +880,29 @@ const BUCKETS = [["hour", "Hour", 24], ["day", "Day", 30], ["week", "Week", 26],
 async function renderStats() {
   $("#periods").innerHTML = PERIODS.map(([k, l]) => `<button class="${k === period ? "on" : ""}" data-period="${k}">${l}</button>`).join("");
   $("#buckets").innerHTML = BUCKETS.map(([k, l]) => `<button class="${k === bucket ? "on" : ""}" data-bucket="${k}">${l}</button>`).join("");
-  const s = await api(`/api/stats/summary?period=${period}`), t = s.total;
+  // All machines: this Hangar asks every online machine and adds them up (whichever machine is being viewed)
+  const all = uscope === "all" && PEERS.length > 0;
+  $("#uscope").hidden = !PEERS.length;
+  $("#uscope").innerHTML = [["this", MACHINE || "This machine"], ["all", "All machines"]].map(([k, l]) => `<button class="${(k === "all") === all ? "on" : ""}" data-uscope="${k}">${esc(l)}</button>`).join("");
+  const s = all ? await api(`/api/stats/fleet/summary?period=${period}`, { local: true }) : await api(`/api/stats/summary?period=${period}`), t = s.total;
+  const miss = all ? s.machines.filter(m => !m.ok).map(m => m.name) : [];
+  $("#umiss").hidden = !miss.length;
+  $("#umiss").textContent = miss.length ? `Not counted: ${miss.join(", ")} did not answer.` : "";
   $("#totals").innerHTML = `
     <div class="kpi hero"><div class="sl">Tokens out</div><div class="sv">${num(t.gen_tokens)}</div></div>
     <div class="kpi"><div class="sl">Tokens in</div><div class="sv">${num(t.prompt_tokens)}</div></div>
     <div class="kpi"><div class="sl">Cache reused</div><div class="sv">${num(t.cached_tokens)}</div></div>
     <div class="kpi"><div class="sl">Avg out</div><div class="sv">${tps(t.gen_tps)}<small>tok/s</small></div></div>
     <div class="kpi"><div class="sl">Avg in</div><div class="sv">${tps(t.prompt_tps)}<small>tok/s</small></div></div>
-    <div class="kpi"><div class="sl">Running · ${t.runs} runs</div><div class="sv">${dur(t.uptime_seconds)}</div></div>
+    <div class="kpi" ${all ? `title="every machine's run time added up · ${t.runs} runs"` : ""}><div class="sl">${all ? `Run time · ${s.machines.filter(m => m.ok).length} machines` : `Running · ${t.runs} runs`}</div><div class="sv">${dur(t.uptime_seconds)}</div></div>
     ${t.requests ? `<div class="kpi"><div class="sl">Requests</div><div class="sv">${num(t.requests)}</div></div>` : ""}`;
   const rows = Object.entries(s.profiles).sort((a, b) => b[1].gen_tokens - a[1].gen_tokens);
   const top = Math.max(1, ...rows.map(r => r[1].gen_tokens));
-  $("#bytable").innerHTML = rows.length ? `<tr><th>Profile</th><th>Out</th><th>In</th><th>tok/s out</th><th>tok/s in</th><th>Running</th><th>Runs</th></tr>` +
-    rows.map(([k, v]) => `<tr><td>${esc(k)}<span class="share" style="width:${v.gen_tokens / top * 100}%"></span></td><td>${num(v.gen_tokens)}</td><td>${num(v.prompt_tokens)}</td><td>${tps(v.gen_tps)}</td><td>${tps(v.prompt_tps)}</td><td>${dur(v.uptime_seconds)}</td><td>${v.runs}</td></tr>`).join("")
+  $("#bytable").innerHTML = rows.length ? `<tr><th>${all ? "Machine · profile" : "Profile"}</th><th>Out</th><th>In</th><th>tok/s out</th><th>tok/s in</th><th>Running</th><th>Runs</th></tr>` +
+    rows.map(([k, v]) => `<tr><td>${all ? `<span class="tag">${esc(v.machine)}</span> ${esc(v.profile)}` : esc(k)}<span class="share" style="width:${v.gen_tokens / top * 100}%"></span></td><td>${num(v.gen_tokens)}</td><td>${num(v.prompt_tokens)}</td><td>${tps(v.gen_tps)}</td><td>${tps(v.prompt_tps)}</td><td>${dur(v.uptime_seconds)}</td><td>${v.runs}</td></tr>`).join("")
     : `<tr><td class="empty">Nothing recorded in this period yet.</td></tr>`;
   const b = BUCKETS.find(x => x[0] === bucket);
-  const ser = await api(`/api/stats/series?bucket=${bucket}&count=${b[2]}`);
+  const ser = await api(`/api/stats${all ? "/fleet" : ""}/series?bucket=${bucket}&count=${b[2]}`, { local: all });
   drawBars($("#series"), ser, bucket);
 }
 
@@ -1033,13 +1041,14 @@ document.addEventListener("click", async ev => {
   if (ev.target.closest("[data-act=fleetgo]")) { ev.preventDefault(); setView("overview"); return $("#fleetsec").scrollIntoView({ behavior: "smooth", block: "start" }); }
   if (ev.target.closest("[data-act=copycode]")) { ev.preventDefault(); const c = await loadMyCode(); return copyText(c.code); }
   if (ev.target.closest("[data-act=pastego]")) { ev.preventDefault(); const c = $("#pastecode").value.trim(); if (!c) return toast("Paste the other machine's pairing code first", true); return addFromCode(c, $("#pasteboth").checked, ev.target.closest("button")); }
-  const b = ev.target.closest("[data-act],[data-period],[data-bucket],[data-job],[data-cnkind],[data-cnclient],[data-view]");
+  const b = ev.target.closest("[data-act],[data-uscope],[data-period],[data-bucket],[data-job],[data-cnkind],[data-cnclient],[data-view]");
   if (!b) return;
   ev.preventDefault();
   try {
     if (b.dataset.view) return setView(b.dataset.view);
     if (b.dataset.cnkind) { cnKind = b.dataset.cnkind; store.set("llmm-cnkind", cnKind); return renderConnect(); }
     if (b.dataset.cnclient) { cnClient = b.dataset.cnclient; store.set("llmm-cnclient", cnClient); return renderConnect(); }
+    if (b.dataset.uscope) { uscope = b.dataset.uscope; store.set("llmm-uscope", uscope); return renderStats(); }
     if (b.dataset.period) { period = b.dataset.period; store.set("llmm-period", period); return renderStats(); }
     if (b.dataset.bucket) { bucket = b.dataset.bucket; store.set("llmm-bucket", bucket); return renderStats(); }
     if (b.dataset.job) { watchJob = b.dataset.job; setView("overview"); return renderJob(); }

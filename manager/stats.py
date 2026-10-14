@@ -203,6 +203,34 @@ class Store:
         return out
 
 
+def merge_summaries(period: str, parts: list[tuple[str, dict]]) -> dict:
+    """Several machines' summary() added up. Profiles become machine/profile; run time is the machines' run times
+    added (two machines busy for an hour is two hours)."""
+    total = {f: 0.0 for f in FIELDS} | {"uptime_seconds": 0.0, "runs": 0}
+    profiles = {}
+    for machine, s in parts:
+        for k in total:
+            total[k] += (s.get("total") or {}).get(k) or 0
+        for pid, v in (s.get("profiles") or {}).items():
+            profiles[f"{machine}/{pid}"] = {**v, "machine": machine, "profile": pid}
+    _rates(total)
+    return {"period": period, "total": total, "profiles": profiles}
+
+
+def merge_series(parts: list[list[dict]]) -> list[dict]:
+    """Several machines' series() added bucket by bucket. They line up when the machines share a time zone; a
+    machine elsewhere has its days start at its own midnight, so its numbers land in the bucket at the same place."""
+    if not parts:
+        return []
+    out = [dict(x) for x in parts[0]]
+    for ser in parts[1:]:
+        for i, x in enumerate(ser[-len(out):] if len(ser) >= len(out) else ser):
+            j = i + max(0, len(out) - len(ser))
+            for f in FIELDS:
+                out[j][f] = (out[j].get(f) or 0) + (x.get(f) or 0)
+    return out
+
+
 def _rates(v: dict):
     v["gen_tps"] = v["gen_tokens"] / v["gen_seconds"] if v.get("gen_seconds") else None
     v["prompt_tps"] = v["prompt_tokens"] / v["prompt_seconds"] if v.get("prompt_seconds") else None

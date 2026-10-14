@@ -210,6 +210,12 @@ showing the fleet's tok/s (hover for the rest, click to jump to the panel) next 
 On Apple Silicon the GPU memory is part of the RAM, so it is counted in both totals. `hangar machines` prints the
 same totals as a last line, MCP `machines` returns them as `fleet`, and `/api/peers` carries them under `fleet`.
 
+The **Usage** page has the same switch: **All machines** adds up every online machine's tokens in and out, cache
+reuse, requests and run time for the chosen period, draws one chart for all of them, and lists each profile with its
+machine. This Hangar asks each machine for its own numbers (`/api/stats/fleet/summary?period=…` and
+`/api/stats/fleet/series?bucket=…&count=…`); a machine that does not answer is named under the switch and left out.
+Run time is the machines' run times added together.
+
 ### Remote access
 
 Use [Tailscale](https://tailscale.com) (it is already installed on this PC): every device on your tailnet reaches

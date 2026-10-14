@@ -5,6 +5,7 @@ import codecs
 import contextlib
 import hmac
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import anyio
@@ -19,6 +20,7 @@ from .core import Manager
 from .mcp_server import build as build_mcp
 from .peers import Peers, fleet, machine_info, make_code, normalize_url, summary
 from .roles import Roles
+from .stats import merge_series, merge_summaries
 
 WEB = Path(__file__).parent / "web"
 OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
@@ -161,6 +163,40 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     @app.get("/api/stats/series")
     def stats_series(bucket: str = "day", count: int = 30):
         return guard(mgr.store.series, bucket, min(count, 400))
+
+    # ---- the same numbers for every online machine, added up (each peer is asked for its own)
+    def _fleet_stats(path: str, params: dict, mine):
+        online = [n for n, st in peers.state.items() if st.get("online")]
+        all_peers = peers.all()
+
+        def ask(name):
+            p = all_peers.get(name)
+            if not p:
+                return name, None, "no longer a peer"
+            try:
+                r = httpx.get(f"{p['url']}/api/{path}", params=params, timeout=10,
+                              headers={"Authorization": f"Bearer {p['token']}"})
+                r.raise_for_status()
+                return name, r.json(), None
+            except (httpx.HTTPError, ValueError) as e:
+                return name, None, type(e).__name__
+        with ThreadPoolExecutor(max_workers=max(1, len(online))) as pool:
+            answers = list(pool.map(ask, online))
+        me = machine_info(mgr.cfg)["name"]
+        machines = [{"name": me, "ok": True}] + [{"name": n, "ok": d is not None, "error": err} for n, d, err in answers]
+        return [(me, mine)] + [(n, d) for n, d, _ in answers if d is not None], machines
+
+    @app.get("/api/stats/fleet/summary")
+    def stats_fleet_summary(period: str = "day"):
+        parts, machines = _fleet_stats("stats/summary", {"period": period}, guard(mgr.store.summary, period))
+        return {**merge_summaries(period, parts), "machines": machines}
+
+    @app.get("/api/stats/fleet/series")
+    def stats_fleet_series(bucket: str = "day", count: int = 30):
+        count = min(count, 400)
+        parts, machines = _fleet_stats("stats/series", {"bucket": bucket, "count": count},
+                                       guard(mgr.store.series, bucket, count))
+        return merge_series([d for _, d in parts])
 
     # ---- actions (each returns a job; ?wait=N waits up to N seconds for it)
     @app.post("/api/start")
