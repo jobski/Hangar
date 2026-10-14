@@ -30,7 +30,8 @@ command line.
   Strata (one per `strata-*.json`). A *custom run* starts a profile once with a different context or extra
   arguments, without saving it. Only UI-managed profiles can be deleted from Hangar; the others show **Delete?**,
   which says where the profile comes from and how to remove it there (Hangar never edits `config.yaml` or an
-  engine's files).
+  engine's files). For Strata it also says how to add a model: Strata's own setup (`START-HERE.bat --setup
+  --no-start` in the Strata folder) downloads and prepares it, and its new `strata-*.json` becomes a profile.
 - **Housekeeping.** Optional stop-when-idle per profile (frees the GPU), restart on crash (at most 3 an hour), and
   engines that were already running get picked up when the manager starts, including ones started by hand.
 
