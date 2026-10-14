@@ -3,6 +3,7 @@
     hangar login http://my-pc:9000 <token>    remember where the manager is (saved in ~/.hangar.json)
     hangar status | profiles | plan <profile>
     hangar start <profile> [--force] [--no-update | --update]
+    hangar start last [engine]    what that engine (or the last one stopped) ran last
     hangar switch <profile>       (same as start)
     hangar stop <engine|all> | restart <engine>
     hangar check [engine] | update <engine> | rollback <engine>
@@ -16,7 +17,8 @@
     hangar files <repo> [--modelscope|--ollama]    a repo's quants and sizes
     hangar download <repo> <pattern>... [--modelscope|--ollama|--url] [--no-profile]
           e.g. hangar download unsloth/Qwen3-8B-GGUF "*Q4_K_M*"     hangar download qwen3:8b --ollama
-    hangar downloads                                progress
+    hangar downloads                                progress, and unfinished downloads
+    hangar downloads resume <folder|all> | discard <folder>   pick up or clean up an unfinished one
     hangar new-profile <model.gguf> [name] [ctx]    a llama.cpp profile from the template
     hangar custom <profile> [--ctx N] [-- extra llama args...]   one-off run with changes
 
@@ -27,6 +29,20 @@
 
   this PC
     hangar autostart [on|off]                       start Hangar when you sign in to Windows (no argument: show)
+    hangar roles                                    roles (main, helper, ...) and which model serves each now
+    hangar role set <name> <machine/profile> [<machine/profile> ...] [--auto]   first = primary, then backups;
+          --auto starts backups when needed (machine "this" = here). e.g. hangar role set helper macbook/qwen3-coder this/gemma-3-4b --auto
+    hangar role rm <name>
+    hangar reasoning <engine> [level] [--restart]  a thinking model's effort: none/low/medium/high/...; show without level
+    hangar budget [GB|off]                          memory Hangar's engines may use here (no argument: show)
+
+  other machines (peers: other Hangars, e.g. a Mac running MLX)
+    hangar machines                                 this machine and its peers: online, what runs, memory
+    hangar pair-code                                this machine's pairing code, to paste into another Hangar
+    hangar peer add <pairing-code> [--both] [--name N]   add a machine from its code; --both adds this one there too
+    hangar peer add <name> <url> <token> [--both]   the same with an address and token
+    hangar peer remove <name>
+    hangar --on <machine> <command> ...             run any command on a peer, e.g. hangar --on macbook status
 """
 from __future__ import annotations
 
@@ -53,8 +69,16 @@ def _conn() -> tuple[str, str]:
     return url.rstrip("/"), tok or ""
 
 
+ON: str | None = None      # --on <machine>: send every call to that peer through this Hangar
+
+
+def _path(path: str) -> str:
+    return path.replace("/api/", f"/api/peers/{ON}/", 1) if ON and path.startswith("/api/") else path
+
+
 def _call(method: str, path: str, **kw):
     url, tok = _conn()
+    path = _path(path)
     try:
         r = httpx.request(method, url + path, headers={"Authorization": f"Bearer {tok}"}, timeout=660, **kw)
     except httpx.HTTPError as e:
@@ -123,7 +147,9 @@ def cmd_status(_):
                   + ("" if run["managed"] else "  (started outside the manager)"))
         else:
             other = e.get("port_taken_by")
-            print(f"{e['name']:10s} :{e['port']}  stopped" + (f" (port used by {other['name']} pid {other['pid']})" if other else "") + v)
+            last = e.get("last")
+            print(f"{e['name']:10s} :{e['port']}  stopped" + (f" (port used by {other['name']} pid {other['pid']})" if other else "") + v
+                  + (f"  last: {last['profile']} (hangar start last {e['name']})" if last else ""))
     if s["job"]:
         print(f"\nrunning job: {s['job']['title']} ({s['job']['state']})")
 
@@ -145,6 +171,15 @@ def _start_args(a):
 
 
 def cmd_start(a):
+    if a and a[0] == "last":
+        engines = [e for e in _call("GET", "/api/status")["engines"] if not e["running"] and e.get("last")]
+        if len(a) > 1 and not a[1].startswith("--"):
+            engines = [e for e in engines if e["name"] == a[1]]
+        if not engines:
+            sys.exit("nothing to start again: " + ("that engine is running or has no earlier run" if len(a) > 1 else "every engine is running or has no earlier run"))
+        e = max(engines, key=lambda e: e["last"]["stopped"] or 0)
+        print(f"starting {e['last']['profile']} again on {e['name']}")
+        a = [e["last"]["profile"]] + [x for x in a[1:] if x.startswith("--")]
     return _follow(_call("POST", "/api/start", json=_start_args(a)))
 
 
@@ -179,7 +214,7 @@ def cmd_logs(a):
         return
     url, tok = _conn()
     try:
-        with httpx.stream("GET", f"{url}/api/logs/{pl[0]}/stream", params={"lines": lines},
+        with httpx.stream("GET", url + _path(f"/api/logs/{pl[0]}/stream"), params={"lines": lines},
                           headers={"Authorization": f"Bearer {tok}"}, timeout=httpx.Timeout(10, read=None)) as r:
             if r.status_code >= 400:
                 r.read()
@@ -267,7 +302,18 @@ def cmd_download(a):
     print("follow it with: hangar downloads")
 
 
-def cmd_downloads(_):
+def cmd_downloads(a):
+    if a and a[0] in ("resume", "discard"):
+        if len(a) < 2:
+            sys.exit(f"usage: hangar downloads {a[0]} <folder>" + (" | all" if a[0] == "resume" else ""))
+        left = _call("GET", "/api/downloads")["leftovers"]
+        targets = [lo["folder"] for lo in left if lo["resumable"]] if a[1] == "all" and a[0] == "resume" else [a[1]]
+        for t in targets:
+            r = _call("POST", f"/api/downloads/leftovers/{a[0]}", json={"folder": t})
+            print(f"resumed {r['repo']} into {r['folder']} (id {r['id']})" if a[0] == "resume" else f"removed {', '.join(r['removed']) or 'nothing'}")
+        if not targets:
+            print("nothing to resume")
+        return
     res = _call("GET", "/api/downloads")
     print(f"aria2c: {res['aria2'] or 'not installed (single connection downloads)'}")
     for d in res["items"]:
@@ -276,6 +322,11 @@ def cmd_downloads(_):
         print(f"{d['id']}  {d['state']:9s} {pct:5.1f}%  {_mib(d['done_bytes'] / 2**20)} / {_mib(d['total_bytes'] / 2**20)}"
               f"  {d['speed'] / 2**20:.1f} MiB/s{eta}  {d['repo']}" + (f"  -> profile {d['result']['profile']}" if d["result"].get("profile") else "")
               + (f"  {d['error']}" if d["error"] else ""))
+    for lo in res.get("leftovers", []):
+        frac = lo["have_bytes"] / lo["total_bytes"] * 100 if lo["total_bytes"] else None
+        pct = (f"{frac:.1f}%" if frac < 10 else f"{frac:.0f}%") if frac is not None else _mib(lo["have_bytes"] / 2**20)
+        print(f"unfinished {lo['name']}: {pct} of {lo['repo'] or 'unknown source'}"
+              + ("  (hangar downloads resume|discard " + lo["name"] + ")" if lo["resumable"] else "  (no record: start it again to continue, or discard)"))
 
 
 def cmd_new_profile(a):
@@ -323,9 +374,115 @@ def cmd_autostart(a):
     if a and a[0] not in ("on", "off"):
         sys.exit("usage: hangar autostart [on|off]")
     s = _call("POST", "/api/autostart", json={"enabled": a[0] == "on"}) if a else _call("GET", "/api/autostart")
+    if not s.get("supported", True):
+        print(s["note"] + (f"\nleft over from an earlier version: {s['leftover']} (hangar autostart off removes it)"
+                           if s.get("leftover") else ""))
+        return
     print(("starts with Windows" if s["enabled"] else "does not start with Windows") + f"  ({s['shortcut']})")
     if s.get("stale"):
         print("the shortcut points at another copy of Hangar; run: hangar autostart on")
+
+
+def cmd_reasoning(a):
+    pl = [x for x in a if not x.startswith("--")]
+    if not pl:
+        sys.exit("usage: hangar reasoning <engine> [level] [--restart]")
+    if len(pl) > 1:
+        r = _call("POST", "/api/reasoning", json={"engine": pl[0], "level": pl[1], "restart": "--restart" in a})
+        how = {"now": "applied now", "restart": f"restarting {pl[0]} (job {r.get('job')})",
+               "next start": "applies at the next start" + (f"; add --restart to apply it now" if r["running"] else "")}[r["applied"]]
+        print(f"{r['profile']}: reasoning effort {r['level']} - {how}")
+        return
+    r = _call("GET", "/api/reasoning", params={"engine": pl[0]})
+    if not r["supported"]:
+        print(f"{pl[0]} ({r['profile']}) cannot set a reasoning effort")
+        return
+    print(f"{r['profile']}: reasoning effort {r['level']}  (levels: {', '.join(r['levels'])}; "
+          + ("changes apply at once" if r["live"] else "a change restarts the engine") + ")")
+
+
+def cmd_roles(_):
+    for r in _call("GET", "/api/roles"):
+        chain = " > ".join(f"{t['machine'] or 'this'}/{t['profile']} [{t['state']}{', auto' if t['auto_start'] else ''}]"
+                           + (" *" if t["serving"] else "") for t in r["targets"]) or ("(whatever runs here)" if r["name"] == "main" else "(none)")
+        s = r["serving"]
+        now = f"{s['machine'] or 'this'}/{s['profile']}" + (" (fallback)" if r["fallback"] else "") if s else "NOTHING UP"
+        print(f"{r['name']:10s} {chain}\n{'':10s} serving now: {now}")
+
+
+def cmd_role(a):
+    pl = [x for x in a if not x.startswith("--")]
+    if pl[:1] == ["set"] and len(pl) >= 3:
+        targets = []
+        for i, spec in enumerate(pl[2:]):
+            machine, _, prof = spec.rpartition("/")
+            targets.append({"machine": "" if machine in ("", "this") else machine, "profile": prof, "auto_start": i > 0 and "--auto" in a})
+        _call("POST", "/api/roles", json={"name": pl[1], "targets": targets})
+        cmd_roles([])
+    elif pl[:1] in (["rm"], ["remove"]) and len(pl) >= 2:
+        _call("DELETE", f"/api/roles/{pl[1]}")
+        print(f"removed role {pl[1]}")
+    else:
+        sys.exit("usage: hangar role set <name> <machine/profile> [...] [--auto] | hangar role rm <name>")
+
+
+def cmd_budget(a):
+    if a and a[0] not in ("off", "none"):
+        try:
+            gb = float(a[0].lower().rstrip("gb"))
+        except ValueError:
+            sys.exit("usage: hangar budget [GB|off]   e.g. hangar budget 15")
+        b = _call("POST", "/api/budget", json={"gb": gb})
+    elif a:
+        b = _call("POST", "/api/budget", json={"gb": None})
+    else:
+        b = _call("GET", "/api/budget")
+    print((f"memory budget {b['budget_mib'] / 1024:.1f} GB" if b["budget_mib"] else "no memory budget")
+          + f"; engines use {b['used_mib'] / 1024:.1f} GB now"
+          + (f"; new profiles fit in {b['limit_mib'] / 1024:.1f} GB" if b.get("limit_mib") else ""))
+
+
+def cmd_machines(_):
+    res = _call("GET", "/api/peers")
+    rows = [{**res["self"], "online": True, "this": True}] + res["peers"]
+    w = max(len(m.get("name") or "") for m in rows) + 2
+    for m in rows:
+        s = m.get("summary") or {}
+        state = "this machine" if m.get("this") else ("online" if m["online"] else f"OFFLINE ({m.get('error')})")
+        run = ", ".join(f"{r['profile']}" + (f" {r['gen_tps']:.1f} tok/s" if r.get("gen_tps") else "") for r in s.get("running", []))
+        mem = f"{_mib(s.get('vram_used_mib'))} / {_mib(s.get('vram_total_mib'))} GPU" if s.get("vram_total_mib") else ""
+        name = (m.get("machine") or {}).get("name") or m.get("name")
+        print(f"{m.get('name', name):{w}s} {state:14s} {(m.get('machine') or m).get('os', ''):8s} {mem:22s} {run or 'idle'}")
+    f = res.get("fleet")
+    if f and res["peers"]:
+        pct = lambda v: "-" if v is None else f"{v:.0f}%"  # noqa: E731
+        print(f"{'all':{w}s} {str(f['machines']) + ' online':14s} {f['gen_tps']:.1f} tok/s out, "
+              f"GPU {_mib(f['vram_used_mib'])} / {_mib(f['vram_total_mib'])} (load {pct(f['gpu_util_percent'])}), "
+              f"RAM {_mib(f['ram_used_mib'])} / {_mib(f['ram_total_mib'])}, CPU {pct(f['cpu_percent'])} of {f['cpu_count']} threads")
+
+
+def cmd_pair_code(_):
+    c = _call("GET", "/api/pairing-code")
+    print(c["code"])
+    print(f"\n# {c['name']}, reachable at: {', '.join(c['urls'])}", file=sys.stderr)
+    print("# paste it into Add machine on the other Hangar, or there: hangar peer add <code> --both", file=sys.stderr)
+
+
+def cmd_peer(a):
+    named = a[a.index("--name") + 1] if "--name" in a and a.index("--name") + 1 < len(a) else None
+    pl = [x for i, x in enumerate(a) if not x.startswith("--") and not (i and a[i - 1] == "--name")]
+    if pl[:1] == ["add"] and len(pl) >= 2 and "hangar-pair:" in pl[1]:
+        res = _call("POST", "/api/peers", json={"code": pl[1], "name": named, "both": "--both" in a})
+        print(f"added {res['name']} ({res['url']})" + (f"; on {res['name']}: {res['reciprocal']}" if res.get("reciprocal") else ""))
+    elif pl[:1] == ["add"] and len(pl) >= 4:
+        res = _call("POST", "/api/peers", json={"name": pl[1], "url": pl[2], "token": pl[3], "both": "--both" in a})
+        print(f"added {res['name']} ({res['url']})" + (f"; on {res['name']}: {res['reciprocal']}" if res.get("reciprocal") else ""))
+    elif pl[:1] == ["remove"] and len(pl) >= 2:
+        _call("DELETE", f"/api/peers/{pl[1]}")
+        print(f"removed {pl[1]}")
+    else:
+        sys.exit("usage: hangar peer add <pairing-code> [--both] | hangar peer add <name> <url> <token> [--both] | "
+                 "hangar peer remove <name>   (hangar pair-code prints this machine's code)")
 
 
 def cmd_login(a):
@@ -341,13 +498,21 @@ COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "s
             "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
             "stats": cmd_stats, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
             "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom,
-            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart}
+            "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines, "pair-code": cmd_pair_code, "budget": cmd_budget, "roles": cmd_roles, "role": cmd_role, "reasoning": cmd_reasoning,
+            "peer": cmd_peer}
 NEEDS_ARG = {"plan", "start", "switch", "restart", "update", "rollback", "logs", "job", "search", "files", "download",
              "new-profile", "custom", "connect"}
 
 
 def main(argv=None) -> int:
+    global ON
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--on" in argv:
+        i = argv.index("--on")
+        if i + 1 >= len(argv):
+            sys.exit("--on needs a machine name (see: hangar machines)")
+        ON = argv[i + 1].lower()
+        del argv[i:i + 2]
     if not argv or argv[0] in ("-h", "--help", "help") or argv[0] not in COMMANDS:
         print(__doc__)
         return 0 if not argv or argv[0] in ("-h", "--help", "help") else 2

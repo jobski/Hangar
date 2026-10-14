@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -20,6 +21,12 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 def _norm(p: str) -> str:
     return os.path.normcase(os.path.normpath(p.strip('"')))
+
+
+# "[strata] thinking: 5466 of max 64000 tokens, 42.7 tok/s, 231 s" (also answering / writing a tool call: <name>)
+GEN = re.compile(r"\[strata\] (?P<phase>.+?): (?P<n>[\d,]+) of max [\d,]+ tokens, (?P<tps>[\d.]+) tok/s")
+# "[strata] reading the prompt: 22,982 of 39,584 tokens, 19 s so far"
+READ = re.compile(r"\[strata\] reading the prompt: (?P<n>[\d,]+) of (?P<total>[\d,]+) tokens, (?P<s>\d+) s so far")
 
 
 class StrataEngine(Engine):
@@ -124,6 +131,59 @@ class StrataEngine(Engine):
         # Strata fills the GPU up to its --vram-reserve-mib and keeps as much of the model in RAM as fits
         return Estimate(vram_total_mib, min(files, ram_total_mib * 0.85), True,
                         "Strata uses the whole GPU and streams the rest of the model from RAM/disk")
+
+    # ---- reasoning effort: live through Strata's shared Chat settings (POST /settings), which it also keeps on disk;
+    # the run config's "reasoning_effort" is the level when those name none
+    LEVELS = ["default", "none", "low", "medium", "high"]
+
+    def has_vision(self, profile):
+        rc = self._run_config(profile)
+        return bool(rc.get("vision")) and "--vision" in [str(a) for a in rc.get("args", [])]
+
+    def reasoning_levels(self, profile):
+        return self.LEVELS
+
+    def _shared(self) -> dict:
+        r = httpx.get(self.base_url() + "/settings", headers=self.auth_headers(), timeout=5)
+        r.raise_for_status()
+        return r.json().get("defaults") or {}
+
+    def reasoning_get(self, profile):
+        try:
+            lvl = self._shared().get("reasoning_effort")
+        except (httpx.HTTPError, ValueError):
+            lvl = None
+        return lvl or self._run_config(profile).get("reasoning_effort") or "default"
+
+    def reasoning_set(self, profile, level):
+        try:
+            shared = self._shared()                  # keep the other Chat settings (temperature, ...) as they are
+        except (httpx.HTTPError, ValueError) as e:
+            raise ValueError(f"Strata is not answering ({type(e).__name__}); start it first") from e
+        if level == "default":
+            shared.pop("reasoning_effort", None)
+        else:
+            shared["reasoning_effort"] = level
+        r = httpx.post(self.base_url() + "/settings", headers={**self.auth_headers(), "Content-Type": "application/json"},
+                       json={"defaults": shared or None}, timeout=10)
+        if r.status_code != 200:
+            raise ValueError(f"Strata refused it: {r.text[:200]}")
+        return True
+
+    def progress(self, lines):
+        # Strata's Prometheus counters only move when a request finishes; its log prints the live rate every second
+        for line in reversed(lines):
+            if "[strata] done:" in line:
+                return None
+            m = GEN.search(line)
+            if m:
+                return {"phase": m.group("phase"), "gen_tps": float(m.group("tps")), "tokens": int(m.group("n").replace(",", ""))}
+            m = READ.search(line)
+            if m:
+                n, s = int(m.group("n").replace(",", "")), int(m.group("s"))
+                return {"phase": "reading the prompt", "prompt_tps": n / s if s else None, "tokens": n,
+                        "of": int(m.group("total").replace(",", ""))}
+        return None
 
     # ---- updates
     def _git(self, *args, timeout=120) -> subprocess.CompletedProcess:

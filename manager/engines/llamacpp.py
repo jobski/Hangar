@@ -9,24 +9,46 @@ from __future__ import annotations
 import json
 import os
 import re
+import platform
 import shutil
 import subprocess
+import sys
+import tarfile
 import time
 import zipfile
 from pathlib import Path
 
 import httpx
 
+from .. import gguf
 from .base import Engine, Estimate, Launch, Profile, arg_value, file_mib
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 GH = "https://api.github.com/repos/{repo}"
 RUNTIME_DLL = re.compile(r"^(cudart|cublas|cublasLt)64_\d+\.dll$", re.I)
-BINARY = re.compile(r"\.(exe|dll)$", re.I)
+BINARY = re.compile(r"\.(exe|dll|dylib|so|metallib)$", re.I)
+WINDOWS = os.name == "nt"
+
+
+def _default_asset() -> str:
+    """The release file for this machine: CUDA 13 on Windows, Metal (arm64) or CPU (x64) builds on macOS."""
+    if sys.platform == "darwin":
+        return r"^llama-b\d+-bin-macos-%s\.tar\.gz$" % ("arm64" if platform.machine() == "arm64" else "x64")
+    if sys.platform.startswith("linux"):
+        return r"^llama-b\d+-bin-ubuntu-x64\.(zip|tar\.gz)$"
+    return r"^llama-b\d+-bin-win-cuda-13\.\d+-x64\.zip$"
 
 
 def _norm(p: str) -> str:
     return os.path.normcase(os.path.normpath(p.strip('"')))
+
+
+def kv_mib(model: str, args: list[str], ctx: int) -> float:
+    """KV cache for ctx tokens, from the model's own layer/head numbers and the cache type in args (f16 by default);
+    40 MiB per 1K tokens when the header cannot be read."""
+    per_token = gguf.kv_bytes_per_token(gguf.metadata(model), arg_value(args, "-ctk", "--cache-type-k") or "f16",
+                                        arg_value(args, "-ctv", "--cache-type-v")) if model else None
+    return ctx * per_token / 2**20 if per_token else ctx / 1024 * 40
 
 
 class LlamaCppEngine(Engine):
@@ -38,12 +60,12 @@ class LlamaCppEngine(Engine):
     def __init__(self, name, cfg):
         super().__init__(name, cfg)
         self.dir = Path(cfg["dir"])
-        self.exe = self.dir / cfg.get("exe", "llama-server.exe")
+        self.exe = self.dir / cfg.get("exe", "llama-server.exe" if WINDOWS else "llama-server")
         self.startup_timeout_s = int(cfg.get("startup_timeout_s", 900))
         u = cfg.get("update") or {}
         self.repo = u.get("repo", "ggml-org/llama.cpp")
         self.channel = u.get("channel", "builds")            # builds = every bNNNN build, stable = releases/latest
-        self.asset_re = re.compile(u.get("asset", r"^llama-b\d+-bin-win-cuda-13\.\d+-x64\.zip$"))
+        self.asset_re = re.compile(u.get("asset", _default_asset()))
         self.runtime_re = re.compile(u.get("runtime_asset", r"^cudart-llama-bin-win-cuda-13\.\d+-x64\.zip$"))
         self.downloads = Path(cfg.get("_data_dir", ".")) / "downloads" / name
 
@@ -63,6 +85,9 @@ class LlamaCppEngine(Engine):
             cmd.append("--metrics")
         if self.api_key:
             cmd += ["--api-key", self.api_key]
+        lvl = c.get("reasoning_effort")
+        if lvl and lvl != "default" and not {"--reasoning", "-rea", "--reasoning-effort"} & set(args) and self._has_reasoning():
+            cmd += ["--reasoning", "off"] if lvl == "none" else ["--reasoning-effort", str(lvl)]
         return Launch(cmd=cmd + args, cwd=str(self.dir), env={k: str(v) for k, v in (c.get("env") or {}).items()})
 
     def health(self, profile):
@@ -91,14 +116,46 @@ class LlamaCppEngine(Engine):
         args = [str(a) for a in c.get("args", [])]
         files = file_mib(c.get("model"), c.get("mmproj"), arg_value(args, "-md", "--model-draft"))
         ctx = int(c.get("ctx") or arg_value(args, "-c", "--ctx-size") or 4096)
-        kv = ctx / 1024 * 40                                 # rough: ~40 MiB per 1K tokens of q8 KV cache on a 35B MoE
+        kv = kv_mib(str(c.get("model") or ""), args, ctx)
         ngl = arg_value(args, "-ngl", "--n-gpu-layers", "--gpu-layers")
         greedy = ngl in (None, "auto", "all") and ("--fit" in args or ngl in ("auto", "all"))
         if ngl == "0":
             return Estimate(500, files + kv, False, "CPU only (-ngl 0)")
         vram = min(files + kv, max(0.0, vram_total_mib)) if greedy or ngl in ("99", "999") else min(files, vram_total_mib)
         ram = max(0.0, files + kv - vram) + 1024
-        return Estimate(vram, ram, greedy, "estimated from file sizes and context; replaced by measured use after a run")
+        return Estimate(vram, ram, greedy, f"estimated from file sizes and a {ctx // 1024}K context ({kv:.0f} MiB of KV "
+                                           "cache); replaced by measured use after a run")
+
+    # ---- reasoning effort: --reasoning-effort (and --reasoning off for none), so a change needs a restart
+    LEVELS = ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+    def _has_reasoning(self) -> bool:
+        """Whether this llama-server build has --reasoning-effort (newer builds; older ones refuse unknown flags)."""
+        try:
+            key = self.exe.stat().st_mtime
+        except OSError:
+            return False
+        if getattr(self, "_reasoning_probe", (None,))[0] != key:
+            try:
+                out = subprocess.run([str(self.exe), "--help"], capture_output=True, text=True, timeout=30,
+                                     creationflags=NO_WINDOW)
+                ok = "--reasoning-effort" in (out.stdout + out.stderr)
+            except (OSError, subprocess.SubprocessError):
+                ok = False
+            self._reasoning_probe = (key, ok)
+        return self._reasoning_probe[1]
+
+    def has_vision(self, profile):
+        return bool(profile.cfg.get("mmproj"))           # a vision projector next to the model
+
+    def reasoning_levels(self, profile):
+        return self.LEVELS if self._has_reasoning() else None
+
+    def reasoning_get(self, profile):
+        args = [str(a) for a in profile.cfg.get("args", [])]
+        if arg_value(args, "--reasoning", "-rea") == "off":
+            return "none"
+        return arg_value(args, "--reasoning-effort") or str(profile.cfg.get("reasoning_effort") or "default")
 
     # ---- updates
     def version(self) -> str | None:
@@ -177,6 +234,8 @@ class LlamaCppEngine(Engine):
 
     @staticmethod
     def _extract(zf: Path, into: Path):
+        if zf.name.endswith((".tar.gz", ".tgz")):
+            return LlamaCppEngine._extract_tar(zf, into)
         with zipfile.ZipFile(zf) as z:
             names = z.namelist()
             tops = {n.split("/", 1)[0] for n in names}
@@ -189,6 +248,29 @@ class LlamaCppEngine(Engine):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with z.open(info) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
+                mode = info.external_attr >> 16
+                if mode & 0o111 and not WINDOWS:
+                    target.chmod(mode & 0o777)
+
+    @staticmethod
+    def _extract_tar(tf: Path, into: Path):
+        """macOS/Linux builds: a .tar.gz with one top folder, executable bits and relative dylib symlinks."""
+        tmp = into.with_name(into.name + ".unpack")
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        tmp.mkdir()
+        with tarfile.open(tf) as t:
+            t.extractall(tmp, filter="data")
+        tops = list(tmp.iterdir())
+        src = tops[0] if len(tops) == 1 and tops[0].is_dir() else tmp
+        for p in src.iterdir():
+            dest = into / p.name
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            elif dest.exists() or dest.is_symlink():
+                dest.unlink()
+            p.rename(dest)
+        shutil.rmtree(tmp, ignore_errors=True)
 
     def update(self, log):
         info = self.check_update(log)
@@ -210,14 +292,14 @@ class LlamaCppEngine(Engine):
         # no marker yet (installed by hand): fetch the runtime once, since the DLLs there may be an older CUDA minor
         if want and want != have:
             self._extract(self._download(runtime, log), new)
-        else:
+        elif self.dir.exists():
             for p in self.dir.iterdir():
                 if p.is_file() and RUNTIME_DLL.match(p.name) and not (new / p.name).exists():
                     shutil.copy2(p, new / p.name)
         if want:
             (new / marker.name).write_text(json.dumps(want))
         # files the user put in the folder (scripts, notes) come along; binaries never do
-        for p in self.dir.iterdir():
+        for p in (self.dir.iterdir() if self.dir.exists() else []):
             if p.is_file() and not BINARY.search(p.name) and not (new / p.name).exists():
                 shutil.copy2(p, new / p.name)
 
@@ -226,6 +308,10 @@ class LlamaCppEngine(Engine):
             shutil.rmtree(new, ignore_errors=True)
             raise RuntimeError("the new llama-server did not start (--version failed); kept the current one")
         log(f"  new build runs: b{built}")
+        if not self.dir.exists():               # first install (e.g. a new Mac): nothing to keep for rollback
+            new.rename(self.dir)
+            log(f"{self.name}: installed b{built} in {self.dir}")
+            return {**info, "updated": True, "current": f"b{built}"}
         if prev.exists():
             shutil.rmtree(prev)
         self.dir.rename(prev)

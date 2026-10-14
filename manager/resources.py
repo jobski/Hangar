@@ -1,8 +1,11 @@
-"""What the machine has free right now: GPU (via nvidia-smi), RAM, CPU, and who owns a port."""
+"""What the machine has free right now: GPU (nvidia-smi, or Apple Silicon's unified memory), RAM, CPU, and who owns a port."""
 from __future__ import annotations
 
+import platform
+import re
 import shutil
 import subprocess
+import sys
 import time
 
 import psutil
@@ -11,6 +14,13 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def gpus() -> list[dict]:
+    """One dict per GPU; empty when there is none we can read."""
+    if sys.platform == "darwin" and platform.machine() == "arm64":
+        return apple_gpu()
+    return nvidia_gpus()
+
+
+def nvidia_gpus() -> list[dict]:
     """One dict per NVIDIA GPU; empty when nvidia-smi is missing or fails."""
     exe = shutil.which("nvidia-smi")
     if not exe:
@@ -32,6 +42,47 @@ def gpus() -> list[dict]:
                     "vram_free_mib": total - used, "util_percent": num(f[4]), "temp_c": num(f[5]),
                     "power_w": num(f[6])})
     return res
+
+
+_APPLE: dict = {}
+_IOREG_NUM = r'"{key}"\s*=\s*(\d+)'
+
+
+def apple_gpu() -> list[dict]:
+    """Apple Silicon: the GPU shares the machine's memory. "VRAM" here is what Metal lets the GPU wire, which macOS caps
+    below total RAM (iogpu.wired_limit_mb when set, else ~75% of RAM on 32 GB+ Macs, ~2/3 on smaller ones); use and
+    load come from the IOAccelerator statistics, which need no admin rights. No temperature without sudo."""
+    if not _APPLE:
+        ram = psutil.virtual_memory().total / 2**20
+        limit = _sysctl_int("iogpu.wired_limit_mb") or 0
+        _APPLE.update(name=_sysctl("machdep.cpu.brand_string") or "Apple GPU",
+                      total=float(limit) if limit > 0 else ram * (0.75 if ram >= 32 * 1024 else 2 / 3))
+    used, util = 0.0, None
+    try:
+        out = subprocess.run(["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"], capture_output=True,
+                             text=True, timeout=5).stdout
+        m = re.search(_IOREG_NUM.format(key="In use system memory"), out)
+        used = int(m.group(1)) / 2**20 if m else 0.0
+        m = re.search(_IOREG_NUM.format(key="Device Utilization %"), out)
+        util = float(m.group(1)) if m else None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    total = _APPLE["total"]
+    return [{"index": 0, "name": f"{_APPLE['name']} (unified memory)", "vram_total_mib": total, "vram_used_mib": used,
+             "vram_free_mib": max(0.0, total - used), "util_percent": util, "temp_c": None, "power_w": None,
+             "unified": True}]
+
+
+def _sysctl(name: str) -> str | None:
+    try:
+        return subprocess.run(["sysctl", "-n", name], capture_output=True, text=True, timeout=5).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _sysctl_int(name: str) -> int | None:
+    v = _sysctl(name)
+    return int(v) if v and v.isdigit() else None
 
 
 def snapshot() -> dict:

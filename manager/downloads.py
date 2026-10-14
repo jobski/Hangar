@@ -2,13 +2,18 @@
 
 Downloads run on their own threads (not the engine job queue), resume from a .part file after an interruption, and
 use aria2c with parallel connections when it is installed and enabled.
+
+Each download leaves a record (.hangar-download.json) in its folder until it completes, so one that was cut off - a
+restart, a crash, a reboot - is found again later and can be resumed or discarded (leftovers()).
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -176,6 +181,9 @@ def annotate(files: list[dict]) -> dict:
     return {"groups": sorted(groups.values(), key=lambda g: (g["mmproj"], g["size"])), "files": files}
 
 
+RECORD = ".hangar-download.json"
+
+
 # ----------------------------------------------------------------------------------------------- downloads
 @dataclass
 class Download:
@@ -219,15 +227,46 @@ class Downloader:
         self.aria2_connections = int(dc.get("aria2_connections", 16))
         self.items: dict[str, Download] = {}
         self.on_done = on_done
+        # folders downloaded into outside the library (e.g. a Strata model folder), so leftovers() finds them too
+        self.known_file = Path(cfg["manager"]["data_dir"]) / "download-folders.json" if cfg.get("manager") else None
+
+    def _known_folders(self) -> list[Path]:
+        try:
+            return [Path(x) for x in json.loads(self.known_file.read_text(encoding="utf-8"))]
+        except (OSError, ValueError, AttributeError, TypeError):
+            return []
+
+    def _remember_folder(self, folder: Path):
+        if not self.known_file or folder.parent == self.library_dir:
+            return
+        known = {str(x) for x in self._known_folders()} | {str(folder)}
+        try:
+            self.known_file.write_text(json.dumps(sorted(known), indent=1), encoding="utf-8")
+        except OSError:
+            pass
 
     def aria2_path(self) -> str | None:
         if self.aria2 == "off":
             return None
         p = shutil.which("aria2c")
-        if not p:
-            for c in Path(os.environ.get("LOCALAPPDATA", "")).glob("Microsoft/WinGet/Packages/aria2.aria2*/**/aria2c.exe"):
-                return str(c)
-        return p
+        if p:
+            return p
+        # where installers put it when it is not on this process's PATH (Hangar may run without the shell's PATH)
+        for c in ("/opt/homebrew/bin/aria2c", "/usr/local/bin/aria2c", "/usr/bin/aria2c"):
+            if Path(c).exists():
+                return c
+        for c in Path(os.environ.get("LOCALAPPDATA", "")).glob("Microsoft/WinGet/Packages/aria2.aria2*/**/aria2c.exe"):
+            return str(c)
+        return None
+
+    @staticmethod
+    def aria2_hint() -> str:
+        """The command that installs aria2 on this machine."""
+        if sys.platform == "darwin":
+            return "brew install aria2"
+        if sys.platform.startswith("linux"):
+            return "sudo apt install aria2   (or your distribution's package manager)"
+        return "winget install aria2.aria2"
 
     # ---- browsing
     def search(self, source: str, q: str, limit: int = 20):
@@ -245,21 +284,29 @@ class Downloader:
 
     # ---- downloading
     def start(self, source: str, repo: str, include: list[str] | None = None, folder: str | None = None,
-              revision: str | None = None, make_profile: bool = False) -> Download:
+              revision: str | None = None, make_profile: bool = False, files: list[dict] | None = None) -> Download:
+        """files: the exact files (as listed before), e.g. to resume a download from its record."""
         source = self._src(source)
         src = SOURCES[source]
-        files = src.files(repo, revision)
-        if include:
-            pats = [re.compile(_glob_re(p), re.I) for p in include]
-            files = [f for f in files if any(p.search(f["path"]) for p in pats)]
-        elif source in ("huggingface", "modelscope"):
-            raise ValueError("say which files: include=[\"*Q4_K_M*\"] (list_files shows the quants)")
+        if not files:
+            files = src.files(repo, revision)
+            if include:
+                pats = [re.compile(_glob_re(p), re.I) for p in include]
+                files = [f for f in files if any(p.search(f["path"]) for p in pats)]
+            elif source in ("huggingface", "modelscope"):
+                raise ValueError("say which files: include=[\"*Q4_K_M*\"] (list_files shows the quants)")
         if not files:
             raise ValueError("no files match")
         dest = Path(folder) if folder and Path(folder).is_absolute() else self.library_dir / (folder or folder_name_for(
             repo.split(":")[0] if source == "ollama" else Path(urlparse(repo).path).stem if source == "url" else repo))
+        if any(x.folder == str(dest) and x.state in ("queued", "running") for x in self.items.values()):
+            raise ValueError(f"{dest.name} is already downloading")
         d = Download(source=source, repo=repo, files=files, folder=str(dest), revision=revision, make_profile=make_profile)
         d.total_bytes = sum(f.get("size") or 0 for f in files)
+        dest.mkdir(parents=True, exist_ok=True)
+        self._remember_folder(dest)
+        (dest / RECORD).write_text(json.dumps({"source": source, "repo": repo, "revision": revision, "make_profile": make_profile,
+                                               "files": files, "started": time.time()}, indent=1), encoding="utf-8")
         self.items[d.id] = d
         threading.Thread(target=self._run, args=(d,), daemon=True, name=f"dl-{d.id}").start()
         return d
@@ -293,13 +340,31 @@ class Downloader:
                     else:
                         d.write(f"downloading {name} ({(f.get('size') or 0) / 2**30:.2f} GiB)")
                         aria = self.aria2_path()
+                        part = target.with_name(target.name + ".part")
+                        if aria and part.exists() and not target.exists():
+                            # started without aria2: hand it what is already here (it continues an existing file)
+                            part.rename(target)
+                            d.write(f"  continuing with aria2 from {target.stat().st_size / 2**30:.2f} GiB")
                         if aria:
-                            self._aria2(d, aria, url, src.headers(), target, base_done)
+                            try:
+                                self._aria2(d, aria, url, src.headers(), target, base_done)
+                            except _AriaFailed as e:
+                                ctl = target.with_name(target.name + ".aria2")
+                                if ctl.exists():
+                                    # aria2 has pieces of the file all over it: only aria2 can continue that
+                                    raise RuntimeError(f"{e}; its partial file is kept for aria2 to resume") from None
+                                # it never got going (e.g. it could not look the host up): what is on disk is still a
+                                # plain from-the-start file, so the built-in downloader carries on from it
+                                d.write(f"  {e}; continuing with the built-in downloader")
+                                if target.exists() and not part.exists():
+                                    target.rename(part)
+                                self._http(d, url, src.headers(), target, base_done, f.get("size") or 0)
                         else:
                             self._http(d, url, src.headers(), target, base_done, f.get("size") or 0)
                     base_done += f.get("size") or (target.stat().st_size if target.exists() else 0)
                     d.done_bytes = base_done
                 self._notes(d, dest)
+                (dest / RECORD).unlink(missing_ok=True)
                 d.state, d.current = "done", ""
                 d.write(f"done: {dest}")
                 if self.on_done:
@@ -312,6 +377,82 @@ class Downloader:
                 d.write("FAILED: " + d.error)
             finally:
                 d.finished = time.time()
+
+    # ---- downloads that stopped without finishing (and are not running now)
+    def leftovers(self) -> list[dict]:
+        """Unfinished downloads in the library: folders with a download record, .part files, aria2 control files.
+        resumable when Hangar knows what was being downloaded (the record)."""
+        busy = {x.folder for x in self.items.values() if x.state in ("queued", "running")}
+        out = []
+        folders = sorted(p for p in self.library_dir.iterdir() if p.is_dir()) if self.library_dir.is_dir() else []
+        folders += [p for p in self._known_folders() if p.is_dir() and p not in folders]
+        for folder in folders:
+            if str(folder) in busy:
+                continue
+            rec = None
+            try:
+                rec = json.loads((folder / RECORD).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+            files = []
+            if rec:
+                for f in rec.get("files", []):
+                    name, size = Path(f["path"]).name, f.get("size") or 0
+                    t, part = folder / name, folder / (name + ".part")
+                    have = part.stat().st_size if part.exists() else t.stat().st_size if t.exists() else 0
+                    done = t.exists() and not part.exists() and not (folder / (name + ".aria2")).exists() and (not size or have >= size)
+                    files.append({"name": name, "have": have, "size": size, "complete": done})
+                if all(f["complete"] for f in files):     # everything is there: only the record was left behind
+                    (folder / RECORD).unlink(missing_ok=True)
+                    continue
+            else:
+                for p in sorted(folder.iterdir()):
+                    if p.suffix == ".part":
+                        files.append({"name": p.name[:-5], "have": p.stat().st_size, "size": 0, "complete": False})
+                    elif p.suffix == ".aria2" and (folder / p.stem).exists():
+                        files.append({"name": p.stem, "have": (folder / p.stem).stat().st_size, "size": 0, "complete": False})
+                if not files:
+                    continue
+            mtime = max([p.stat().st_mtime for p in folder.iterdir()] or [0])
+            out.append({"folder": str(folder), "name": folder.name, "source": (rec or {}).get("source"),
+                        "repo": (rec or {}).get("repo"), "resumable": bool(rec), "files": files,
+                        "have_bytes": sum(f["have"] for f in files), "total_bytes": sum(f["size"] for f in files),
+                        "last_activity": mtime})
+        return out
+
+    def _leftover(self, folder: str) -> dict:
+        lo = next((x for x in self.leftovers() if x["folder"] == folder or x["name"] == folder), None)
+        if not lo:
+            raise KeyError(f"no unfinished download in {folder}")
+        return lo
+
+    def resume(self, folder: str) -> Download:
+        lo = self._leftover(folder)
+        if not lo["resumable"]:
+            raise ValueError(f"{lo['name']} has partial files but no record of what was being downloaded: start the same "
+                             "download again from the Models page and it continues from them")
+        rec = json.loads((Path(lo["folder"]) / RECORD).read_text(encoding="utf-8"))
+        return self.start(rec["source"], rec["repo"], folder=lo["folder"], revision=rec.get("revision"),
+                          make_profile=rec.get("make_profile", False), files=rec["files"])
+
+    def discard(self, folder: str) -> dict:
+        """Delete what an unfinished download left: partial files and the record; finished files stay. A folder left
+        empty (or with only its notes) goes too."""
+        lo = self._leftover(folder)
+        f_dir = Path(lo["folder"])
+        removed = []
+        for f in lo["files"]:
+            if f["complete"]:
+                continue
+            for p in (f_dir / (f["name"] + ".part"), f_dir / (f["name"] + ".aria2"), f_dir / f["name"]):
+                if p.exists():
+                    p.unlink()
+                    removed.append(p.name)
+        (f_dir / RECORD).unlink(missing_ok=True)
+        if f_dir.is_dir() and all(p.name == "notes.md" for p in f_dir.iterdir()):
+            shutil.rmtree(f_dir)
+            removed.append(f_dir.name + "/")
+        return {"folder": str(f_dir), "removed": removed}
 
     def _http(self, d: Download, url: str, headers: dict, target: Path, base_done: int, size: int):
         part = target.with_name(target.name + ".part")
@@ -346,7 +487,13 @@ class Downloader:
         cmd = [exe, "--continue=true", f"--max-connection-per-server={self.aria2_connections}",
                f"--split={self.aria2_connections}", "--min-split-size=8M", "--file-allocation=none",
                "--summary-interval=2", "--console-log-level=warn", "--download-result=hide", "--auto-file-renaming=false",
-               "--allow-overwrite=true", "-d", str(target.parent), "-o", target.name]
+               "--allow-overwrite=true", "-d", str(target.parent), "-o", target.name,
+               # CDNs publish IPv6 addresses, and aria2 does not fall back to IPv4 the way other clients do: on a
+               # machine without an IPv6 route every connection fails ("unreachable network")
+               "--disable-ipv6=true",
+               # aria2's own resolver (c-ares) misses macOS DNS - scoped resolvers, Tailscale MagicDNS - and fails
+               # with exit 19 ("name resolution failed"): use the system's, as every other program does
+               "--async-dns=false"]
         for k, v in headers.items():
             cmd.append(f"--header={k}: {v}")
         cmd.append(url)
@@ -364,7 +511,7 @@ class Downloader:
             elif line.strip() and "[#" not in line:
                 d.write("  aria2: " + line.strip()[:200])
         if p.wait() != 0:
-            raise RuntimeError(f"aria2c failed (exit {p.returncode})")
+            raise _AriaFailed(f"aria2c failed: {ARIA2_EXIT.get(p.returncode, 'error')} (exit {p.returncode})")
 
     @staticmethod
     def _notes(d: Download, dest: Path):
@@ -380,6 +527,19 @@ class Downloader:
 
 class _Cancelled(Exception):
     pass
+
+
+class _AriaFailed(Exception):
+    pass
+
+
+# aria2c's exit codes (man aria2c, "EXIT STATUS"), for messages people can act on
+ARIA2_EXIT = {1: "unknown error", 2: "timed out", 3: "file not found on the server", 5: "too slow", 6: "network problem",
+              7: "unfinished downloads", 8: "the server does not support resuming", 9: "not enough disk space",
+              13: "the file already exists", 14: "could not rename the file", 15: "could not open the existing file",
+              16: "could not create the file", 17: "file write error", 18: "could not create the folder",
+              19: "name resolution failed (DNS)", 22: "bad HTTP response", 23: "too many redirects",
+              24: "authorization failed (gated repo? log in to Hugging Face)", 28: "bad option", 32: "checksum mismatch"}
 
 
 def _bytes(v: str, unit: str) -> int:

@@ -4,17 +4,21 @@ from __future__ import annotations
 import codecs
 import contextlib
 import hmac
+import json
 from pathlib import Path
 
 import anyio
+import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from mcp.server.transport_security import TransportSecuritySettings
 
 from . import autostart, clients
 from . import config as config_mod
 from .core import Manager
 from .mcp_server import build as build_mcp
+from .peers import Peers, fleet, machine_info, make_code, normalize_url, summary
+from .roles import Roles
 
 WEB = Path(__file__).parent / "web"
 OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
@@ -23,6 +27,8 @@ OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
 def create_app(mgr: Manager | None = None) -> FastAPI:
     mgr = mgr or Manager()
     token = config_mod.token(mgr.cfg)
+    peers = mgr.peers = Peers(mgr.cfg)
+    roles = mgr.roles = Roles(mgr, peers)
     mcp = build_mcp(mgr)
     # the token check below protects /mcp; the Host-header check would block access by Tailscale name or LAN IP
     mcp_app = mcp.streamable_http_app(streamable_http_path="/mcp", stateless_http=True, host="0.0.0.0",
@@ -31,8 +37,14 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(app):
         mgr.start_background()
+        peers.start()
+        roles.start()
         async with mcp.session_manager.run():
             yield
+        roles.shutdown()
+        peers.shutdown()
+        await proxy.aclose()
+        await gateway.aclose()
         mgr.shutdown()
 
     app = FastAPI(title="Hangar", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -44,7 +56,9 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         if path in OPEN_PATHS or path.startswith("/static/") or path in ("/api/docs", "/api/openapi.json"):
             return await call_next(request)
         given = request.headers.get("authorization", "")
-        given = given[7:] if given.lower().startswith("bearer ") else request.query_params.get("token", "")
+        # Bearer (OpenAI-style clients), x-api-key (Anthropic-style ones, on the gateway), or ?token= (the web page)
+        given = (given[7:] if given.lower().startswith("bearer ")
+                 else request.headers.get("x-api-key") or request.query_params.get("token", ""))
         if not given or not hmac.compare_digest(given.encode(), token.encode()):
             return JSONResponse({"error": "missing or wrong token"}, status_code=401)
         return await call_next(request)
@@ -227,7 +241,18 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.get("/api/downloads")
     def downloads():
-        return {"items": mgr.downloader.list(), "aria2": mgr.downloader.aria2_path()}
+        return {"items": mgr.downloader.list(), "leftovers": mgr.downloader.leftovers(),
+                "aria2": mgr.downloader.aria2_path(), "aria2_hint": mgr.downloader.aria2_hint()}
+
+    @app.post("/api/downloads/leftovers/resume")
+    def leftover_resume(folder: str = Body(..., embed=True)):
+        return guard(mgr.downloader.resume, folder).public()
+
+    @app.post("/api/downloads/leftovers/discard")
+    def leftover_discard(folder: str = Body(..., embed=True)):
+        res = guard(mgr.downloader.discard, folder)
+        mgr.store.event("download", f"discarded the unfinished download in {Path(res['folder']).name}")
+        return res
 
     @app.post("/api/downloads")
     def download(source: str = Body("huggingface", embed=True), repo: str = Body(..., embed=True),
@@ -249,6 +274,16 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
             raise HTTPException(404, f"unknown client {client}; one of {', '.join(clients.MODEL_CLIENTS)}")
         mgr.refresh_profiles()
         entries = clients.model_entries(mgr, [p for p in (profiles or "").split(",") if p] or None, host)
+        port = int(mgr.cfg["manager"]["port"])
+        # the roles, through this Hangar's gateway: the model name is the role (main, helper, ...)
+        for r in roles.public():
+            if r["targets"] or r["name"] == "main":
+                ctx = roles.context(r["name"])
+                entries.append({"profile": f"role-{r['name']}", "engine": "hangar", "provider": "hangar",
+                                "provider_name": "Hangar roles", "base": f"http://{host}:{port}", "api_key": token,
+                                "model": r["name"], "name": f"{r['name']} (Hangar role)", "context": ctx,
+                                "output": min(16384, max(1024, ctx // 4)), "vision": False, "reasoning": False,
+                                "env_key": "HANGAR_TOKEN"})
         return clients.MODEL_CLIENTS[client](entries, env)
 
     @app.get("/api/connect/models")
@@ -273,6 +308,128 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         mgr.store.event("connect", f"wrote {kind} settings to {res['file']}")
         return res
 
+    # ---- roles (main, helper, ...) and the gateway that serves them
+    @app.get("/api/roles")
+    def roles_list():
+        return roles.public()
+
+    @app.post("/api/roles")
+    def roles_save(name: str = Body(..., embed=True), targets: list[dict] = Body(..., embed=True)):
+        return guard(roles.save, name, targets)
+
+    @app.delete("/api/roles/{name}")
+    def roles_delete(name: str):
+        guard(roles.delete, name)
+        return roles.public()
+
+    gateway = httpx.AsyncClient(timeout=httpx.Timeout(10, read=None))   # generations can stream for many minutes
+
+    @app.get("/v1/models")
+    def gateway_models():
+        data = [{"id": r["name"], "object": "model", "owned_by": "hangar-role"} for r in roles.public()]
+        data += [{"id": i.profile, "object": "model", "owned_by": "hangar-profile"} for i in mgr.instances.values()]
+        return {"object": "list", "data": data}
+
+    async def direct_engine(t: dict) -> tuple[str, str] | None:
+        """For a peer without a gateway: its engine's /v1/models URL (from the peer's status) and the model id it
+        serves."""
+        st = (peers.state.get(t["machine"]) or {}).get("status") or {}
+        port = next((e["port"] for e in st.get("engines") or [] if (e.get("running") or {}).get("profile") == t["profile"]), None)
+        if not port:
+            return None
+        host = peers.get(t["machine"])["url"].split("://", 1)[1].rsplit(":", 1)[0]
+        url = f"http://{host}:{port}/v1/models"
+        try:
+            ids = [m["id"] for m in (await gateway.get(url, timeout=5)).json().get("data", [])]
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+        return (url, ids[0]) if ids else None
+
+    @app.post("/v1/{path:path}")
+    async def gateway_call(path: str, request: Request):
+        """OpenAI / Anthropic API calls for a role (or a profile): sent to the first target that is up, the next one
+        when it fails before answering. A peer's target goes through that peer's gateway, with its token."""
+        raw = await request.body()
+        try:
+            data = json.loads(raw or b"{}")
+        except ValueError:
+            raise HTTPException(400, "the gateway takes JSON requests")
+        model = str(data.get("model") or "main")
+        cands = await anyio.to_thread.run_sync(roles.candidates, model)
+        if not cands:
+            names = ", ".join(r["name"] for r in roles.public())
+            return JSONResponse({"error": {"type": "unavailable", "message": f"nothing is up to serve {model!r} "
+                                           f"(roles: {names}; or a running profile's id)"}}, status_code=503)
+        passthrough = {k: v for k, v in request.headers.items() if k.lower() in ("accept", "anthropic-version", "anthropic-beta")}
+        errors = []
+        for t in cands:
+            if t["machine"]:
+                p = peers.get(t["machine"])
+                url, auth, mid = f"{p['url']}/v1/{path}", {"Authorization": f"Bearer {p['token']}"}, f"profile:{t['profile']}"
+            else:
+                ents = await anyio.to_thread.run_sync(lambda: clients.model_entries(mgr, [t["profile"]], "127.0.0.1"))
+                if not ents:
+                    continue
+                e = ents[0]
+                url, mid = f"{e['base']}/v1/{path}", e["model"]
+                auth = {"Authorization": f"Bearer {e['api_key']}"} if e["api_key"] else {}
+            req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
+                                        headers={**passthrough, **auth, "Content-Type": "application/json"})
+            try:
+                r = await gateway.send(req, stream=True)
+            except httpx.HTTPError as ex:
+                errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {type(ex).__name__}")
+                continue
+            if t["machine"] and r.status_code == 404:
+                # a peer on an older Hangar has no gateway: go to its engine's port (fine when that has no API key)
+                await r.aclose()
+                direct = await direct_engine(t)
+                if direct:
+                    url, mid = direct
+                    req = gateway.build_request("POST", url.replace("/v1/models", f"/v1/{path}"), content=json.dumps(
+                        {**data, "model": mid}).encode(), headers={**passthrough, "Content-Type": "application/json"})
+                    try:
+                        r = await gateway.send(req, stream=True)
+                    except httpx.HTTPError as ex:
+                        errors.append(f"{t['machine']}/{t['profile']} (direct): {type(ex).__name__}")
+                        continue
+            if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 404)):
+                errors.append(f"{t['machine'] or 'here'}/{t['profile']}: HTTP {r.status_code}")
+                await r.aclose()
+                continue
+            roles.note_used(t)
+
+            async def relay(r=r):
+                try:
+                    async for chunk in r.aiter_raw():
+                        yield chunk
+                finally:
+                    await r.aclose()
+            return StreamingResponse(relay(), status_code=r.status_code, media_type=r.headers.get("content-type"),
+                                     headers={"X-Hangar-Served-By": f"{t['machine'] or machine_info(mgr.cfg)['name']}/{t['profile']}",
+                                              "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return JSONResponse({"error": {"type": "unavailable", "message": f"every target for {model!r} failed: "
+                                       + "; ".join(errors)}}, status_code=502)
+
+    # ---- reasoning effort of a thinking model (live on Strata; a restart on llama.cpp)
+    @app.get("/api/reasoning")
+    def reasoning_get(engine: str, profile: str | None = None):
+        return guard(mgr.reasoning, engine, profile)
+
+    @app.post("/api/reasoning")
+    def reasoning_set(engine: str = Body(..., embed=True), level: str = Body(..., embed=True),
+                      profile: str | None = Body(None, embed=True), restart: bool = Body(False, embed=True)):
+        return guard(mgr.set_reasoning, engine, level, profile, restart)
+
+    # ---- memory budget: how much of this machine (VRAM + RAM) Hangar's engines may use
+    @app.get("/api/budget")
+    def budget_get():
+        return mgr.budget_public()
+
+    @app.post("/api/budget")
+    def budget_set(gb: float | None = Body(None, embed=True)):
+        return guard(mgr.set_budget, gb)
+
     # ---- start with Windows
     @app.get("/api/autostart")
     def autostart_status():
@@ -280,9 +437,91 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.post("/api/autostart")
     def autostart_set(enabled: bool = Body(..., embed=True)):
-        res = autostart.enable() if enabled else autostart.disable()
+        res = guard(autostart.enable) if enabled else autostart.disable()
         mgr.store.event("autostart", "starts with Windows" if enabled else "no longer starts with Windows")
         return res
+
+    # ---- peers: other Hangars, and any of their API calls through /api/peers/<name>/<path>
+    proxy = httpx.AsyncClient(timeout=httpx.Timeout(30, read=660))     # ?wait= on a peer's job can take minutes
+
+    @app.get("/api/peers")
+    def peers_list():
+        me, others = summary(mgr.status()), peers.public()
+        return {"self": {**machine_info(mgr.cfg), "summary": me}, "peers": others,
+                "fleet": fleet([me] + [p["summary"] for p in others if p["online"]])}
+
+    def my_code() -> dict:
+        """This machine's pairing code: its name, every address another machine may reach it at, and its token."""
+        port = int(mgr.cfg["manager"]["port"])
+        hosts = [h for h in clients.hosts() if h["host"] != "127.0.0.1"]
+        # fastest to try first; the bare PC name last: Windows can take 15 s+ to look one up (127.0.0.1 is refused at
+        # once on another machine and lets two Hangars on one machine pair)
+        order = {"Tailscale name": 0, "Tailscale IP": 1}
+        hosts.sort(key=lambda h: order.get(h["label"], 2 if h["label"].startswith("LAN") else 4))
+        pcs = [h for h in hosts if h["label"] == "PC name"]
+        urls = ([f"http://{h['host']}:{port}" for h in hosts if h not in pcs] + [f"http://127.0.0.1:{port}"]
+                + [f"http://{h['host']}:{port}" for h in pcs])
+        name = machine_info(mgr.cfg)["name"]
+        return {"code": make_code(name, urls, token), "name": name, "urls": urls}
+
+    @app.get("/api/pairing-code")
+    def pairing_code():
+        return my_code()
+
+    @app.post("/api/peers")
+    def peers_add(name: str | None = Body(None, embed=True), url: str | None = Body(None, embed=True),
+                  token_: str = Body("", alias="token", embed=True), code: str | None = Body(None, embed=True),
+                  both: bool = Body(False, embed=True), reciprocal_url: str | None = Body(None, embed=True)):
+        """Add a peer from its pairing code (or an address and token), checked first. both: the peer gets this
+        machine too (it is sent this machine's pairing code and keeps whichever address it can reach)."""
+        res = guard(peers.add, name, url, token_, True, code)
+        if both or reciprocal_url:
+            token_ = peers.get(res["name"])["token"]           # the one actually saved (may have come from a code)
+            body = ({"name": machine_info(mgr.cfg)["name"], "url": guard(normalize_url, reciprocal_url)[0], "token": token}
+                    if reciprocal_url else {"code": my_code()["code"]})
+            try:
+                r = httpx.post(res["url"] + "/api/peers", headers={"Authorization": f"Bearer {token_}"}, timeout=30,
+                               json=body)
+                res["reciprocal"] = "added" if r.status_code == 200 else f"failed: {r.json().get('detail', r.status_code)}"
+            except (httpx.HTTPError, ValueError) as e:
+                res["reciprocal"] = f"failed: {e}"
+        mgr.store.event("peer", f"added peer {res['name']} ({res['url']})")
+        return res
+
+    @app.delete("/api/peers/{name}")
+    def peers_remove(name: str):
+        guard(peers.remove, name)
+        mgr.store.event("peer", f"removed peer {name}")
+        return {"removed": name}
+
+    @app.api_route("/api/peers/{name}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"], include_in_schema=False)
+    async def peers_proxy(name: str, path: str, request: Request):
+        if path == "peers" or path.startswith("peers/"):
+            raise HTTPException(400, "a peer's own peers are not reachable through it; add them here")
+        p = guard(peers.get, name)
+        body = await request.body()
+        req = proxy.build_request(request.method, f"{p['url']}/api/{path}", params=request.query_params, content=body or None,
+                                  headers={"Authorization": f"Bearer {p['token']}",
+                                           "Content-Type": request.headers.get("content-type", "application/json")})
+        try:
+            r = await proxy.send(req, stream=True)
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"{name} is unreachable ({type(e).__name__})")
+        if r.status_code == 401:            # not ours: a 401 here would sign the browser out of this Hangar
+            await r.aclose()
+            raise HTTPException(502, f"{name} refused the saved token; remove the peer and add it with its current token")
+        if path.endswith("/stream"):
+            async def relay():
+                try:
+                    async for chunk in r.aiter_raw():
+                        yield chunk
+                finally:
+                    await r.aclose()
+            return StreamingResponse(relay(), status_code=r.status_code, media_type=r.headers.get("content-type"),
+                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        content = await r.aread()
+        await r.aclose()
+        return Response(content, status_code=r.status_code, media_type=r.headers.get("content-type"))
 
     @app.post("/api/reload-config")
     def reload_config():

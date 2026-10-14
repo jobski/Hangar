@@ -31,7 +31,33 @@ command line.
 - **Housekeeping.** Optional stop-when-idle per profile (frees the GPU), restart on crash (at most 3 an hour), and
   engines that were already running get picked up when the manager starts, including ones started by hand.
 
-## Set up
+## Install
+
+One line, from a terminal. It downloads Hangar into `~/hangar`, makes its Python environment and `config.yaml`, puts the
+`hangar` command on your PATH and starts it; on Windows it also turns on start with Windows. Running it again updates
+in place.
+
+```sh
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/jobski/hangar/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/jobski/hangar/main/install.ps1 | iex
+```
+
+Options are environment variables: `HANGAR_DIR` (install folder), `HANGAR_REF` (branch or tag, default `main`),
+`HANGAR_NO_START=1`, `HANGAR_NO_PATH=1`, and on Windows `HANGAR_NO_AUTOSTART=1`.
+
+**Uninstall.** `sh ~/hangar/uninstall.sh` on macOS/Linux, `& "$HOME\hangar\uninstall.ps1"` on Windows (or pipe the
+`uninstall.*` URL the same way). It stops the engines it runs and the manager, removes start with Windows (or an old
+macOS LaunchAgent), the command and the PATH entry, and deletes the folder. `config.yaml`, `profiles.yaml` and `data/` (token, stats) are copied to
+`~/hangar-backup-<date>` first unless you pass `--purge` (`-Purge`, or `HANGAR_PURGE=1`); `--yes` (`-Yes`) skips the
+question. Model files and engine folders are never touched, and another Hangar install on the same machine is left
+alone.
+
+## Set up by hand
 
 ```powershell
 cd E:\llm-manager
@@ -56,6 +82,130 @@ off and on again so the shortcut points at the new place (the page warns when it
 Open `http://<pc>:9000` and paste the token from `data\token.txt`. Opening `http://<pc>:9000/?token=<token>` once
 also signs a device in.
 
+### macOS (Apple Silicon)
+
+Hangar runs on a Mac too. On Apple Silicon the GPU shares the machine's memory, so Hangar shows what Metal may use
+(about 75% of RAM on 32 GB+ Macs, or `iogpu.wired_limit_mb` if you have raised it) as GPU memory, with the GPU load
+from macOS's own statistics (no sudo; there is no temperature reading).
+
+```sh
+git clone https://github.com/jobski/hangar.git ~/hangar && cd ~/hangar
+scripts/setup.sh                 # .venv, requirements, config.yaml from config.example.mac.yaml, prints the token
+open -e config.yaml              # paths, ports, profiles
+scripts/start.sh                 # runs in the background on port 9000 (--foreground to watch it)
+./hangar update llamacpp         # installs llama.cpp's Metal build into ~/llama.cpp, and keeps it updated
+```
+
+For a coding assistant, llama.cpp (`llama-server` with Metal) is the best fit: Hangar installs and updates it, reads
+its token counts and speeds, and agents get tool calling (`--jinja`) and prompt caching. `config.example.mac.yaml`
+has a Qwen3-Coder 30B-A3B profile; download the GGUF from the Models page (e.g. `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`,
+`Q4_K_M`, about 18 GB) and it suits a 32 GB+ Mac.
+
+**No start at login on macOS.** Endpoint security tools such as SentinelOne quarantine LaunchAgents written by
+scripts, so Hangar does not make one: after a restart, run `scripts/start.sh` (or add it to Login Items yourself).
+If an earlier version left `~/Library/LaunchAgents/dev.hangar.manager.plist` behind, `hangar autostart off` removes it.
+
+**MLX.** The `mlx` engine runs mlx-lm's server (`mlx_lm.server`) the way you would by hand, one profile per model:
+`model:` is a Hugging Face repo id such as `mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` or a local folder, and
+every MLX model already in your Hugging Face cache shows up as a profile by itself. Update installs the newest mlx-lm
+from PyPI into the engine's Python (rollback reinstalls the one before). It is often a little faster at generating
+than llama.cpp, but mlx-lm has no metrics page or API key, so Hangar shows it running, its memory and its log, not
+token counts, and anyone who can reach its port can use it (keep `host: 127.0.0.1` if only this Mac needs it).
+
+### Roles and the gateway (main, helper, backups)
+
+Give models a *role* — `main`, `helper`, or any name — and point your tools at the role instead of a server. Each
+Hangar has an OpenAI- and Anthropic-compatible **gateway** at `http://<machine>:9000/v1` (API key: the Hangar token,
+as `Authorization: Bearer` or `x-api-key`); the model name is the role.
+
+- A role is an ordered list of targets, each a profile on this machine or on a peer: the first is the primary, the
+  rest are backups. A request goes to the first target that is up; if none is, to `main`, then to anything running.
+  If a target fails before it answers, the next one gets the request.
+- A backup marked *start when needed* is started once the targets before it have been down for 30 s — only if it
+  fits next to what runs (nothing is stopped for it, and the memory budget holds). Once the primary is back, Hangar
+  stops a backup it started after 10 minutes without requests.
+- On a machine where `main` takes the whole GPU (Strata here), set no backup: the role falls back to `main`, which
+  is already loaded.
+- A peer's target goes through that peer's own gateway with its token (its engine keys stay there); a peer on an
+  older Hangar is reached on its engine's port directly.
+
+Set roles on the Overview's **Roles** panel (badges on the engine cards show which roles a model serves), or
+`hangar role set helper macbook/qwen3-coder-30b-a3b-instruct-ud-q4_k_xl this/gemma-3-4b --auto`, `hangar roles`,
+`hangar role rm <name>`; over MCP, `roles` and `set_role`. The **Connect** page includes a `hangar` provider whose
+models are the roles, with the smallest context among each role's targets, so the settings it gives work whichever
+target answers.
+
+### Reasoning effort
+
+How hard a thinking model thinks before it answers. A running engine that supports it shows **Reasoning: <level>**
+next to Stop/Restart; press it to change the level.
+
+- **Strata** (`default`, `none`, `low`, `medium`, `high`): changes at once, for every client that does not ask for its
+  own level, through Strata's shared Chat settings (which it keeps between starts; its other settings stay as they are).
+- **llama.cpp** (`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`): set when it starts
+  (`--reasoning-effort`, or `--reasoning off` for none), so the dashboard offers to restart it; the level is kept per
+  profile, also for profiles that are not running. Needs a llama.cpp build that has `--reasoning-effort` (update it if
+  the button is missing). A level in the profile's own `args` wins.
+- MLX models do not offer it.
+
+`hangar reasoning strata low`, `hangar reasoning llamacpp high --restart` (no level: show it); over MCP,
+`reasoning_effort` (with `machine=` for a peer). A client can still set its own level per request.
+
+### Memory budget
+
+Tell Hangar how much of a machine its engines may use, VRAM and RAM together — say 15 GB on a Mac you also work on.
+Set it with the **Budget** button on the Overview's Machine panel, `hangar budget 15` (`hangar budget off` to clear),
+the MCP tool `memory_budget`, or `resources.memory_budget_gb` in `config.yaml`. Then:
+
+- starting a profile that would go over it (counting what keeps running next to it) is refused, with how much it
+  needs; force still starts it;
+- a profile made from a downloaded model gets the largest context that fits: Hangar reads the model's layers and KV
+  heads from the GGUF header, so it knows what each 1K tokens of context costs with the cache type in the template,
+  and it never goes above the template's `ctx` or the model's own maximum (the profile's description says what it
+  chose);
+- the Models page marks each quant **fits** or **over budget** (its files plus ~1.5 GB for an 8K context), and the
+  Profiles page tags profiles that need more than the budget.
+
+On a Mac without a budget, new profiles still fit what Metal lets the GPU use. Memory estimates for llama.cpp
+profiles use the same GGUF numbers (with sliding-window models such as Gemma they are on the high side), and are
+replaced by measured use after a run.
+
+### Several machines (peers)
+
+Each machine runs its own Hangar; peering lets one dashboard, CLI and MCP server see and control all of them — say a
+Windows PC with CUDA and a Mac with MLX.
+
+**Pairing takes one copy and one paste.** On the machine you want to add, open **Overview → Machines** and press
+**Copy code**. On the machine that should see it, paste that into the same panel (or **+ Add machine**) and press **Add
+machine**. The code holds the machine's name, every address it may be reached at (Tailscale name and IP, LAN, PC name)
+and its token; Hangar tries them all at once and keeps the first that answers, and with *also add this machine there*
+the other side does the same with this machine's code, so each keeps an address it can actually reach. Because the
+code contains the token, share it only between your own machines. Typing an address and token still works under *Or
+type its address and token*.
+
+```
+hangar pair-code                             # this machine's code (on the machine to add)
+hangar peer add hangar-pair:... --both       # paste it on the other one
+hangar machines                              # every machine: online, what runs and how fast, memory; and all added up
+hangar --on macbook status                   # any command on a peer: start, stop, logs -f, connect, ...
+```
+
+The **machine switcher** at the top switches the whole dashboard to that machine — engines, profiles, models, logs,
+Connect, usage — with a strip saying which one you are acting on. Behind it, `/api/peers/<name>/<path>` relays any API
+call (live log streams included) to that peer with its token. In MCP, `machines` lists them and `status`,
+`list_profiles`, `plan`, `start`, `switch_model`, `stop`, `restart`, `check_updates`, `update_engine`, `job_status`,
+`logs`, `stats`, `events` and `client_config` take `machine="macbook"`; `add_machine`/`remove_machine` manage the list.
+Peers can also be written in `config.yaml` (`peers: {macbook: {url: ..., token: ...}}`); `manager.name` sets how a
+machine is called (default: its host name). Peers of a peer are not reachable through it — add each machine where you
+want to see it.
+
+**All machines added up.** With peers, the Machines panel opens with the fleet's totals: tokens per second out
+across every online machine and how many models run, GPU memory and RAM used of the total, CPU load (weighted by
+thread count) and GPU load; each machine's card adds its CPU and GPU load. The top bar ends with an **All** chip
+showing the fleet's tok/s (hover for the rest, click to jump to the panel) next to the viewed machine's own gauges.
+On Apple Silicon the GPU memory is part of the RAM, so it is counted in both totals. `hangar machines` prints the
+same totals as a last line, MCP `machines` returns them as `fleet`, and `/api/peers` carries them under `fleet`.
+
 ### Remote access
 
 Use [Tailscale](https://tailscale.com) (it is already installed on this PC): every device on your tailnet reaches
@@ -73,7 +223,7 @@ claude mcp add --transport http hangar http://<pc>:9000/mcp --header "Authorizat
 Tools: `status`, `list_profiles`, `plan`, `start`, `switch_model`, `stop`, `restart`, `run_custom`, `check_updates`,
 `update_engine`, `rollback_engine`, `job_status`, `logs`, `stats`, `stats_series`, `events`, `list_models`,
 `search_models`, `repo_files`, `download_model`, `downloads_status`, `cancel_download`, `create_profile_from_model`,
-`save_profile`, `copy_profile`, `delete_profile`, `client_config`, `autostart_windows`.
+`save_profile`, `copy_profile`, `delete_profile`, `client_config`, `autostart_windows`, `machines`, `add_machine`, `remove_machine`, `memory_budget`, `roles`, `set_role`, `reasoning_effort`.
 
 ### Connecting coding agents and other apps
 
@@ -104,10 +254,22 @@ hangar download qwen3:8b --ollama     hangar downloads
 hangar custom tiel-coder-35b --ctx 65536 -- --temp 0.6
 hangar autostart on                   (start with Windows; off to stop)
 hangar logs strata -f                 (follow the log live; Ctrl+C stops)
+hangar start last [engine]            (start what that engine ran last; also a Run button on a stopped engine's card)
 ```
 
 REST: everything is under `/api` (interactive docs at `/api/docs`). Actions return a job; add `?wait=60` to wait for
 it. `GET /api/logs/<engine>/stream` follows an engine log as plain text until you disconnect.
+
+### Unfinished downloads
+
+Each download keeps a small record (`.hangar-download.json`) in its folder until it completes. When Hangar starts it
+looks for downloads that were cut off — by a restart, a crash or a reboot — and lists them on the Models page under
+**Downloads** as *unfinished*, with how much is there: **Resume** continues from what is on disk (with aria2 when it is
+installed), **Discard** deletes the partial files and leaves finished ones. Partial files without a record (from an
+older version, say) are listed too; start the same download again to continue them, or discard them. Set
+`downloads.auto_resume: true` to have them resumed when Hangar starts. From a terminal: `hangar downloads`, then
+`hangar downloads resume <folder|all>` or `hangar downloads discard <folder>`; over MCP, `downloads_status`,
+`resume_download` and `discard_download`.
 
 ## Adding a model
 

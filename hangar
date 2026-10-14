@@ -1,0 +1,5 @@
+#!/bin/sh
+# hangar: the manager from the command line (macOS/Linux). Put this folder on PATH, or symlink it into ~/bin.
+DIR=$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)
+# python -m looks for the package in the current folder, so point it at the install folder: works from anywhere
+PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec "$DIR/.venv/bin/python" -m manager "$@"

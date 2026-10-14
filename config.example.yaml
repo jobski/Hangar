@@ -10,6 +10,7 @@ manager:
 resources:
   vram_reserve_mib: 512        # spare VRAM to keep when deciding whether two things fit together
   ram_reserve_mib: 4096
+  # memory_budget_gb: 48       # cap on what Hangar's engines use (VRAM + RAM); also settable from the dashboard
   vram_release_timeout_s: 60
   sample_interval_s: 5
   warn_ram_percent: 92
@@ -28,6 +29,7 @@ downloads:
   max_parallel: 2
   aria2: auto                  # auto = use aria2c (parallel connections) when installed; on | off
   aria2_connections: 16
+  auto_resume: false           # resume downloads that a restart/crash/reboot cut off, when Hangar starts
 
 # what a new profile made from a downloaded model starts with (edit the profile afterwards to tune it)
 templates:

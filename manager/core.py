@@ -6,9 +6,11 @@ single worker thread, so two remote requests can never race each other; each job
 from __future__ import annotations
 
 import collections
+import dataclasses
 import json
 import os
 import queue
+import shlex
 import subprocess
 import threading
 import time
@@ -20,6 +22,7 @@ from pathlib import Path
 import psutil
 
 from . import config as config_mod
+from .peers import machine_info
 from . import engines as engines_mod
 from . import models as models_mod
 from . import resources
@@ -29,6 +32,7 @@ from .stats import CounterTracker, Store
 
 CREATE_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 BREAKAWAY = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+WINDOWS = os.name == "nt"
 
 
 class Refused(Exception):
@@ -111,6 +115,7 @@ class Manager:
         self.data_dir: Path = self.cfg["manager"]["data_dir"]
         self.logs_dir: Path = self.cfg["manager"]["logs_dir"]
         self.store = Store(self.data_dir / "stats.db")
+        self._reasoning_cache: dict = {}
         self.lock = threading.RLock()            # guards instances / profiles
         self.instances: dict[str, Instance] = {}
         self.engines: dict[str, Engine] = {}
@@ -183,6 +188,30 @@ class Manager:
         threading.Thread(target=self._collector, name="collector", daemon=True).start()
         threading.Thread(target=self._update_checker, name="update-check", daemon=True).start()
         self.store.event("manager", "manager started")
+        threading.Timer(5, self._check_leftovers).start()
+
+    def _check_leftovers(self):
+        """Downloads cut off before this start (restart, crash, reboot): say so, and resume them if configured."""
+        try:
+            left = self.downloader.leftovers()
+        except OSError:
+            return
+        if not left:
+            return
+        auto = (self.cfg.get("downloads") or {}).get("auto_resume")
+        resumed = []
+        for lo in left:
+            if auto and lo["resumable"]:
+                try:
+                    self.downloader.resume(lo["folder"])
+                    resumed.append(lo["name"])
+                except (ValueError, KeyError, OSError) as e:
+                    self.store.event("download", f"could not resume {lo['name']}: {e}", level="warn")
+        rest = [lo["name"] for lo in left if lo["name"] not in resumed]
+        if resumed:
+            self.store.event("download", f"resumed unfinished downloads: {', '.join(resumed)}")
+        if rest:
+            self.store.event("download", f"unfinished downloads: {', '.join(rest)} (Models page: resume or discard)", level="warn")
 
     def shutdown(self):
         self.stop_flag.set()
@@ -325,7 +354,8 @@ class Manager:
 
     def profile_from_model(self, model: str, name: str | None = None, engine: str = "llamacpp",
                            ctx: int | None = None, mmproj: str | None = None, extra: dict | None = None) -> str:
-        pid, prof = models_mod.profile_from_model(model, self.cfg, name, engine, ctx, mmproj, extra)
+        pid, prof = models_mod.profile_from_model(model, self.cfg, name, engine, ctx, mmproj, extra,
+                                                  limit_mib=self.profile_limit_mib())
         base, n = pid, 2
         while pid in self.profiles:
             pid, n = f"{base}-{n}", n + 1
@@ -342,6 +372,126 @@ class Manager:
             return {}
         pid = self.profile_from_model(str(mains[0]), name=Path(d.folder).name)
         return {"profile": pid}
+
+    # ---- reasoning effort, per profile (kept in data/settings.json; engines that set it live are asked directly)
+    def effective(self, p: Profile) -> Profile:
+        """The profile as it launches: with the reasoning level chosen for it from the dashboard/CLI/MCP."""
+        lvl = (self._settings().get("reasoning") or {}).get(p.id)
+        return dataclasses.replace(p, cfg={**p.cfg, "reasoning_effort": lvl}) if lvl else p
+
+    def reasoning(self, engine: str, profile: str | None = None) -> dict:
+        eng = self.engine(engine)
+        inst = self.instances.get(engine)
+        pid = profile or (inst.profile if inst else None)
+        if not pid:
+            raise ValueError(f"{engine} is not running; name a profile")
+        p = self.effective(self.profile(pid))
+        levels = eng.reasoning_levels(p)
+        running = bool(inst and inst.profile == pid)
+        return {"engine": engine, "profile": pid, "supported": bool(levels), "levels": levels or [],
+                "level": eng.reasoning_get(p) if levels else None, "running": running,
+                "live": type(eng).reasoning_set is not Engine.reasoning_set}
+
+    def set_reasoning(self, engine: str, level: str, profile: str | None = None, restart: bool = False) -> dict:
+        info = self.reasoning(engine, profile)
+        if not info["supported"]:
+            raise ValueError(f"{engine} cannot set a reasoning effort" + (" (this llama.cpp build is too old: update it)"
+                                                                          if self.engines[engine].plugin == "llamacpp" else ""))
+        if level not in info["levels"]:
+            raise ValueError(f"reasoning effort for {engine}: one of {', '.join(info['levels'])}")
+        p = self.profile(info["profile"])
+        if info["live"]:
+            if not info["running"]:
+                raise ValueError(f"{engine} sets the reasoning effort while it runs: start {p.id} first")
+            self.engines[engine].reasoning_set(self.effective(p), level)
+            self.store.event("reasoning", f"{p.id}: reasoning effort {level} (live)", engine, p.id)
+            self._reasoning_cache.pop(engine, None)
+            return {**self.reasoning(engine, p.id), "applied": "now"}
+        s = self._settings()
+        r = s.setdefault("reasoning", {})
+        if level == "default":
+            r.pop(p.id, None)
+        else:
+            r[p.id] = level
+        (self.data_dir / "settings.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
+        self.store.event("reasoning", f"{p.id}: reasoning effort {level}" + (" (restarting)" if restart and info["running"] else ""),
+                         engine, p.id)
+        out = {**self.reasoning(engine, p.id), "applied": "next start"}
+        if info["running"] and restart:
+            out.update(applied="restart", job=self.restart(engine).id)
+        self._reasoning_cache.pop(engine, None)
+        return out
+
+    def _vision(self, engine: str, pid: str) -> bool:
+        p = self.profiles.get(pid)
+        try:
+            return bool(p) and self.engines[engine].has_vision(self.effective(p))
+        except Exception:  # noqa: BLE001 - a run config that cannot be read just means no tag
+            return False
+
+    def _last_run(self, engine: str) -> dict | None:
+        """What a stopped engine ran last, to start it again in one click: the newest run of a profile that still
+        exists and is not a one-off custom run; runs that never got ready count only if nothing else did."""
+        rows = self.store.recent_sessions(engine)
+        for want_ready in (True, False):
+            for r in rows:
+                p = self.profiles.get(r["profile"])
+                if p and p.source != "custom" and (r["ready"] or not want_ready):
+                    return {"profile": p.id, "description": p.description, "stopped": r["stopped"],
+                            "stop_reason": r["stop_reason"],
+                            "ran_seconds": (r["stopped"] - r["started"]) if r["stopped"] and r["started"] else None}
+        return None
+
+    def _reasoning_now(self, engine: str) -> dict | None:
+        """The running engine's reasoning level for the status, asked at most every 15 s (Strata answers over HTTP)."""
+        hit = self._reasoning_cache.get(engine)
+        if hit and time.time() - hit[0] < 15:
+            return hit[1]
+        try:
+            r = self.reasoning(engine)
+            val = {"level": r["level"], "levels": r["levels"], "live": r["live"]} if r["supported"] else None
+        except (ValueError, KeyError):
+            val = None
+        self._reasoning_cache[engine] = (time.time(), val)
+        return val
+
+    # ---- the memory budget: how much of this machine Hangar's engines may use (VRAM + RAM together)
+    def _settings(self) -> dict:
+        try:
+            return json.loads((self.data_dir / "settings.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def budget_mib(self) -> float | None:
+        s = self._settings()
+        if "memory_budget_mib" in s:
+            return s["memory_budget_mib"]
+        gb = self.cfg["resources"].get("memory_budget_gb")
+        return float(gb) * 1024 if gb else None
+
+    def set_budget(self, gb: float | None) -> dict:
+        if gb is not None and not 1 <= gb <= 4096:
+            raise ValueError("a memory budget is between 1 and 4096 GB (or none)")
+        s = self._settings()
+        s["memory_budget_mib"] = gb * 1024 if gb else None
+        (self.data_dir / "settings.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
+        self.store.event("budget", f"memory budget {gb:g} GB" if gb else "no memory budget")
+        return self.budget_public()
+
+    def budget_public(self) -> dict:
+        b = self.budget_mib()
+        used = sum((i.peak_vram or 0) + (i.ram_mib or 0) for i in self.instances.values())
+        return {"budget_mib": b, "used_mib": used, "unified": any(g.get("unified") for g in self.snap.get("gpus", [])),
+                "limit_mib": self.profile_limit_mib()}
+
+    def profile_limit_mib(self) -> float | None:
+        """What a new profile should fit in: the budget, capped on a Mac by what Metal lets the GPU use."""
+        b = self.budget_mib()
+        gpus = self.snap.get("gpus") or []
+        if any(g.get("unified") for g in gpus):
+            metal = sum(g["vram_total_mib"] for g in gpus) - self.cfg["resources"]["vram_reserve_mib"]
+            return min(b, metal) if b else metal
+        return b
 
     # ---- planning
     def needs(self, p: Profile) -> dict:
@@ -392,6 +542,19 @@ class Manager:
                 stop += list(others)
             else:
                 ok, reason = False, f"{p.id} only starts when nothing else runs ({', '.join(others)} running); use force"
+        # the memory budget counts what keeps running next to it
+        budget = self.budget_mib()
+        if ok and budget:
+            staying = sum((i.peak_vram or 0) + (i.ram_mib or 0) for n, i in others.items() if n not in stop)
+            total = need["vram_mib"] + need["ram_mib"] + staying
+            if total > budget:
+                msg = (f"{p.id} needs ~{(need['vram_mib'] + need['ram_mib']) / 1024:.1f} GB"
+                       + (f" (+{staying / 1024:.1f} GB already running)" if staying else "")
+                       + f": over the {budget / 1024:.1f} GB memory budget")
+                if force:
+                    warnings.append(msg + " (force)")
+                else:
+                    ok, reason = False, msg + ". Use a smaller context or quant, raise the budget, or force."
         # after stopping, is there enough? (other programs - games, ComfyUI, Ollama - also use the GPU)
         if ok:
             gone = [self.instances[n] for n in stop if n in self.instances]
@@ -407,7 +570,7 @@ class Manager:
                 warnings.append(f"only ~{m_after:.0f} MiB RAM will be free (needs ~{need['ram_mib']:.0f}): "
                                 "expect swapping")
         return {"profile": p.id, "engine": p.engine, "policy": p.policy, "ok": ok, "reason": reason,
-                "will_stop": sorted(set(stop)), "needs": need, "free_vram_mib": resources.vram_free(snap),
+                "will_stop": sorted(set(stop)), "needs": need, "budget_mib": budget, "free_vram_mib": resources.vram_free(snap),
                 "free_ram_mib": snap["ram_available_mib"], "warnings": warnings}
 
     # ---- the work
@@ -461,23 +624,27 @@ class Manager:
         return {"profile": p.id, "engine": eng.name, "port": eng.port, "url": f"http://<this-pc>:{eng.port}"}
 
     def _spawn(self, job: Job, eng: Engine, p: Profile):
-        launch = eng.launch(p)
+        launch = eng.launch(self.effective(p))
         log_path = self.logs_dir / f"{eng.name}.log"
         if log_path.exists() and log_path.stat().st_size > 50 * 2**20:
             log_path.replace(log_path.with_suffix(".old.log"))
         f = open(log_path, "a", encoding="utf-8", errors="replace")
-        f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} start {p.id}\n{subprocess.list2cmdline(launch.cmd)}\n")
+        shown = subprocess.list2cmdline(launch.cmd) if WINDOWS else shlex.join(launch.cmd)
+        f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} start {p.id}\n{shown}\n")
         f.flush()
         baseline = resources.vram_used()
         job.write(f"starting {p.id} on port {eng.port}")
         # Python engines block-buffer stdout into a file; unbuffered, their log follows live
         env = {**os.environ, "PYTHONUNBUFFERED": "1", **launch.env}
-        try:
-            proc = subprocess.Popen(launch.cmd, cwd=launch.cwd, env=env, stdin=subprocess.DEVNULL, stdout=f,
-                                    stderr=subprocess.STDOUT, creationflags=CREATE_FLAGS | BREAKAWAY)
-        except OSError:
-            proc = subprocess.Popen(launch.cmd, cwd=launch.cwd, env=env, stdin=subprocess.DEVNULL, stdout=f,
-                                    stderr=subprocess.STDOUT, creationflags=CREATE_FLAGS)
+        common = dict(cwd=launch.cwd, env=env, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT)
+        if not WINDOWS:
+            # own session: the engine outlives a manager restart, as the breakaway flag gives on Windows
+            proc = subprocess.Popen(launch.cmd, start_new_session=True, **common)
+        else:
+            try:
+                proc = subprocess.Popen(launch.cmd, creationflags=CREATE_FLAGS | BREAKAWAY, **common)
+            except OSError:
+                proc = subprocess.Popen(launch.cmd, creationflags=CREATE_FLAGS, **common)
         f.close()
         sid = self.store.session_start(eng.name, p.id)
         inst = Instance(engine=eng.name, profile=p.id, pid=proc.pid, create_time=psutil.Process(proc.pid).create_time(),
@@ -833,7 +1000,17 @@ class Manager:
                           "gen_tps": agg["gen_tokens"] / agg["gen_seconds"] if agg["gen_seconds"] else None,
                           "prompt_tps": agg["prompt_tokens"] / agg["prompt_seconds"] if agg["prompt_seconds"] else None}
         t = inst.totals
-        return {"window": out, "since_start": {
+        live = None
+        if inst.gauges.get("requests_processing"):
+            eng = self.engines.get(inst.engine)
+            path = self.log_path(inst.engine)
+            try:
+                fresh = time.time() - path.stat().st_mtime < 5      # progress lines are printed every second
+            except OSError:
+                fresh = False
+            if eng and fresh:
+                live = eng.progress(self.tail_log(inst.engine, 6))
+        return {"window": out, "live": live, "since_start": {
             "gen_tokens": t["gen_tokens"], "prompt_tokens": t["prompt_tokens"], "cached_tokens": t["cached_tokens"],
             "requests": t["requests"],
             "gen_tps": t["gen_tokens"] / t["gen_seconds"] if t["gen_seconds"] else None,
@@ -851,7 +1028,9 @@ class Manager:
                                 "started": inst.started, "ready": inst.ready,
                                 "uptime_seconds": time.time() - inst.started, "ram_mib": inst.ram_mib,
                                 "cpu_percent": inst.cpu_percent, "vram_mib_est": inst.peak_vram,
-                                "stats": self.live(inst)}
+                                "stats": self.live(inst),
+                                "vision": self._vision(name, inst.profile),
+                                "reasoning": self._reasoning_now(name) if inst.state == "ready" else None}
             else:
                 owner = None
                 try:
@@ -860,14 +1039,17 @@ class Manager:
                 except psutil.Error:
                     pass
                 e["port_taken_by"] = owner
+                e["last"] = self._last_run(name)
             e["version"] = e["update"].get("current")
             engines.append(e)
         warn = []
         if snap["ram_percent"] >= self.cfg["resources"]["warn_ram_percent"]:
             warn.append(f"RAM is {snap['ram_percent']:.0f}% used")
-        return {"time": time.time(), "engines": engines, "resources": snap, "warnings": warn,
+        return {"time": time.time(), "machine": machine_info(self.cfg), "budget": self.budget_public(),
+                "engines": engines, "resources": snap, "warnings": warn,
                 "job": self.current_job.public(10) if self.current_job else None,
-                "queued": self.queue.qsize()}
+                "queued": self.queue.qsize(),
+                "roles": self.roles.public() if getattr(self, "roles", None) else []}
 
     def profiles_public(self) -> list[dict]:
         self.refresh_profiles()
@@ -876,6 +1058,7 @@ class Manager:
         for p in sorted(self.profiles.values(), key=lambda x: (x.engine, x.id)):
             d = p.public()
             d["running"] = p.id in running
+            d["vision"] = self._vision(p.engine, p.id)
             try:
                 d["needs"] = self.needs(p)
             except Exception as e:  # noqa: BLE001

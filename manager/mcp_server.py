@@ -4,16 +4,21 @@ from __future__ import annotations
 import json
 
 import anyio
+import httpx
 from mcp.server.mcpserver import MCPServer
 
 from . import autostart, clients
 from .core import Manager
+from .peers import fleet, machine_info, summary
 
 INSTRUCTIONS = """Manages local LLM engines (llama.cpp, Strata, ...) on one PC with one GPU.
 Use `status` first. `list_profiles` shows what can run and what each needs. `plan` tells you what starting a profile
 would stop or whether it fits, without doing it. start/switch/stop/restart/update return a job; long jobs keep running
 after the tool returns - poll `job_status`. Starting usually checks for engine updates first (pass update="skip" to
-avoid that). Stats: `stats` for a period (day, week, month, year, all)."""
+avoid that). Stats: `stats` for a period (day, week, month, year, all).
+Several machines: `machines` lists this one and its peers (other Hangars, e.g. a Mac running MLX); pass machine="<name>"
+to status, list_profiles, plan, start, switch_model, stop, restart, check_updates, update_engine, job_status, logs, stats,
+events and client_config to act on that machine instead of this one. add_machine/remove_machine manage the list."""
 
 
 def _j(x) -> str:
@@ -26,6 +31,25 @@ def build(mgr: Manager) -> MCPServer:
     async def run(fn, *a):
         return await anyio.to_thread.run_sync(lambda: fn(*a))
 
+    async def peer(machine: str, method: str, path: str, params: dict | None = None, body: dict | None = None,
+                   timeout: float = 30) -> str:
+        """Run one REST call on a peer and return its answer as text (errors included, so the model sees them)."""
+        try:
+            p = mgr.peers.get(machine.lower())
+        except KeyError:
+            names = ", ".join(x["name"] for x in mgr.peers.public()) or "none"
+            return f"no machine called {machine}; peers: {names} (omit machine for this one)"
+        try:
+            async with httpx.AsyncClient(timeout=timeout + 30) as c:
+                r = await c.request(method, f"{p['url']}/api/{path}", params=params, json=body,
+                                    headers={"Authorization": f"Bearer {p['token']}"})
+        except httpx.HTTPError as e:
+            return f"{machine} is unreachable ({type(e).__name__})"
+        try:
+            return _j(r.json()) if r.status_code < 400 else f"{machine} answered {r.status_code}: {r.json().get('detail', r.text)}"
+        except ValueError:
+            return r.text
+
     async def wait_job(job, wait_seconds: int):
         await anyio.to_thread.run_sync(lambda: job.wait(max(0, min(wait_seconds, 600))))
         d = job.public(log_lines=40)
@@ -34,49 +58,73 @@ def build(mgr: Manager) -> MCPServer:
         return _j(d)
 
     @mcp.tool(description="What runs now: engines, profiles, ports, uptime, live token rates, VRAM/RAM/CPU, update info.")
-    async def status() -> str:
+    async def status(machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "GET", "status")
         s = await run(mgr.status)
         for e in s["engines"]:
             e.get("running") and e["running"].get("stats", {}).get("window", {}).pop("1h", None)
         return _j(s)
 
     @mcp.tool(description="All profiles (models/setups) each engine can run, with their policy and resource needs.")
-    async def list_profiles() -> str:
+    async def list_profiles(machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "GET", "profiles")
         return _j(await run(mgr.profiles_public))
 
     @mcp.tool(description="Dry run: what starting this profile would stop, whether it fits, and warnings.")
-    async def plan(profile: str, force: bool = False) -> str:
+    async def plan(profile: str, force: bool = False, machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "GET", "plan", {"profile": profile, "force": force})
         return _j(await run(mgr.plan, profile, force))
 
     @mcp.tool(description="Start a profile (switches the engine's model if it already runs another). force=True stops "
                           "whatever is in the way. update: auto (default, checks for engine updates at most every few "
                           "hours), skip, or force.")
-    async def start(profile: str, force: bool = False, update: str = "auto", wait_seconds: int = 120) -> str:
+    async def start(profile: str, force: bool = False, update: str = "auto", wait_seconds: int = 120,
+                    machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "POST", "start", {"wait": wait_seconds}, {"profile": profile, "force": force, "update": update},
+                              wait_seconds)
         job = await run(mgr.start, profile, force, update)
         return await wait_job(job, wait_seconds)
 
     @mcp.tool(description="Switch to another model/profile. Same as start; named for clarity.")
-    async def switch_model(profile: str, force: bool = False, update: str = "auto", wait_seconds: int = 120) -> str:
+    async def switch_model(profile: str, force: bool = False, update: str = "auto", wait_seconds: int = 120,
+                           machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "POST", "start", {"wait": wait_seconds}, {"profile": profile, "force": force, "update": update},
+                              wait_seconds)
         job = await run(mgr.start, profile, force, update)
         return await wait_job(job, wait_seconds)
 
     @mcp.tool(description="Stop an engine by name, or 'all'.")
-    async def stop(engine: str, wait_seconds: int = 60) -> str:
+    async def stop(engine: str, wait_seconds: int = 60, machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "POST", "stop", {"wait": wait_seconds}, {"engine": engine}, wait_seconds)
         job = await run(mgr.stop, engine)
         return await wait_job(job, wait_seconds)
 
     @mcp.tool(description="Restart an engine with the profile it runs now.")
-    async def restart(engine: str, wait_seconds: int = 120) -> str:
+    async def restart(engine: str, wait_seconds: int = 120, machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "POST", "restart", {"wait": wait_seconds}, {"engine": engine}, wait_seconds)
         job = await run(mgr.restart, engine)
         return await wait_job(job, wait_seconds)
 
     @mcp.tool(description="Check every engine (or one) for updates without installing anything.")
-    async def check_updates(engine: str | None = None, wait_seconds: int = 120) -> str:
+    async def check_updates(engine: str | None = None, wait_seconds: int = 120, machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "POST", "check-updates", {"wait": wait_seconds}, {"engine": engine}, wait_seconds)
         job = await run(mgr.check_updates, engine)
         return await wait_job(job, wait_seconds)
 
     @mcp.tool(description="Update an engine now (stops it if running, updates, starts the same profile again).")
-    async def update_engine(engine: str, start_after: bool = True, wait_seconds: int = 60) -> str:
+    async def update_engine(engine: str, start_after: bool = True, wait_seconds: int = 60,
+                            machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "POST", "update", {"wait": wait_seconds}, {"engine": engine, "start_after": start_after},
+                              wait_seconds)
         job = await run(mgr.update, engine, start_after)
         return await wait_job(job, wait_seconds)
 
@@ -86,7 +134,10 @@ def build(mgr: Manager) -> MCPServer:
         return await wait_job(job, wait_seconds)
 
     @mcp.tool(description="A job's state and log (jobs come from start/stop/update ...). No id: the recent jobs.")
-    async def job_status(job_id: str | None = None, wait_seconds: int = 0) -> str:
+    async def job_status(job_id: str | None = None, wait_seconds: int = 0, machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "GET", f"jobs/{job_id}" if job_id else "jobs",
+                              {"wait": wait_seconds, "lines": 40} if job_id else None, wait_seconds)
         if not job_id:
             return _j(mgr.list_jobs())
         job = mgr.jobs.get(job_id)
@@ -95,12 +146,16 @@ def build(mgr: Manager) -> MCPServer:
         return await wait_job(job, wait_seconds)
 
     @mcp.tool(description="The last lines of an engine's log.")
-    async def logs(engine: str, lines: int = 80) -> str:
+    async def logs(engine: str, lines: int = 80, machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "GET", f"logs/{engine}", {"lines": min(lines, 1000)})
         return "\n".join(await run(mgr.tail_log, engine, min(lines, 1000)))
 
     @mcp.tool(description="Usage totals for a period: day, week, month, year, all (also 24h, 7d, 30d, 365d) - tokens "
                           "in/out, requests, average speeds, uptime, per profile.")
-    async def stats(period: str = "day") -> str:
+    async def stats(period: str = "day", machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "GET", "stats/summary", {"period": period})
         return _j(await run(mgr.store.summary, period))
 
     @mcp.tool(description="Token totals per bucket for trends: bucket hour/day/week/month/year, count buckets.")
@@ -108,7 +163,9 @@ def build(mgr: Manager) -> MCPServer:
         return _j(await run(mgr.store.series, bucket, min(count, 400)))
 
     @mcp.tool(description="Recent events: starts, stops, crashes, updates, refusals.")
-    async def events(limit: int = 30) -> str:
+    async def events(limit: int = 30, machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "GET", "events", {"limit": min(limit, 500)})
         return _j(await run(mgr.store.events, min(limit, 500)))
 
     @mcp.tool(description="Start a profile once with changed settings, without saving: overrides like {\"ctx\": 65536, "
@@ -144,7 +201,21 @@ def build(mgr: Manager) -> MCPServer:
 
     @mcp.tool(description="Progress of downloads (bytes, speed, ETA, state).")
     async def downloads_status() -> str:
-        return _j(mgr.downloader.list())
+        return _j({"downloads": await run(mgr.downloader.list), "unfinished": await run(mgr.downloader.leftovers)})
+
+    @mcp.tool(description="Resume an unfinished download (downloads_status lists them under unfinished) by its folder.")
+    async def resume_download(folder: str) -> str:
+        try:
+            return _j((await run(mgr.downloader.resume, folder)).public())
+        except (KeyError, ValueError) as e:
+            return str(e).strip("'\"")
+
+    @mcp.tool(description="Delete what an unfinished download left behind (its partial files; finished files stay).")
+    async def discard_download(folder: str) -> str:
+        try:
+            return _j(await run(mgr.downloader.discard, folder))
+        except (KeyError, ValueError) as e:
+            return str(e).strip("'\"")
 
     @mcp.tool(description="Cancel a download (partial files stay; downloading again resumes).")
     async def cancel_download(download_id: str) -> str:
@@ -173,7 +244,10 @@ def build(mgr: Manager) -> MCPServer:
     @mcp.tool(description="Ready-to-paste config that points a coding agent at the local models. client: opencode, qwen, "
                           "pi, codex, claude, aider, continue, generic. host: how the client reaches this PC (default "
                           "127.0.0.1; see the hosts list in the result's notes). profiles: comma-separated, default all.")
-    async def client_config(client: str, host: str = "127.0.0.1", profiles: str | None = None) -> str:
+    async def client_config(client: str, host: str = "127.0.0.1", profiles: str | None = None,
+                            machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "GET", "connect/models", {"client": client, "host": host, "profiles": profiles})
         if client not in clients.MODEL_CLIENTS:
             return f"unknown client; one of {', '.join(clients.MODEL_CLIENTS)}"
         await run(mgr.refresh_profiles)
@@ -182,12 +256,98 @@ def build(mgr: Manager) -> MCPServer:
         snip["hosts"] = await run(clients.hosts)
         return _j(snip)
 
-    @mcp.tool(description="Whether Hangar starts when the user signs in to Windows. enabled: true to turn it on, false "
+    @mcp.tool(description="A thinking model's reasoning effort on an engine: omit level to see it and the levels "
+                          "(Strata: default/none/low/medium/high, applied at once; llama.cpp: default/none/minimal/low/"
+                          "medium/high/xhigh/max, applied at the next start, or now with restart=true).")
+    async def reasoning_effort(engine: str, level: str | None = None, restart: bool = False,
+                               machine: str | None = None) -> str:
+        if machine:
+            if level is None:
+                return await peer(machine, "GET", "reasoning", {"engine": engine})
+            return await peer(machine, "POST", "reasoning", body={"engine": engine, "level": level, "restart": restart})
+        try:
+            if level is None:
+                return _j(await run(mgr.reasoning, engine))
+            return _j(await run(mgr.set_reasoning, engine, level, None, restart))
+        except (KeyError, ValueError) as e:
+            return str(e).strip("'\"")
+
+    @mcp.tool(description="Roles (main, helper, ...): each an ordered list of targets (machine/profile); clients ask "
+                          "this Hangar's gateway (/v1, model = the role's name) and get the first target that is up, "
+                          "else main, else anything running. Shows which model serves each role now.")
+    async def roles(machine: str | None = None) -> str:
+        if machine:
+            return await peer(machine, "GET", "roles")
+        return _j(await run(mgr.roles.public))
+
+    @mcp.tool(description="Set a role: targets in order, each \"machine/profile\" (\"this/<profile>\" for this machine); the "
+                          "first is the primary, the rest backups. auto_start_backups: start a backup when the targets "
+                          "before it have been down 30 s (only if it fits next to what runs). An empty list deletes it.")
+    async def set_role(name: str, targets: list[str], auto_start_backups: bool = False) -> str:
+        try:
+            if not targets:
+                await run(mgr.roles.delete, name)
+                return _j(await run(mgr.roles.public))
+            ts = []
+            for i, spec in enumerate(targets):
+                m, _, p = spec.rpartition("/")
+                ts.append({"machine": "" if m in ("", "this") else m, "profile": p, "auto_start": i > 0 and auto_start_backups})
+            return _j(await run(mgr.roles.save, name, ts))
+        except (KeyError, ValueError) as e:
+            return str(e).strip("'\"")
+
+    @mcp.tool(description="The memory budget: how much of the machine (VRAM + RAM together, GB) Hangar's engines may use. "
+                          "Starts that would go over it are refused (force overrides) and new profiles get the largest "
+                          "context that fits. gb: set it; clear=True: no budget; neither: just report.")
+    async def memory_budget(gb: float | None = None, clear: bool = False, machine: str | None = None) -> str:
+        if machine:
+            if gb is None and not clear:
+                return await peer(machine, "GET", "budget")
+            return await peer(machine, "POST", "budget", body={"gb": None if clear else gb})
+        if gb is None and not clear:
+            return _j(await run(mgr.budget_public))
+        try:
+            return _j(await run(mgr.set_budget, None if clear else gb))
+        except ValueError as e:
+            return str(e)
+
+    @mcp.tool(description="This machine and its peers (other Hangars): name, OS, online, what runs and how fast, memory; "
+                          "and the fleet: every online machine added up (tok/s out, GPU memory, RAM, CPU and GPU load).")
+    async def machines() -> str:
+        me = {**machine_info(mgr.cfg), "this_machine": True, "summary": summary(await run(mgr.status))}
+        others = await run(mgr.peers.public)
+        return _j({"machines": [me] + others, "fleet": fleet([me["summary"]] + [p["summary"] for p in others if p["online"]])})
+
+    @mcp.tool(description="Add a peer: another Hangar this one can see and control. Easiest: code = its pairing code "
+                          "(hangar-pair:..., from Share this machine on its dashboard or `hangar pair-code` there). Or "
+                          "url (how this machine reaches it, e.g. macbook:9000) and token (its data/token.txt).")
+    async def add_machine(code: str | None = None, url: str | None = None, token: str | None = None,
+                          name: str | None = None) -> str:
+        try:
+            res = await run(mgr.peers.add, name, url, token, True, code)
+        except ValueError as e:
+            return str(e)
+        mgr.store.event("peer", f"added peer {res['name']} ({res['url']})")
+        return _j(res)
+
+    @mcp.tool(description="Remove a peer added from the dashboard/CLI/MCP (ones in config.yaml stay).")
+    async def remove_machine(name: str) -> str:
+        try:
+            await run(mgr.peers.remove, name.lower())
+        except KeyError as e:
+            return e.args[0]
+        mgr.store.event("peer", f"removed peer {name}")
+        return "removed"
+
+    @mcp.tool(description="Whether Hangar starts when the user signs in to Windows (not available on macOS). enabled: true to turn it on, false "
                           "to turn it off, omit to just report. Only the manager starts; engines start on demand.")
     async def autostart_windows(enabled: bool | None = None) -> str:
         if enabled is None:
             return _j(await run(autostart.status))
-        res = await run(autostart.enable if enabled else autostart.disable)
+        try:
+            res = await run(autostart.enable if enabled else autostart.disable)
+        except ValueError as e:
+            return str(e)
         mgr.store.event("autostart", "starts with Windows" if enabled else "no longer starts with Windows")
         return _j(res)
 

@@ -156,6 +156,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
 .bar { height: 6px; background: var(--track); border-radius: 99px; overflow: hidden; margin-top: 8px; position: relative; }
 .bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 99px; background: var(--s1); transition: width .5s cubic-bezier(.2,.8,.2,1); }
 .bar.ram > i { background: var(--s2); } .bar.cpu > i { background: var(--s3); }
+.bar.bud > i { background: var(--accent); }
 .bar.warn > i { background: var(--warn); } .bar.bad > i { background: var(--bad); }
 .bar.thin { height: 4px; margin-top: 5px; }
 .bar .mk { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); opacity: .55; border-radius: 2px; }
@@ -163,6 +164,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
 .gauge .gs b { font: 500 12px var(--mono); color: var(--ink2); }
 .warnbox { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--warn); background: var(--warn-dim); border-radius: 7px; padding: 8px 10px; margin-top: 10px; }
 .errbox { color: var(--bad); background: var(--bad-dim); }
+.warnbox svg { width: 15px; height: 15px; flex: none; margin-top: 1px; stroke: currentColor; fill: none; stroke-width: 2; }
 
 /* ---- engines */
 .eng { padding: 16px; border-top: 1px solid var(--line); }
@@ -272,6 +274,66 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 #dlgbody { padding: 16px; }
 .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .facts .stat .sv { font-size: 16px; }
+/* ---- machines */
+.msw { position: relative; }
+.msw > button { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px 0 9px; border-radius: 8px; border: 1px solid var(--line2); background: var(--panel); color: var(--ink); font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; max-width: 220px; }
+.msw > button:hover { border-color: var(--faint); }
+.msw > button .os { font: 500 10.5px var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.msw > button.remote { border-color: color-mix(in srgb, var(--s3) 60%, transparent); background: color-mix(in srgb, var(--s3) 12%, var(--panel)); }
+.msw > button svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2.2; opacity: .6; }
+.menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; min-width: 290px; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.45); padding: 5px; animation: fade .12s ease; }
+.menu .mi { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; padding: 8px 10px; border-radius: 7px; border: 0; background: none; color: var(--ink); text-align: left; cursor: pointer; font-size: 13px; }
+.menu .mi:hover { background: var(--panel2); }
+.menu .mi.on { background: var(--panel2); box-shadow: inset 2px 0 0 var(--accent); }
+.menu .mi .sub { display: block; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu .mi .os { font: 500 10.5px var(--mono); color: var(--faint); text-transform: uppercase; }
+.menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 2px; }
+.remotebar { display: flex; align-items: center; gap: 10px; padding: 7px 18px; font-size: 12.5px; color: var(--ink2); background: color-mix(in srgb, var(--s3) 13%, var(--bg)); border-bottom: 1px solid color-mix(in srgb, var(--s3) 35%, var(--line)); position: sticky; top: var(--top); z-index: 25; }
+.remotebar b { color: var(--ink); }
+.fleet { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 1px; background: var(--line); }
+.mcd { background: var(--panel); padding: 13px 16px; cursor: pointer; min-width: 0; text-align: left; border: 0; color: inherit; font: inherit; }
+.mcd:hover { background: var(--panel2); }
+.mcd.on { box-shadow: inset 0 2px 0 var(--accent); }
+.mcd .mh2 { display: flex; align-items: center; gap: 8px; font-weight: 650; }
+.mcd .run { margin-top: 8px; font-size: 12.5px; color: var(--ink2); display: grid; gap: 3px; }
+.mcd .run .num { color: var(--accent); }
+.mcd.off { opacity: .7; }
+.fsum { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.fsum .stats { margin-top: 0; }
+.fsum .stat .bar { margin-top: 7px; }
+@media (max-width: 1100px) { .fsum .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } .fsum .stat.hero { grid-column: 1 / -1; } }
+@media (max-width: 860px) { .fsum .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.vital.fleetv { flex: none; cursor: pointer; border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.vital.fleetv:hover { background: var(--panel2); }
+
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 1px; background: var(--line); }
+.pair .pc { background: var(--panel); padding: 16px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.pair .pt { display: flex; align-items: center; gap: 9px; font-weight: 650; }
+.pair .pt .n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 600 12px var(--mono); background: var(--accent-dim); color: var(--accent); flex: none; }
+.pair p { margin: 0; font-size: 12.5px; color: var(--muted); }
+.codebox { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border: 1px dashed var(--line2); border-radius: 8px; background: var(--bg2); min-width: 0; }
+.codebox .c { flex: 1; min-width: 0; font: 12px var(--mono); color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+textarea.input.code { min-height: 64px; height: 64px; font-size: 12px; resize: none; word-break: break-all; }
+.pairinfo { font-size: 12.5px; color: var(--ink2); }
+.pairinfo .tag { margin: 2px 4px 0 0; }
+details.more { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+
+.roles .rrow { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 16px; border-top: 1px solid var(--line); }
+.roles .rrow:first-child { border-top: 0; }
+.roles .rname { font: 600 13px var(--mono); }
+.chain { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.chain .arr { color: var(--faint); font-size: 12px; }
+.tchip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; border: 1px solid var(--line2); border-radius: 7px; background: var(--bg2); font-size: 12px; min-width: 0; max-width: 100%; }
+.tchip .m { color: var(--muted); }
+.tchip .p { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tchip.serving { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: var(--accent-dim); }
+.tchip .dot { width: 6px; height: 6px; box-shadow: none; animation: none; }
+.tchip .k { font: 500 10.5px var(--mono); color: var(--faint); text-transform: uppercase; }
+.trow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.trow:first-child { border-top: 0; }
+@media (max-width: 860px) { .roles .rrow { grid-template-columns: minmax(0, 1fr) auto; } .roles .rrow .chain { grid-column: 1 / -1; grid-row: 2; } .trow { grid-template-columns: minmax(0, 1fr); } }
+
 .toasts { position: fixed; right: 18px; bottom: 18px; z-index: 50; display: grid; gap: 8px; }
 .toast { background: var(--panel2); color: var(--ink); border: 1px solid var(--line2); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 8px; font-size: 13px; max-width: min(420px, calc(100vw - 36px)); box-shadow: 0 12px 30px rgba(0,0,0,.35); animation: fade .2s ease; overflow-wrap: anywhere; }
 .toast.err { border-left-color: var(--bad); }
@@ -300,6 +362,9 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
   .side .foot { display: none; }
   .brand { width: auto; } .brand small { display: none; }
   .vitals { display: none; }
+  .msw > button { max-width: 150px; } .msw > button .os { display: none; }
+  .menu { position: fixed; left: 8px; right: 8px; top: calc(var(--top) + 4px); min-width: 0; }
+  .remotebar { padding: 7px 14px; top: var(--top); }
   .top { gap: 10px; padding: 0 14px; } .top #jobpill { max-width: 40vw; overflow: hidden; text-overflow: ellipsis; }
   .ph { padding: 10px 14px; } .pb { padding: 12px 14px; } .eng { padding: 14px; }
   .vh h1 { font-size: 18px; }
@@ -328,12 +393,14 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 
 <div id="app" hidden>
 <header class="top">
-  <div class="brand"><img class="mark" src="/favicon.svg" alt="">Hangar <small id="hostname"></small></div>
+  <div class="brand"><img class="mark" src="/favicon.svg" alt="">Hangar</div>
+  <div class="msw" id="msw"><button id="mswbtn" aria-haspopup="true"><span class="dot" id="mswdot"></span><span id="mswname">…</span><span class="os" id="mswos"></span><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button><div class="menu" id="mswmenu" hidden></div></div>
   <div class="vitals" id="vitals"></div>
   <span id="jobpill" class="pill warn" hidden></span>
   <span id="conn" class="pill"><span class="dot"></span>connecting</span>
 </header>
 
+<div class="remotebar" id="remotebar" hidden><span class="dot" id="rbdot"></span><span>Viewing <b id="rbname"></b> — everything on this page, including Start and Stop, runs there.</span><span class="sp"></span><button class="btn sm" data-machine="">Back to <span id="rbself"></span></button></div>
 <div class="shell">
 <nav class="side" id="side">
   <button class="nav" data-view="overview"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
@@ -348,7 +415,9 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 <main class="content">
   <!-- overview -->
   <section class="view" id="v-overview">
-    <div class="vh"><div><h1>Overview</h1><p>Engines, the machine, and what is happening right now.</p></div><span class="sp"></span><label class="switch" id="autostartsw" title="Start Hangar when you sign in to Windows"><input type="checkbox" id="autostart" disabled><span class="track"></span>Start with Windows</label><button class="btn" id="chk"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Check updates</button></div>
+    <div class="vh"><div><h1>Overview</h1><p>Engines, the machine, and what is happening right now.</p></div><span class="sp"></span><label class="switch" id="autostartsw" title="Start Hangar when you sign in"><input type="checkbox" id="autostart" disabled><span class="track"></span><span id="autostartlbl">Start with Windows</span></label><button class="btn" id="chk"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Check updates</button></div>
+    <div class="panel" id="fleetsec" hidden><div class="ph"><h3>Machines</h3><span class="sp"></span><span class="meta" id="fleetmeta"></span><button class="btn ghost sm" data-act="mshare" id="mshareb">Share this machine</button><button class="btn ghost sm" data-act="maddshow" id="maddb">+ Add machine</button></div><div class="fsum" id="fsum" hidden></div><div class="fleet" id="fleet"></div></div>
+    <div class="panel roles" id="rolesec" hidden><div class="ph"><h3>Roles</h3><span class="sp"></span><span class="meta" id="rolemeta"></span><button class="btn ghost sm" data-act="gwinfo" id="gwbtn">Use it (endpoint)</button><button class="btn ghost sm" data-act="roleedit" data-role="" id="roleadd">+ Role</button></div><div id="roles"></div></div>
     <div class="panel job" id="jobsec" hidden>
       <div class="ph"><span id="jobspin"></span><h3 style="color:var(--ink)" id="jobtitle"></h3><span class="sp"></span><span id="jobstate" class="tag"></span></div>
       <div class="pb"><pre class="term" id="joblog"></pre></div>
@@ -358,7 +427,7 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
         <div class="panel"><div class="ph"><h3>Engines</h3><span class="sp"></span><span class="meta" id="engmeta"></span></div><div id="engines"></div></div>
         <div class="panel"><div class="ph"><h3>Recent events</h3><span class="sp"></span><button class="btn ghost sm" data-view="activity">All activity →</button></div><div class="feed" id="ovevents"></div></div>
       </div>
-      <div class="panel"><div class="ph"><h3>Machine</h3><span class="sp"></span><span class="meta">live</span></div>
+      <div class="panel"><div class="ph"><h3>Machine</h3><span class="sp"></span><button class="btn ghost sm" data-act="budget" id="budgetbtn" title="How much memory Hangar's engines may use here">Budget</button></div>
         <div class="pb"><div id="machine"></div>
           <svg id="live" class="chart" style="margin-top:12px" aria-label="last hour"></svg>
           <div class="legend" style="margin-top:6px"><span><i style="background:var(--s1)"></i>VRAM</span><span><i style="background:var(--s2)"></i>RAM</span><span><i style="background:var(--s3)"></i>tokens out</span><span class="sp"></span><span class="faint">last hour</span></div>
@@ -437,7 +506,11 @@ if (new URLSearchParams(location.search).get("token")) { store.set("llmm-token",
 let period = store.get("llmm-period", "day"), bucket = store.get("llmm-bucket", "day"), watchJob = null, lastStatus = null;
 let view = (location.hash.slice(1) || store.get("llmm-view", "overview"));
 
+// the machine being viewed: "" is this one; a peer's calls go through this Hangar at /api/peers/<name>/...
+let MACHINE = store.get("llmm-machine", ""), SELF = null, PEERS = [];
+const route = path => MACHINE && path.startsWith("/api/") && !path.startsWith("/api/peers") ? `/api/peers/${encodeURIComponent(MACHINE)}/` + path.slice(5) : path;
 async function api(path, opts = {}) {
+  path = route(path);
   const r = await fetch(path, { ...opts, headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) } });
   if (r.status === 401) { showLogin(); throw new Error("unauthorized"); }
   const ct = r.headers.get("content-type") || "";
@@ -468,6 +541,7 @@ const ICON = {
   logs: '<svg viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 17h7"/></svg>',
   copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>',
   info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
   warn: '<svg viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>',
 };
 
@@ -494,10 +568,10 @@ function renderStatus(s) {
   for (const g of r.gpus) {
     const p = g.vram_used_mib / g.vram_total_mib * 100;
     v += `<div class="vital"><span class="k">VRAM</span><span class="mini ${p > 95 ? "hot" : ""}"><i style="width:${p}%"></i></span><span class="v">${gb(g.vram_used_mib)}/${gb(g.vram_total_mib)}G</span></div>
-          <div class="vital opt"><span class="k">GPU</span><span class="v">${(g.util_percent || 0).toFixed(0)}% · ${(g.temp_c || 0).toFixed(0)}°</span></div>`;
-    m += `<div class="gauge"><div class="gh"><span class="gl">VRAM</span><span class="gn">${esc(g.name)}</span><span class="gv">${gb(g.vram_used_mib)}<small> / ${gb(g.vram_total_mib)} GB</small></span></div>
+          <div class="vital opt"><span class="k">GPU</span><span class="v">${g.util_percent == null ? "–" : g.util_percent.toFixed(0) + "%"}${g.temp_c == null ? "" : ` · ${g.temp_c.toFixed(0)}°`}</span></div>`;
+    m += `<div class="gauge"><div class="gh"><span class="gl">${g.unified ? "GPU MEM" : "VRAM"}</span><span class="gn">${esc(g.name)}</span><span class="gv">${gb(g.vram_used_mib)}<small> / ${gb(g.vram_total_mib)} GB</small></span></div>
       <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>
-      <div class="gs"><span>load <b>${(g.util_percent || 0).toFixed(0)}%</b></span><span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${(g.temp_c || 0).toFixed(0)}°C</b></span><span>free <b>${mib(g.vram_total_mib - g.vram_used_mib)}</b></span></div></div>`;
+      <div class="gs">${g.util_percent == null ? "" : `<span>load <b>${g.util_percent.toFixed(0)}%</b></span>`}${g.temp_c == null ? "" : `<span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</b></span>`}<span>free <b>${mib(g.vram_total_mib - g.vram_used_mib)}</b></span>${g.unified ? `<span class="tag" title="shares the machine's RAM; the limit is what Metal may use">unified</span>` : ""}</div></div>`;
   }
   if (!r.gpus.length) m += `<div class="gauge"><div class="small muted">No NVIDIA GPU found (nvidia-smi).</div></div>`;
   const rp = ramUsed / r.ram_total_mib * 100;
@@ -508,6 +582,14 @@ function renderStatus(s) {
       <div class="gs"><span>available <b>${mib(r.ram_available_mib)}</b></span>${r.swap_used_mib > 512 ? `<span class="warn-t">swap <b class="warn-t">${mib(r.swap_used_mib)}</b></span>` : ""}</div></div>
     <div class="gauge"><div class="gh"><span class="gl">CPU</span><span class="gn">${r.cpu_count} threads</span><span class="gv">${r.cpu_percent.toFixed(0)}<small>%</small></span></div>
       <div class="bar cpu"><i style="width:${r.cpu_percent}%"></i></div></div>`;
+  const bg = s.budget || {};
+  if (bg.budget_mib) {
+    const bp = Math.min(100, bg.used_mib / bg.budget_mib * 100);
+    m += `<div class="gauge"><div class="gh"><span class="gl">Budget</span><span class="gn">Hangar's engines</span><span class="gv">${gb(bg.used_mib)}<small> / ${gb(bg.budget_mib)} GB</small></span></div>
+      <div class="bar ${pctCls(bp) || "bud"}"><i style="width:${bp}%"></i></div></div>`;
+  }
+  $("#budgetbtn").textContent = bg.budget_mib ? `Budget ${gb(bg.budget_mib)} GB` : "No budget";
+  BUDGET = bg;
   for (const w of s.warnings) m += `<div class="warnbox">${ICON.warn}<span>${esc(w)}</span></div>`;
   $("#machine").innerHTML = m;
 
@@ -518,24 +600,33 @@ function renderStatus(s) {
     const upd = up.available ? `<span class="tag warn" title="${esc(up.latest)}">↑ ${esc(up.latest)}</span>` : up.error ? `<span class="tag bad" title="${esc(up.error)}">update check failed</span>` : "";
     const dot = run ? (run.state === "ready" ? "ok" : "warn") : "";
     let acts = "";
+    const rz = run && run.reasoning;
+    if (rz) acts += `<button class="btn sm" data-act="reason" data-e="${esc(e.name)}" title="how hard the model thinks${rz.live ? " (changes at once)" : " (a change restarts it)"}"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2Z"/></svg>Reasoning: ${esc(rz.level)}</button>`;
     if (run) acts += `<button class="btn sm danger" data-act="stop" data-e="${esc(e.name)}">${ICON.stop}Stop</button><button class="btn sm" data-act="restart" data-e="${esc(e.name)}">${ICON.restart}Restart</button>`;
+    const last = !run && e.last && !e.port_taken_by ? e.last : null;
+    if (last) acts += `<button class="btn sm primary" data-act="start" data-p="${esc(last.profile)}" title="start ${esc(last.profile)} again">${ICON.play}Run ${esc(last.profile)}</button>`;
     if (e.can_update) acts += `<button class="btn sm ${up.available ? "" : "ghost"}" data-act="update" data-e="${esc(e.name)}">Update${up.available ? " now" : ""}</button>`;
     if (e.can_rollback) acts += `<button class="btn sm ghost" data-act="rollback" data-e="${esc(e.name)}">Roll back</button>`;
     acts += `<button class="btn sm" data-act="logs" data-e="${esc(e.name)}">${ICON.logs}Logs</button>`;
     h += `<div class="eng ${run ? "" : "off"}"><div class="eh"><span class="dot ${dot}"></span><span class="en">${esc(e.name)}</span>
-      ${run ? `<span class="tag ${stateTag(run.state)}">${esc(run.state)}</span>` : `<span class="tag">stopped</span>`}<span class="tag">:${e.port}</span>${ver}${upd}<div class="acts">${acts}</div></div>`;
+      ${run ? `<span class="tag ${stateTag(run.state)}">${esc(run.state)}</span>` : `<span class="tag">stopped</span>`}${run && run.vision ? `<span class="tag info" title="this model takes images">${ICON.eye}vision enabled</span>` : ""}<span class="tag">:${e.port}</span>${ver}${upd}<div class="acts">${acts}</div></div>`;
     if (run) {
       nrun++;
       const st = run.stats, w1 = st.window["1m"], w5 = st.window["5m"], ss = st.since_start, busy = (st.gauges || {}).requests_processing;
-      const g = w1.gen_tps ?? w5.gen_tps; out += g || 0;
-      h += `<div class="esub"><b>${esc(run.profile)}</b> · up <span class="num">${dur(run.uptime_seconds)}</span> · pid <span class="num">${run.pid}</span>${run.managed ? "" : " · started outside the manager"}</div>
+      const lv = st.live || {};
+      const g = lv.gen_tps ?? w1.gen_tps ?? w5.gen_tps; out += g || 0;
+      const doing = lv.phase ? `${esc(lv.phase)}${lv.tokens ? ` · ${num(lv.tokens)}${lv.of ? " / " + num(lv.of) : ""} tok` : ""}` : busy ? "generating" : "idle";
+      const rb = (s.roles || []).filter(r => r.serving && !r.serving.machine && r.serving.profile === run.profile).map(r => r.name);
+      h += `<div class="esub">${rb.map(n => `<span class="tag ok" style="margin-right:6px" title="the gateway sends '${esc(n)}' requests here">${esc(n)}</span>`).join("")}<b>${esc(run.profile)}</b> · up <span class="num">${dur(run.uptime_seconds)}</span> · pid <span class="num">${run.pid}</span>${run.managed ? "" : " · started outside the manager"}</div>
         <div class="stats">
-          <div class="stat hero"><div class="sv">${tps(g)}<small>tok/s</small></div><div class="sl">out · ${busy ? "generating" : "idle"}</div></div>
-          <div class="stat"><div class="sv">${tps(w5.prompt_tps)}<small>tok/s</small></div><div class="sl">in · 5 min avg</div></div>
+          <div class="stat hero"><div class="sv">${tps(g)}<small>tok/s</small></div><div class="sl" title="${lv.phase ? "live, from the engine's progress" : "from finished requests"}">out · ${doing}</div></div>
+          <div class="stat"><div class="sv">${tps(lv.prompt_tps ?? w5.prompt_tps)}<small>tok/s</small></div><div class="sl">in · ${lv.prompt_tps != null ? "reading now" : "5 min avg"}</div></div>
           <div class="stat"><div class="sv">${num(ss.gen_tokens)}</div><div class="sl">out since start</div></div>
           <div class="stat"><div class="sv">${num(ss.prompt_tokens)}</div><div class="sl">in since start</div></div>
           <div class="stat"><div class="sv">${gb(run.ram_mib)}<small>GB</small></div><div class="sl">RAM · CPU ${run.cpu_percent.toFixed(0)}%</div></div>
         </div>`;
+    } else if (last) {
+      h += `<div class="esub">Last: <b>${esc(last.profile)}</b>${last.description ? ` · ${esc(last.description.split(" · ")[0])}` : ""}${last.stopped ? ` · stopped ${ago(last.stopped)}` : ""}${last.ran_seconds ? ` after ${dur(last.ran_seconds)}` : ""}${last.stop_reason && !/request|stop/i.test(last.stop_reason) ? ` <span class="warn-t">(${esc(last.stop_reason)})</span>` : ""}</div>`;
     } else if (e.port_taken_by) {
       h += `<div class="warnbox">${ICON.warn}<span>Port ${e.port} is used by ${esc(e.port_taken_by.name)} (pid ${e.port_taken_by.pid}), not by this manager.</span></div>`;
     }
@@ -544,9 +635,12 @@ function renderStatus(s) {
   $("#engines").innerHTML = h;
   $("#engmeta").textContent = `${nrun} of ${s.engines.length} running`;
   v += `<div class="vital"><span class="k">Out</span><span class="v ${out ? "ok-t" : ""}">${tps(out)} tok/s</span></div>`;
-  $("#vitals").innerHTML = v;
-  $("#hostname").textContent = location.hostname;
+  $("#vitals").innerHTML = v + fleetVital();
+  if (s.machine) {
+    if (!MACHINE) SELF = s.machine;
+  }
 
+  renderRoles(s.roles || []);
   if (s.job) watchJob = s.job.id;
   $("#conn").className = "pill ok"; $("#conn").innerHTML = `<span class="dot ok"></span>connected`;
 }
@@ -588,17 +682,32 @@ async function renderProfiles() {
     const n = p.needs || {};
     return `<div class="lrow"><div class="main"><div class="t"><span class="dot ${p.running ? "ok" : ""}"></span>${esc(p.id)}</div>
         ${p.description ? `<div class="d">${esc(p.description)}</div>` : ""}
-        <div class="tags"><span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
+        <div class="tags">${p.vision ? `<span class="tag info" title="takes images">${ICON.eye}vision</span>` : ""}${rolesOf(p.id).map(r => `<span class="tag ok" title="${esc(r.backup ? "backup for " + r.name : r.name)}">${esc(r.backup ? r.name + " · backup" : r.name)}</span>`).join("")}${BUDGET.budget_mib && (n.vram_mib || 0) + (n.ram_mib || 0) > BUDGET.budget_mib ? `<span class="tag bad" title="needs ~${gb((n.vram_mib || 0) + (n.ram_mib || 0))} GB">over budget</span>` : ""}<span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
       ${needBar("VRAM", n.vram_mib, vt)}${needBar("RAM", n.ram_mib, rt)}
       <div class="acts">
         ${p.editable ? `<button class="btn sm ghost" data-act="pedit" data-p="${esc(p.id)}">Edit</button>` : ""}
         ${p.discovered || p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcopy" data-p="${esc(p.id)}">Copy</button>`}
+        ${p.source === "custom" || MACHINE ? "" : `<button class="btn sm ghost" data-act="prole" data-p="${esc(p.id)}" title="make it main, helper, or a backup">Role</button>`}
         ${p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcustom" data-p="${esc(p.id)}">Custom run</button>`}
         ${p.editable ? `<button class="btn sm ghost danger" data-act="pdel" data-p="${esc(p.id)}">Delete</button>` : ""}
         <button class="btn sm ${p.running ? "" : "primary"}" data-act="start" data-p="${esc(p.id)}">${p.running ? ICON.restart + "Restart" : ICON.play + "Start"}</button></div></div>`;
   }).join("") : `<div class="empty">No profiles yet. Add some to config.yaml, or download a model.</div>`;
 }
-let PROFILES = [];
+let PROFILES = [], BUDGET = {};
+function budgetDialog() {
+  const b = BUDGET || {};
+  dialog("Memory budget", `
+    <p class="small muted" style="margin:0 0 14px">How much of this machine's memory Hangar's engines may use, VRAM and RAM together${b.unified ? " (on this Mac they are the same memory)" : ""}. Starting something that would go over it is refused (force still can), and profiles made from a download get the largest context that fits.</p>
+    <label class="fld">Budget in GB<input id="bgv" class="input num" type="number" min="1" step="0.5" value="${b.budget_mib ? (b.budget_mib / 1024).toFixed(1) : ""}" placeholder="no limit"></label>
+    <div class="small muted" style="margin-top:8px">Engines use <b class="num">${gb(b.used_mib || 0)} GB</b> now.${b.limit_mib && !b.budget_mib ? ` Without a budget, new profiles fit what the GPU may use: ${gb(b.limit_mib)} GB.` : ""}</div>
+    <div class="row" style="margin-top:16px"><button class="btn ghost" id="bgoff">No budget</button><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="bgset">Save</button></div>`);
+  const save = async v => {
+    try { await post("/api/budget", { gb: v }); $("#dlg").close(); toast(v ? `Memory budget ${v} GB` : "No memory budget"); refreshFast(); renderProfiles(); }
+    catch (e) { fail(e); }
+  };
+  $("#bgset").onclick = () => { const v = parseFloat($("#bgv").value); save(v > 0 ? v : null); };
+  $("#bgoff").onclick = () => save(null);
+}
 
 // ---- models: search, pick a quant, download, library
 async function dlSearch() {
@@ -617,24 +726,42 @@ async function dlFiles(repo) {
   const mm = groups.filter(g => g.mmproj);
   $("#dlresults").innerHTML = `<div class="results"><div class="rh"><b class="mono" style="font-size:13px">${esc(repo)}</b><span class="sp"></span><span class="small muted">tick what to download</span></div>` +
     groups.map((g, i) => `<div class="rr"><label for="q${i}"><input type="checkbox" id="q${i}" data-files='${esc(JSON.stringify(g.files))}' ${(src === "ollama" || src === "url" || g.mmproj && mm.length === 1) ? "checked" : ""}>
-      ${g.quant ? `<span class="tag info">${esc(g.quant)}</span>` : g.mmproj ? `<span class="tag">mmproj</span>` : ""}<span class="mono small">${esc(g.key)}</span>${g.files.length > 1 ? `<span class="muted small">${g.files.length} files</span>` : ""}</label><span class="num small muted">${mib((g.size || 0) / 1048576)}</span></div>`).join("") +
+      ${g.quant ? `<span class="tag info">${esc(g.quant)}</span>` : g.mmproj ? `<span class="tag">mmproj</span>` : ""}${fitTag(g)}<span class="mono small">${esc(g.key)}</span>${g.files.length > 1 ? `<span class="muted small">${g.files.length} files</span>` : ""}</label><span class="num small muted">${mib((g.size || 0) / 1048576)}</span></div>`).join("") +
     `<div class="rf"><label class="chk"><input type="checkbox" id="dlprof" checked> make a llama.cpp profile when done</label><span class="sp"></span><button class="btn primary" data-act="dlgo" data-repo="${esc(repo)}">Download</button></div></div>`;
 }
+// a quant fits when its files plus ~1.5 GB (an 8K cache and the server) stay within the budget / what the GPU may use
+const fitTag = g => {
+  const lim = (BUDGET || {}).limit_mib;
+  if (!lim || g.mmproj || !g.size) return "";
+  const need = g.size / 1048576 + 1536;
+  return need <= lim ? `<span class="tag ok" title="~${gb(need)} GB with an 8K context">fits</span>` : `<span class="tag bad" title="~${gb(need)} GB with an 8K context; ${gb(lim)} GB allowed">over budget</span>`;
+};
 async function renderDownloads() {
   const res = await api("/api/downloads");
   const act = res.items.filter(d => ["queued", "running"].includes(d.state) || Date.now() / 1000 - (d.finished || 0) < 3600);
   const running = act.filter(d => ["queued", "running"].includes(d.state));
-  $("#dlpanel").hidden = !act.length && !!res.aria2;
-  $("#dlmeta").textContent = running.length ? `${running.length} active` : "";
-  $("#cnt-models").textContent = running.length ? `↓ ${running.length}` : "";
-  $("#downloads").innerHTML = act.map(d => {
+  const left = res.leftovers || [];
+  $("#dlpanel").hidden = !act.length && !left.length && !!res.aria2;
+  $("#dlmeta").textContent = [running.length ? `${running.length} active` : "", left.length ? `${left.length} unfinished` : ""].filter(Boolean).join(" · ");
+  $("#cnt-models").textContent = running.length ? `↓ ${running.length}` : left.length ? `⏸ ${left.length}` : "";
+  // downloads that stopped without finishing (a restart, a crash, a reboot) and are not running now
+  const unfinished = left.map(lo => {
+    const pct = lo.total_bytes ? Math.min(100, lo.have_bytes / lo.total_bytes * 100) : 0;
+    return `<div class="dl"><div class="row"><b class="mono" style="font-size:13px">${esc(lo.repo || lo.name)}</b><span class="tag warn">unfinished</span><span class="sp"></span>
+      <span class="num small muted">${mib(lo.have_bytes / 1048576)}${lo.total_bytes ? " / " + mib(lo.total_bytes / 1048576) : ""} · ${ago(lo.last_activity)}</span>
+      ${lo.resumable ? `<button class="btn sm primary" data-act="loresume" data-folder="${esc(lo.folder)}">Resume</button>` : ""}
+      <button class="btn sm ghost danger" data-act="lodiscard" data-folder="${esc(lo.folder)}" data-name="${esc(lo.name)}">Discard</button></div>
+      ${lo.total_bytes ? `<div class="bar warn"><i style="width:${pct}%"></i></div>` : ""}
+      <div class="small muted" style="margin-top:6px;overflow-wrap:anywhere">${esc(lo.files.filter(f => !f.complete).map(f => f.name).join(", "))}${lo.resumable ? "" : " · no record of where it came from: start the same download again to continue it"}</div></div>`;
+  }).join("");
+  $("#downloads").innerHTML = unfinished + act.map(d => {
     const pct = d.total_bytes ? d.done_bytes / d.total_bytes * 100 : 0, live = ["queued", "running"].includes(d.state);
     return `<div class="dl"><div class="row"><b class="mono" style="font-size:13px">${esc(d.repo)}</b><span class="tag ${stateTag(d.state)}">${esc(d.state)}</span><span class="sp"></span>
       <span class="num small muted">${mib(d.done_bytes / 1048576)} / ${mib(d.total_bytes / 1048576)}${d.state === "running" ? ` · <span class="ok-t">${(d.speed / 1048576).toFixed(1)} MiB/s</span>${d.eta_seconds ? " · " + dur(d.eta_seconds) : ""}` : ""}</span>
       ${live ? `<button class="btn sm ghost danger" data-act="dlcancel" data-id="${d.id}">Cancel</button>` : ""}</div>
       <div class="bar ${live ? "run" : ""} ${d.state === "failed" ? "bad" : ""}"><i style="width:${pct}%"></i></div>
       <div class="small muted" style="margin-top:6px;overflow-wrap:anywhere">${esc(d.current || d.folder)}${d.result && d.result.profile ? ` · profile <b>${esc(d.result.profile)}</b> created` : ""}${d.error ? ` · <span class="bad-t">${esc(d.error)}</span>` : ""}</div></div>`;
-  }).join("") + (res.aria2 ? "" : `<div class="pb"><div class="note">${ICON.info}<span>Install aria2 (<span class="mono">winget install aria2.aria2</span>) for faster, multi-connection downloads.</span></div></div>`);
+  }).join("") + (res.aria2 ? "" : `<div class="pb"><div class="note">${ICON.info}<span>Install aria2 (<span class="mono">${esc(res.aria2_hint || "winget install aria2.aria2")}</span>) for faster, multi-connection downloads. A download that is running picks it up if you cancel and start it again; it continues where it was.</span></div></div>`);
   return running.length > 0;
 }
 async function renderLibrary() {
@@ -823,7 +950,7 @@ async function streamLog(engine) {
   logState("live", "ok");
   const ctl = logAbort = new AbortController();
   try {
-    const r = await fetch(`/api/logs/${encodeURIComponent(engine)}/stream?lines=400`, { headers: { "Authorization": "Bearer " + TOKEN }, signal: ctl.signal, cache: "no-store" });
+    const r = await fetch(route(`/api/logs/${encodeURIComponent(engine)}/stream?lines=400`), { headers: { "Authorization": "Bearer " + TOKEN }, signal: ctl.signal, cache: "no-store" });
     if (!r.ok) throw new Error((await r.text()) || r.statusText);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
     for (;;) {
@@ -865,6 +992,24 @@ async function startProfile(id) {
 
 document.addEventListener("click", async ev => {
   if (ev.target.closest("[data-close]")) return $("#dlg").close();
+  const rm = ev.target.closest("[data-act=mremove]");
+  if (rm) {
+    ev.preventDefault(); ev.stopPropagation();
+    if (!confirm(`Remove ${rm.dataset.name} from this Hangar? Nothing changes on ${rm.dataset.name} itself.`)) return;
+    try {
+      const r = await fetch(`/api/peers/${encodeURIComponent(rm.dataset.name)}`, { method: "DELETE", headers: { "Authorization": "Bearer " + TOKEN } });
+      if (!r.ok) throw new Error((await r.json()).detail);
+      if (MACHINE === rm.dataset.name) switchMachine(""); else renderMachines();
+    } catch (e) { fail(e); }
+    return;
+  }
+  const mb = ev.target.closest("[data-machine]");
+  if (mb) { ev.preventDefault(); return switchMachine(mb.dataset.machine); }
+  if (ev.target.closest("[data-act=maddshow]")) { ev.preventDefault(); return addMachineDialog(); }
+  if (ev.target.closest("[data-act=mshare]")) { ev.preventDefault(); return shareDialog(); }
+  if (ev.target.closest("[data-act=fleetgo]")) { ev.preventDefault(); setView("overview"); return $("#fleetsec").scrollIntoView({ behavior: "smooth", block: "start" }); }
+  if (ev.target.closest("[data-act=copycode]")) { ev.preventDefault(); const c = await loadMyCode(); return copyText(c.code); }
+  if (ev.target.closest("[data-act=pastego]")) { ev.preventDefault(); const c = $("#pastecode").value.trim(); if (!c) return toast("Paste the other machine's pairing code first", true); return addFromCode(c, $("#pasteboth").checked, ev.target.closest("button")); }
   const b = ev.target.closest("[data-act],[data-period],[data-bucket],[data-job],[data-cnkind],[data-cnclient],[data-view]");
   if (!b) return;
   ev.preventDefault();
@@ -881,6 +1026,7 @@ document.addEventListener("click", async ev => {
     if (act === "pedit") return editProfile(prof(), false);
     if (act === "pcopy") return editProfile(prof(), true);
     if (act === "pcustom") return customRun(prof());
+    if (act === "prole") return profileRoleDialog(b.dataset.p);
     if (act === "pdel") { if (!confirm(`Delete profile ${b.dataset.p}? The model files stay.`)) return; await api(`/api/profiles/${encodeURIComponent(b.dataset.p)}`, { method: "DELETE" }); return renderProfiles(); }
     if (act === "dlrepo") return dlFiles(b.dataset.repo);
     if (act === "dlgo") {
@@ -889,8 +1035,15 @@ document.addEventListener("click", async ev => {
       await post("/api/downloads", { source: $("#dlsrc").value, repo: b.dataset.repo, include: files, make_profile: $("#dlprof").checked });
       $("#dlresults").innerHTML = ""; return pollDownloads();
     }
+    if (act === "loresume") { await post("/api/downloads/leftovers/resume", { folder: b.dataset.folder }); toast("Resumed"); return pollDownloads(); }
+    if (act === "lodiscard") {
+      if (!confirm(`Discard the unfinished download in ${b.dataset.name}? Its partial files are deleted; finished files stay.`)) return;
+      const r = await post("/api/downloads/leftovers/discard", { folder: b.dataset.folder });
+      toast(`Removed ${r.removed.length} partial file${r.removed.length === 1 ? "" : "s"}`); renderLibrary(); return renderDownloads();
+    }
     if (act === "dlcancel") { await post(`/api/downloads/${b.dataset.id}/cancel`, {}); return renderDownloads(); }
-    if (act === "mprof") { const r = await post("/api/profiles/from-model", { model: b.dataset.model }); toast(`Profile ${r.id} created`); await renderProfiles(); return editProfile(PROFILES.find(x => x.id === r.id), false); }
+    if (act === "mprof") { const r = await post("/api/profiles/from-model", { model: b.dataset.model }); await renderProfiles(); const np = PROFILES.find(x => x.id === r.id); toast(`Profile ${r.id} created` + (np && np.description.includes(" · ") ? ": " + np.description.split(" · ")[1] : "")); return editProfile(np, false); }
+    if (act === "budget") return budgetDialog();
     if (act === "mdel") { if (!confirm(`Delete ${b.dataset.folder} and every file in it?`)) return; await api(`/api/models?folder=${encodeURIComponent(b.dataset.folder)}`, { method: "DELETE" }); return renderLibrary(); }
     if (act === "cncopy") return copyText(cnSnip.content);
     if (act === "cnapply") {
@@ -899,6 +1052,9 @@ document.addEventListener("click", async ev => {
       return toast(`Written to ${r.file}` + (r.backup ? " (backup kept)" : ""));
     }
     if (act === "logs") return streamLog(e);
+    if (act === "reason") return reasoningDialog(e);
+    if (act === "roleedit") return roleDialog(b.dataset.role);
+    if (act === "gwinfo") return gatewayDialog();
     if (act === "logpause") { logPaused = !logPaused; b.textContent = logPaused ? "Resume" : "Pause"; logState(logPaused ? "paused" : "live", logPaused ? "warn" : "ok"); if (!logPaused) flushLog(); return; }
     if (act === "logcopy") return copyText($("#logpre").textContent);
     const confirmMsg = { stop: `Stop ${e}?`, restart: `Restart ${e}?`, update: `Update ${e}? It stops while updating and starts again after.`, rollback: `Roll ${e} back to its previous version?` }[act];
@@ -907,17 +1063,345 @@ document.addEventListener("click", async ev => {
     watchJob = j.id; renderJob();
   } catch (err) { fail(err); }
 });
+// ---- machines (this one and its peers)
+const OS = { windows: "win", macos: "mac", linux: "linux" };
+async function renderMachines() {
+  const res = await fetch("/api/peers", { headers: { "Authorization": "Bearer " + TOKEN } }).then(r => r.json());
+  SELF = { ...res.self }; PEERS = res.peers;
+  if (MACHINE && !PEERS.some(p => p.name === MACHINE)) return switchMachine("");
+  const cur = MACHINE ? PEERS.find(p => p.name === MACHINE) : null;
+  $("#mswname").textContent = MACHINE || SELF.name;
+  $("#mswos").textContent = OS[(cur ? (cur.machine || {}).os : SELF.os)] || "";
+  $("#mswdot").className = "dot " + (cur ? (cur.online ? "ok" : "bad") : "ok");
+  $("#mswbtn").className = MACHINE ? "remote" : "";
+  $("#remotebar").hidden = !MACHINE;
+  if (MACHINE) { $("#rbname").textContent = MACHINE; $("#rbself").textContent = SELF.name; $("#rbdot").className = "dot " + (cur && cur.online ? "ok" : "bad"); }
+  const runline = sm => (sm && sm.running.length) ? sm.running.map(r => `${esc(r.profile)}${r.gen_tps ? ` <span class="num">${r.gen_tps.toFixed(1)} tok/s</span>` : ""}`).join(" · ") : "idle";
+  const item = (name, os, online, sm, sub, on) => `<button class="mi ${on ? "on" : ""}" data-machine="${esc(name)}"><span class="dot ${online ? "ok" : "bad"}"></span>
+      <span style="min-width:0"><b>${esc(name)}</b><span class="sub">${sub}</span></span><span class="os">${esc(OS[os] || os || "")}</span></button>`;
+  $("#mswmenu").innerHTML = item(SELF.name, SELF.os, true, SELF.summary, "this machine · " + runline(SELF.summary), !MACHINE) +
+    PEERS.map(p => item(p.name, (p.machine || {}).os, p.online, p.summary, p.online ? runline(p.summary) : esc(p.error || "offline"), MACHINE === p.name)).join("") +
+    `<hr><button class="mi" data-act="mshare"><span></span><span>Share this machine…</span><span></span></button><button class="mi" data-act="maddshow"><span></span><span>+ Add machine…</span><span></span></button>`;
+  // the fleet panel shows every machine, whichever one is being viewed
+  $("#fleetsec").hidden = false;
+  $("#mshareb").hidden = $("#maddb").hidden = !PEERS.length;
+  if (!PEERS.length) {
+    $("#fleetmeta").textContent = "";
+    if (!$("#pairblock")) {
+      $("#fleet").innerHTML = `<div class="pair" id="pairblock" style="grid-column:1/-1">
+        <div class="pc"><div class="pt"><span class="n">1</span>On the machine you want to add</div>
+          <p>On that machine's dashboard, press <b>Copy code</b> in this same panel. This machine's own code is right here.</p>
+          <div class="codebox"><span class="c" id="mycode">…</span><button class="btn sm primary" data-act="copycode">${ICON.copy}Copy code</button></div>
+          <div class="pairinfo" id="mycodeinfo"></div></div>
+        <div class="pc"><div class="pt"><span class="n">2</span>On the machine that should see it</div>
+          <p>Paste that code here. Hangar tries each of its addresses and keeps the first one that answers.</p>
+          <textarea id="pastecode" class="input code" placeholder="hangar-pair:…" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+          <div class="pairinfo" id="pasteinfo"></div>
+          <div class="row"><label class="chk"><input type="checkbox" id="pasteboth" checked> also add this machine there</label><span class="sp"></span><button class="btn primary" data-act="pastego">Add machine</button></div></div>
+      </div>`;
+      $("#pastecode").oninput = () => { $("#pasteinfo").innerHTML = codeInfo($("#pastecode").value); };
+      loadMyCode().catch(() => { });
+    }
+    return;
+  }
+  if (PEERS.length) {
+    const card = (name, os, online, sm, err, isSelf, src) => {
+      const vp = sm && sm.vram_total_mib ? sm.vram_used_mib / sm.vram_total_mib * 100 : 0;
+      return `<button class="mcd ${online ? "" : "off"} ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
+        <div class="mh2"><span class="dot ${online ? "ok" : "bad"}"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="sp"></span>
+          ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
+        ${online && sm ? `<div class="run"><span>${runline(sm)}</span>${sm.gpu ? `<span class="small muted">${esc(sm.gpu)}</span>` : ""}</div>
+          <div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div><div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""}${sm.gpu_util_percent != null ? ` · load ${pc(sm.gpu_util_percent)}` : ""}</div>`
+          : `<div class="run bad-t">${esc(err || "offline")}</div>`}</button>`;
+    };
+    $("#fleet").innerHTML = card(SELF.name, SELF.os, true, SELF.summary, null, true) + PEERS.map(p => card(p.name, (p.machine || {}).os, p.online, p.summary, p.error, false, p.source)).join("");
+    $("#fleetmeta").textContent = `${PEERS.filter(p => p.online).length + 1} of ${PEERS.length + 1} online`;
+  }
+  renderFleet(res.fleet);
+}
+// every online machine added up: in the Machines panel, and as one chip at the end of the top bar
+let FLEET = null;
+const pc = v => v == null ? "–" : v.toFixed(0) + "%";
+function fleetVital() {
+  const f = FLEET;
+  if (!f || !PEERS.length) return "";
+  const tip = `All ${f.machines} online machines: ${tps(f.gen_tps)} tok/s out · GPU memory ${gb(f.vram_used_mib)}/${gb(f.vram_total_mib)} GB · RAM ${gb(f.ram_used_mib)}/${gb(f.ram_total_mib)} GB · CPU ${pc(f.cpu_percent)} · GPU load ${pc(f.gpu_util_percent)}`;
+  return `<div class="vital fleetv" data-act="fleetgo" title="${esc(tip)}"><span class="k">All ${f.machines}</span><span class="v ${f.gen_tps ? "ok-t" : ""}">${tps(f.gen_tps)} tok/s</span></div>`;
+}
+function renderFleet(f) {
+  FLEET = f || null;
+  const el = $("#fsum"), old = $("#vitals .vital.fleetv");
+  if (old) old.outerHTML = fleetVital(); else if ($("#vitals").innerHTML) $("#vitals").insertAdjacentHTML("beforeend", fleetVital());
+  if (!f || !PEERS.length) { el.hidden = true; return; }
+  const vp = f.vram_total_mib ? f.vram_used_mib / f.vram_total_mib * 100 : 0, rp = f.ram_total_mib ? f.ram_used_mib / f.ram_total_mib * 100 : 0;
+  el.hidden = false;
+  el.innerHTML = `<div class="stats">
+    <div class="stat hero"><div class="sv">${tps(f.gen_tps)}<small>tok/s</small></div><div class="sl">out · all machines · ${f.running} running</div></div>
+    <div class="stat" title="${f.unified ? "includes Apple unified memory, which is also counted in RAM" : ""}"><div class="sv">${gb(f.vram_used_mib)}<small>/ ${gb(f.vram_total_mib)} GB</small></div><div class="sl">GPU memory${f.unified ? " · incl. unified" : ""}</div><div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div></div>
+    <div class="stat"><div class="sv">${gb(f.ram_used_mib)}<small>/ ${gb(f.ram_total_mib)} GB</small></div><div class="sl">RAM</div><div class="bar thin ram ${pctCls(rp)}"><i style="width:${rp}%"></i></div></div>
+    <div class="stat"><div class="sv">${pc(f.cpu_percent)}</div><div class="sl">CPU · ${f.cpu_count} threads</div><div class="bar thin cpu"><i style="width:${f.cpu_percent || 0}%"></i></div></div>
+    <div class="stat"><div class="sv">${pc(f.gpu_util_percent)}</div><div class="sl">GPU load · ${f.gpus} GPU${f.gpus === 1 ? "" : "s"}</div><div class="bar thin"><i style="width:${f.gpu_util_percent || 0}%"></i></div></div>
+  </div>`;
+}
+function switchMachine(name) {
+  if (name === MACHINE) { $("#mswmenu").hidden = true; return; }
+  MACHINE = name; store.set("llmm-machine", name);
+  $("#mswmenu").hidden = true;
+  PROFILES = []; watchJob = null; cnSnip = null; CN_READY = false; lastStatus = null;
+  ["#engines", "#machine", "#profiles", "#library", "#downloads", "#events", "#ovevents", "#jobs", "#dlresults"].forEach(id => { const el = $(id); if (el) el.innerHTML = ""; });
+  $("#jobsec").hidden = true;
+  renderMachines().catch(() => { });
+  refreshFast().then(() => refreshSlow());
+  renderAutostart().catch(() => { });
+  if (view === "connect") { CN_READY = true; renderConnectHosts().then(renderConnect).catch(fail); }
+  toast(name ? `Viewing ${name}` : `Back to ${SELF ? SELF.name : "this machine"}`);
+}
+$("#mswbtn").onclick = e => { e.stopPropagation(); $("#mswmenu").hidden = !$("#mswmenu").hidden; };
+document.addEventListener("click", e => { if (!e.target.closest("#msw")) $("#mswmenu").hidden = true; });
+// ---- pairing codes: hangar-pair:<base64url of {name, urls, token}>
+let MYCODE = null;
+async function loadMyCode() {
+  if (!MYCODE) MYCODE = await fetch("/api/pairing-code", { headers: { "Authorization": "Bearer " + TOKEN } }).then(r => r.json());
+  if ($("#mycode")) {
+    $("#mycode").textContent = MYCODE.code.slice(0, 26) + "…";
+    $("#mycodeinfo").innerHTML = `<b>${esc(MYCODE.name)}</b>, reachable at ` + MYCODE.urls.filter(u => !u.includes("127.0.0.1")).map(u => `<span class="tag">${esc(u.replace("http://", ""))}</span>`).join("") +
+      `<div class="small faint" style="margin-top:6px">The code includes this machine's token: share it only with your own machines.</div>`;
+  }
+  return MYCODE;
+}
+function parseCode(text) {
+  const m = (text || "").match(/hangar-pair:([A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  try { const b = m[1].replace(/-/g, "+").replace(/_/g, "/"); const d = JSON.parse(atob(b + "===".slice((b.length + 3) % 4))); return d.urls && d.token ? d : null; } catch { return null; }
+}
+const codeInfo = text => {
+  if (!text.trim()) return "";
+  const d = parseCode(text);
+  if (!d) return `<span class="bad-t">That is not a pairing code. Copy it from the other machine: Machines → Share this machine.</span>`;
+  if (SELF && d.name === SELF.name) return `<span class="warn-t">That is this machine's own code; paste it on the other one.</span>`;
+  return `Adds <b>${esc(d.name)}</b> · tries ` + d.urls.filter(u => !u.includes("127.0.0.1")).map(u => `<span class="tag">${esc(u.replace("http://", ""))}</span>`).join("");
+};
+async function addFromCode(code, both, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/peers", { method: "POST", headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify({ code, both }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || j.error || r.statusText);
+    toast(`Added ${j.name} (${j.url.replace("http://", "")})` + (j.reciprocal ? ` · on ${j.name}: ${j.reciprocal}` : ""), j.reciprocal && j.reciprocal !== "added");
+    if ($("#dlg").open) $("#dlg").close();
+    await renderMachines();
+  } catch (e) { fail(e); }
+  finally { if (btn) btn.disabled = false; }
+}
+async function shareDialog() {
+  $("#mswmenu").hidden = true;
+  dialog("Share this machine", `<p class="small muted" style="margin:0 0 12px">Copy this code and paste it into <b>Add machine</b> on the other Hangar. It holds this machine's name, its addresses and its token, so share it only with your own machines.</p>
+    <div class="codebox"><span class="c" id="mycode">…</span><button class="btn sm primary" data-act="copycode">${ICON.copy}Copy code</button></div>
+    <div class="pairinfo" id="mycodeinfo" style="margin-top:10px"></div>`);
+  await loadMyCode();
+}
+async function addMachineDialog() {
+  $("#mswmenu").hidden = true;
+  dialog("Add a machine", `
+    <p class="small muted" style="margin:0 0 10px">Paste the other Hangar's pairing code: on its dashboard, <b>Machines → Share this machine → Copy code</b> (or <span class="mono">hangar pair-code</span> there).</p>
+    <textarea id="pmcode" class="input code" placeholder="hangar-pair:…" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+    <div class="pairinfo" id="pminfo" style="margin-top:8px"></div>
+    <details class="more"><summary>Or type its address and token</summary>
+      <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-top:10px">
+        <label class="fld">Address<input id="pmurl" class="input mono" placeholder="macbook:9000" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+        <label class="fld">Its token<input id="pmtok" class="input mono" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="data/token.txt there"></label>
+      </div>
+      <label class="fld" style="margin-top:10px">Name <span class="faint">(optional)</span><input id="pmname" class="input" placeholder="its own name" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+    </details>
+    <label class="chk" style="margin-top:14px"><input type="checkbox" id="pmboth" checked> Also add this machine there</label>
+    <div class="row" style="margin-top:16px"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="pmgo">Add machine</button></div>`);
+  $("#pmcode").oninput = () => { $("#pminfo").innerHTML = codeInfo($("#pmcode").value); };
+  $("#pmgo").onclick = async () => {
+    const code = $("#pmcode").value.trim(), both = $("#pmboth").checked;
+    if (code) return addFromCode(code, both, $("#pmgo"));
+    $("#pmgo").disabled = true;
+    try {
+      const r = await fetch("/api/peers", { method: "POST", headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: $("#pmname").value.trim(), url: $("#pmurl").value.trim(), token: $("#pmtok").value.trim(), both }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || j.error || r.statusText);
+      $("#dlg").close();
+      toast(`Added ${j.name}` + (j.reciprocal ? ` · on ${j.name}: ${j.reciprocal}` : ""), j.reciprocal && j.reciprocal !== "added");
+      renderMachines().catch(() => { });
+    } catch (e) { fail(e); $("#pmgo").disabled = false; }
+  };
+  setTimeout(() => $("#pmcode").focus(), 50);
+}
+
+// ---- roles: main, helper, ... and which model serves each now (the gateway: /v1, model = the role's name)
+let ROLES = [];
+function renderRoles(rs) {
+  ROLES = rs;
+  $("#rolesec").hidden = false;
+  $("#roleadd").hidden = !!MACHINE;
+  const port = location.port || 9000;
+  $("#rolemeta").innerHTML = MACHINE ? "edit them on that machine" : `OpenAI-compatible: <span class="mono">http://${esc(location.hostname)}:${port}/v1</span> · model = role name`;
+  $("#gwbtn").hidden = !!MACHINE;
+  const main = rs.find(r => r.name === "main");
+  const mainT = main && (main.targets[0] || main.serving);
+  const stc = st => ({ ready: "ok", starting: "warn", offline: "bad", unknown: "bad" }[st] || "");
+  const chip = (t, extra) => `<span class="tchip ${t.serving ? "serving" : ""}" title="${esc(t.state || "")}${t.started_by_hangar ? " · started by Hangar as a backup" : ""}"><span class="dot ${stc(t.state)}"></span><span class="m">${esc(t.machine || "this")}</span><span class="p">${esc(t.profile)}</span>${extra || ""}</span>`;
+  $("#roles").innerHTML = rs.map(r => {
+    const ts = r.targets.map((t, i) => chip(t, i ? `<span class="k">${t.auto_start ? "backup · auto" : "backup"}</span>` : "")).join(`<span class="arr">→</span>`);
+    // what happens when every target is down: main answers (shown always, lit when it is answering)
+    let fb = "";
+    if (r.fallback && r.serving) fb = `<span class="arr">→</span>${chip({ ...r.serving, state: "ready", serving: true }, `<span class="k">${r.name === "main" ? "running" : "fallback · answering"}</span>`)}`;
+    else if (r.name !== "main" && mainT) fb = `<span class="arr">→</span><span class="tchip" style="opacity:.6" title="used automatically when the targets before it are down"><span class="m">then main</span><span class="p">${esc(mainT.machine || "this")}/${esc(mainT.profile)}</span></span>`;
+    const none = !r.serving ? `<span class="tag bad">nothing up</span>` : "";
+    const empty = !r.targets.length ? `<span class="small muted">${r.name === "main" ? "not set: whatever runs here" : "no targets"}</span>` : "";
+    return `<div class="rrow"><span class="rname">${esc(r.name)}</span><div class="chain">${ts}${empty}${fb}${none}${r.down_for ? `<span class="small warn-t">primary down ${dur(r.down_for)}</span>` : ""}</div>
+      ${MACHINE ? "<span></span>" : `<button class="btn sm ghost" data-act="roleedit" data-role="${esc(r.name)}">Edit</button>`}</div>`;
+  }).join("");
+}
+// the roles a profile on this machine has: [{name, backup}]
+const rolesOf = pid => (ROLES || []).flatMap(r => r.targets.map((t, i) => ({ t, i })).filter(x => !x.t.machine && x.t.profile === pid).map(x => ({ name: r.name, backup: x.i > 0 })));
+// one click from a profile: make it a role's primary (its backups stay) or add it as a backup
+function profileRoleDialog(pid) {
+  const names = [...new Set(["main", "helper", ...ROLES.map(r => r.name)])];
+  const has = rolesOf(pid);
+  dialog(`Role for ${pid}`, `
+    <p class="small muted" style="margin:0 0 12px">Tools ask Hangar's gateway for <b>main</b> or <b>helper</b> and get whichever profile has that role. ${has.length ? `Now: <b>${has.map(r => r.backup ? r.name + " (backup)" : r.name).map(esc).join(", ")}</b>.` : "It has no role now."}</p>
+    <div style="display:grid;gap:8px">${names.map(n => {
+      const r = ROLES.find(x => x.name === n), cur = r && r.targets[0];
+      const isPrimary = cur && !cur.machine && cur.profile === pid;
+      return `<div class="row" style="border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+        <b class="mono" style="min-width:70px">${esc(n)}</b><span class="small muted" style="flex:1;min-width:0;overflow-wrap:anywhere">${cur ? `now ${esc(cur.machine || "this")}/${esc(cur.profile)}` : "not set"}</span>
+        ${isPrimary ? `<span class="tag ok">this one</span><button class="btn sm ghost danger" data-rp="clear" data-rn="${esc(n)}">Remove</button>`
+          : `<button class="btn sm primary" data-rp="primary" data-rn="${esc(n)}">Make ${esc(n)}</button>${cur ? `<button class="btn sm ghost" data-rp="backup" data-rn="${esc(n)}" title="used when the profiles before it are down; started when needed">Backup</button>` : ""}`}</div>`;
+    }).join("")}</div>
+    <div class="row" style="margin-top:12px"><input id="prnew" class="input mono grow" placeholder="another role, e.g. vision" autocapitalize="off" spellcheck="false"><button class="btn" data-rp="primary" data-rn="">Make it</button></div>`);
+  document.querySelectorAll("#dlgbody [data-rp]").forEach(btn => btn.onclick = async () => {
+    const name = btn.dataset.rn || ($("#prnew").value || "").trim().toLowerCase();
+    if (!name) return toast("Type the role's name first", true);
+    const r = ROLES.find(x => x.name === name);
+    let targets = (r ? r.targets : []).map(t => ({ machine: t.machine, profile: t.profile, auto_start: t.auto_start }))
+      .filter(t => t.machine || t.profile !== pid);
+    if (btn.dataset.rp === "primary") targets = [{ machine: "", profile: pid, auto_start: false }, ...targets];
+    else if (btn.dataset.rp === "backup") targets = [...targets, { machine: "", profile: pid, auto_start: true }];
+    if (targets[0]) targets[0].auto_start = false;
+    try {
+      if (!targets.length) await api(`/api/roles/${encodeURIComponent(name)}`, { method: "DELETE" });
+      else await post("/api/roles", { name, targets });
+      $("#dlg").close();
+      toast(btn.dataset.rp === "clear" ? `${pid} is no longer ${name}` : btn.dataset.rp === "backup" ? `${pid} is now a backup for ${name}` : `${pid} is now ${name}`);
+      await refreshFast(); renderProfiles();
+    } catch (e) { fail(e); }
+  });
+}
+async function roleDialog(name) {
+  const r = ROLES.find(x => x.name === name) || { name: "", targets: [] };
+  const machines = [{ name: "", label: `${SELF ? SELF.name : "this machine"} (this)` }, ...PEERS.map(p => ({ name: p.name, label: p.name }))];
+  const profCache = {};
+  const profilesOf = async m => profCache[m] ??= (await fetch(m ? `/api/peers/${encodeURIComponent(m)}/profiles` : "/api/profiles", { headers: { "Authorization": "Bearer " + TOKEN } }).then(x => x.json()).catch(() => [])).map(p => p.id);
+  let rows = r.targets.map(t => ({ machine: t.machine, profile: t.profile, auto_start: t.auto_start }));
+  if (!rows.length) rows = [{ machine: "", profile: "", auto_start: false }];
+  dialog(name ? `Role · ${name}` : "New role", `
+    <p class="small muted" style="margin:0 0 12px">Clients ask the gateway for the role by name. The first target that is up answers; when none is, <b>main</b> does, then anything running. A backup with <i>start when needed</i> is started once the targets before it have been down 30 s, only if it fits next to what runs; Hangar stops it again after 10 idle minutes once the primary is back.</p>
+    ${name ? "" : `<label class="fld" style="margin-bottom:12px">Name<input id="rlname" class="input mono" placeholder="helper" autocomplete="off" autocapitalize="off" spellcheck="false"></label>`}
+    <div id="rltargets"></div>
+    <button class="btn sm ghost" id="rladd" style="margin-top:6px">+ Add a backup</button>
+    <div class="row" style="margin-top:16px">${name && name !== "main" ? `<button class="btn ghost danger" id="rldel">Delete role</button>` : ""}<span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="rlsave">Save</button></div>`);
+  const draw = async () => {
+    const html = await Promise.all(rows.map(async (t, i) => {
+      const ps = await profilesOf(t.machine);
+      return `<div class="trow" data-i="${i}">
+        <select class="input rlm">${machines.map(m => `<option value="${esc(m.name)}" ${m.name === t.machine ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select>
+        <select class="input rlp"><option value="">choose a profile…</option>${ps.map(p => `<option ${p === t.profile ? "selected" : ""}>${esc(p)}</option>`).join("")}</select>
+        <div class="row" style="gap:4px;flex-wrap:nowrap">${i ? `<label class="chk small" title="start it when the targets before it are down"><input type="checkbox" class="rla" ${t.auto_start ? "checked" : ""}> start when needed</label>` : `<span class="tag">primary</span>`}
+          ${i ? `<button class="btn sm ghost rlup" title="move up">↑</button>` : ""}${rows.length > 1 ? `<button class="btn sm ghost danger rlrm" title="remove">✕</button>` : ""}</div></div>`;
+    }));
+    $("#rltargets").innerHTML = html.join("");
+    document.querySelectorAll("#rltargets .trow").forEach(el => {
+      const i = +el.dataset.i;
+      el.querySelector(".rlm").onchange = e => { rows[i].machine = e.target.value; rows[i].profile = ""; draw(); };
+      el.querySelector(".rlp").onchange = e => { rows[i].profile = e.target.value; };
+      const a = el.querySelector(".rla"); if (a) a.onchange = e => { rows[i].auto_start = e.target.checked; };
+      const up = el.querySelector(".rlup"); if (up) up.onclick = () => { [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]]; rows[0].auto_start = false; draw(); };
+      const rm = el.querySelector(".rlrm"); if (rm) rm.onclick = () => { rows.splice(i, 1); if (rows[0]) rows[0].auto_start = false; draw(); };
+    });
+  };
+  await draw();
+  $("#rladd").onclick = () => { rows.push({ machine: "", profile: "", auto_start: true }); draw(); };
+  $("#rlsave").onclick = async () => {
+    const nm = name || ($("#rlname").value || "").trim().toLowerCase();
+    try { await post("/api/roles", { name: nm, targets: rows.filter(t => t.profile) }); $("#dlg").close(); toast(`Role ${nm} saved`); refreshFast(); }
+    catch (e) { fail(e); }
+  };
+  if ($("#rldel")) $("#rldel").onclick = async () => {
+    if (!confirm(`Delete the role ${name}? Clients asking for it get an error until it exists again.`)) return;
+    try { await api(`/api/roles/${encodeURIComponent(name)}`, { method: "DELETE" }); $("#dlg").close(); refreshFast(); } catch (e) { fail(e); }
+  };
+}
+
+// ---- how to use the gateway: base URL, key, model names
+async function gatewayDialog() {
+  let hosts = [];
+  try { hosts = await fetch("/api/connect/hosts", { headers: { "Authorization": "Bearer " + TOKEN } }).then(r => r.json()); } catch { }
+  const port = location.port || 9000;
+  const names = ROLES.map(r => r.name);
+  const urls = hosts.map(h => ({ url: `http://${h.host}:${port}/v1`, label: h.label }));
+  dialog("Hangar gateway (OpenAI-compatible)", `
+    <p class="small muted" style="margin:0 0 12px">Point any OpenAI- or Anthropic-compatible tool here. The model name is a role; Hangar sends each request to whichever model has that role right now, and to <b>main</b> when that one is down.</p>
+    <div class="facts" style="grid-template-columns:1fr">
+      <div class="stat"><div class="sl">Base URL</div><select id="gwurl" class="input mono" style="width:100%;margin-top:6px">${urls.map(u => `<option value="${esc(u.url)}">${esc(u.url)} — ${esc(u.label)}</option>`).join("")}</select></div>
+      <div class="stat"><div class="sl">API key (this Hangar's token)</div><div class="codebox" style="margin-top:6px"><span class="c">${esc(TOKEN.slice(0, 6))}••••••••••••</span><button class="btn sm" data-copy="key">${ICON.copy}Copy</button></div></div>
+      <div class="stat"><div class="sl">Models</div><div style="margin-top:6px">${names.map(n => `<span class="tag ok" style="margin-right:6px">${esc(n)}</span>`).join("")}<span class="small muted">or a running profile's id</span></div></div>
+    </div>
+    <div class="code" style="margin-top:12px"><div class="chd"><span class="path">test it</span><button class="btn sm" data-copy="curl">${ICON.copy}Copy</button></div><pre id="gwcurl"></pre></div>
+    <div class="note">${ICON.info}<span>For opencode, Qwen Code and others, the <b>Connect</b> page gives ready-made settings: its <b>Hangar roles</b> provider uses this endpoint. Anthropic-style clients use the same base URL without <span class="mono">/v1</span> and send the key as <span class="mono">x-api-key</span>.</span></div>`);
+  const curl = () => [`curl ${$("#gwurl").value}/chat/completions`,
+    `  -H "Authorization: Bearer <token>" -H "Content-Type: application/json"`,
+    `  -d '{"model":"helper","messages":[{"role":"user","content":"hi"}]}'`].join(" \\\n");
+  const draw = () => { $("#gwcurl").textContent = curl(); };
+  $("#gwurl").onchange = draw; draw();
+  document.querySelectorAll("#dlgbody [data-copy]").forEach(b => b.onclick = () => copyText(b.dataset.copy === "key" ? TOKEN : curl().replace("<token>", TOKEN)));
+}
+
+// ---- reasoning effort of the running model
+async function reasoningDialog(engine) {
+  const r = await api(`/api/reasoning?engine=${encodeURIComponent(engine)}`);
+  if (!r.supported) return toast(`${engine} cannot set a reasoning effort`, true);
+  const hint = { default: "the model's own", none: "no thinking", minimal: "", low: "brief", medium: "", high: "", xhigh: "", max: "" };
+  dialog(`Reasoning effort · ${r.profile}`, `
+    <p class="small muted" style="margin:0 0 12px">How hard the model thinks before it answers. Less thinking answers sooner and uses fewer tokens; more is better for hard problems. ${r.live ? "This engine changes it at once, for every client that does not ask for its own." : "llama.cpp sets it when it starts, so a change restarts the model (a few seconds for it to load again)."}</p>
+    <div class="seg" id="rzseg" style="flex-wrap:wrap">${r.levels.map(l => `<button class="${l === r.level ? "on" : ""}" data-lvl="${esc(l)}" title="${esc(hint[l] || "")}">${esc(l)}</button>`).join("")}</div>
+    <div class="small muted" style="margin-top:10px">Now: <b>${esc(r.level)}</b>${r.level === "default" ? " (the model's own setting)" : ""}</div>`);
+  document.querySelectorAll("#rzseg [data-lvl]").forEach(btn => btn.onclick = async () => {
+    const level = btn.dataset.lvl;
+    if (level === r.level) return $("#dlg").close();
+    let restart = false;
+    if (!r.live) {
+      restart = confirm(`Restart ${engine} now with reasoning effort "${level}"? Requests in progress are cut off. Cancel keeps it for the next start.`);
+    }
+    try {
+      const res = await post("/api/reasoning", { engine, level, restart });
+      $("#dlg").close();
+      if (res.job) { watchJob = res.job; renderJob(); }
+      toast(`${res.profile}: reasoning effort ${res.level} — ` + ({ now: "applied", restart: "restarting", "next start": "applies at the next start" }[res.applied]));
+      refreshFast();
+    } catch (e) { fail(e); }
+  });
+}
+
 // ---- start with Windows
 async function renderAutostart() {
   const a = await api("/api/autostart");
+  $("#autostartsw").hidden = a.supported === false;            // Windows only: macOS security tools quarantine LaunchAgents
+  if (a.supported === false) return;
   $("#autostart").checked = a.enabled; $("#autostart").disabled = false;
-  $("#autostartsw").title = a.enabled ? `Starts when you sign in to Windows (${a.shortcut})` : "Start Hangar when you sign in to Windows";
+  $("#autostartsw").title = a.enabled ? `Starts when you sign in (${a.shortcut})` : "Start Hangar when you sign in";
   if (a.stale) toast("The autostart shortcut points at another copy of Hangar. Switch it off and on to fix it.", true);
 }
 $("#autostart").onchange = async () => {
   const on = $("#autostart").checked;
   $("#autostart").disabled = true;
-  try { await post("/api/autostart", { enabled: on }); toast(on ? "Hangar will start when you sign in to Windows" : "Hangar will no longer start with Windows"); }
+  try { await post("/api/autostart", { enabled: on }); toast((MACHINE ? MACHINE + ": " : "") + (on ? "Hangar will start when you sign in" : "Hangar will no longer start at sign-in")); }
   catch (e) { $("#autostart").checked = !on; fail(e); }
   finally { renderAutostart().catch(() => { $("#autostart").disabled = false; }); }
 };
@@ -925,7 +1409,7 @@ $("#chk").onclick = async () => { try { const j = await post("/api/check-updates
 
 async function refreshFast() {
   try { renderStatus(await api("/api/status")); await renderJob(); }
-  catch (e) { if (e.message !== "unauthorized") { $("#conn").className = "pill bad"; $("#conn").innerHTML = `<span class="dot bad"></span>offline`; } }
+  catch (e) { if (e.message !== "unauthorized") { $("#conn").className = "pill bad"; $("#conn").innerHTML = `<span class="dot bad"></span>${MACHINE ? esc(MACHINE) + " offline" : "offline"}`; } }
 }
 async function refreshSlow() {
   try { await Promise.all([renderProfiles(), view === "usage" ? renderStats() : null, renderEvents(), renderLive(), renderLibrary(), pollDownloads()]); } catch (e) { }
@@ -947,9 +1431,11 @@ async function boot() {
   try { await api("/api/status"); } catch (e) { return; }
   $("#app").hidden = false; $("#login").hidden = true;
   setView(view);
+  await renderMachines().catch(() => { });
   await refreshFast(); refreshSlow(); renderAutostart().catch(() => { });
   timers.forEach(clearInterval);
-  timers = [setInterval(refreshFast, 3000), setInterval(refreshSlow, 30000), setInterval(() => { if (view === "overview") renderLive().catch(() => { }); }, 10000)];
+  timers = [setInterval(refreshFast, 3000), setInterval(refreshSlow, 30000), setInterval(() => { if (view === "overview") renderLive().catch(() => { }); }, 10000),
+            setInterval(() => renderMachines().catch(() => { }), 5000)];
 }
 boot();
 </script>

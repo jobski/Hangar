@@ -2,11 +2,13 @@
 from .base import Engine, Estimate, Launch, Profile
 from .command import CommandEngine
 from .llamacpp import LlamaCppEngine
+from .mlx import MlxEngine
 from .strata import StrataEngine
 
 PLUGINS: dict[str, type[Engine]] = {
     "llamacpp": LlamaCppEngine,
     "strata": StrataEngine,
+    "mlx": MlxEngine,
     "command": CommandEngine,
 }
 

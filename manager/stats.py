@@ -93,6 +93,11 @@ class Store:
             if r["id"] not in keep:
                 self.session_stop(r["id"], "unknown (manager was not running)")
 
+    def recent_sessions(self, engine, limit=20) -> list[dict]:
+        """An engine's latest runs, newest first."""
+        return self.q("SELECT profile, started, ready, stopped, stop_reason FROM sessions WHERE engine=? "
+                      "ORDER BY id DESC LIMIT ?", (engine, limit))
+
     def learned(self, profile) -> dict | None:
         """Measured peak use over the last 5 runs that got ready."""
         rows = self.q("SELECT peak_vram_mib v, peak_ram_mib r, load_seconds l FROM sessions WHERE profile=? AND "

@@ -6,6 +6,7 @@ that tool's config file on this PC itself (a backup is written first).
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import socket
 import subprocess
@@ -25,7 +26,9 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 def hosts() -> list[dict]:
     """Addresses this PC can be reached at: localhost, Tailscale (name and IP), LAN."""
     out = [{"host": "127.0.0.1", "label": "This PC only"}]
-    ts = shutil.which("tailscale") or r"C:\Program Files\Tailscale\tailscale.exe"
+    ts = shutil.which("tailscale") or next((p for p in (r"C:\Program Files\Tailscale\tailscale.exe",
+                                                        "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+                                              if Path(p).exists()), "tailscale")
     try:
         st = json.loads(subprocess.run([ts, "status", "--json"], capture_output=True, text=True, timeout=5,
                                        creationflags=NO_WINDOW).stdout or "{}")
@@ -70,6 +73,10 @@ def model_entries(mgr, profile_ids: list[str] | None, host: str) -> list[dict]:
             e.update(model=rc.get("model_name") or p.id, api_key=key if isinstance(key, str) else (key[0] if key else ""),
                      vision=bool(rc.get("vision")), reasoning=True,
                      context=int(arg_value(rc.get("args", []), "--max-context") or 131072), output=32768)
+        elif eng.plugin == "mlx":
+            # mlx_lm.server answers to the model it was started with, by its repo id or path; it has no API key
+            e.update(model=str(p.cfg.get("model") or p.id), api_key="", provider_name="MLX (local)",
+                     context=int(p.cfg.get("ctx") or 32768))
         else:
             e.update(api_key=eng.api_key)
         e["output"] = min(e["output"], max(1024, e["context"] // 4))
@@ -177,10 +184,13 @@ def gen_claude(entries, use_env):
     blocks = []
     for e in entries:
         key = e["api_key"] or "none"
-        blocks.append(f"# {e['name']}  ({e['engine']})\n"
-                      f"$env:ANTHROPIC_BASE_URL = \"{e['base']}\"\n$env:ANTHROPIC_AUTH_TOKEN = \"{key}\"\n"
-                      f"$env:ANTHROPIC_MODEL = \"{e['model']}\"\n$env:ANTHROPIC_SMALL_FAST_MODEL = \"{e['model']}\"\nclaude\n")
-    return {"title": "Claude Code (local model)", "file": "PowerShell, before running claude", "language": "powershell",
+        env = {"ANTHROPIC_BASE_URL": e["base"], "ANTHROPIC_AUTH_TOKEN": key, "ANTHROPIC_MODEL": e["model"],
+               "ANTHROPIC_SMALL_FAST_MODEL": e["model"]}
+        ps = "".join(f'$env:{k} = "{v}"\n' for k, v in env.items())
+        sh = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items())
+        blocks.append(f"# {e['name']}  ({e['engine']})\n# PowerShell (Windows)\n{ps}claude\n"
+                      f"# zsh / bash (macOS, Linux)\n{sh} claude\n")
+    return {"title": "Claude Code (local model)", "file": "a terminal, before running claude", "language": "bash",
             "content": "\n".join(blocks),
             "notes": "Runs Claude Code against a local model through the engine's Anthropic-compatible /v1/messages API "
                      "(Strata has it; recent llama-server builds too). Use one block per session."}
