@@ -453,6 +453,12 @@ def cmd_machines(_):
         mem = f"{_mib(s.get('vram_used_mib'))} / {_mib(s.get('vram_total_mib'))} GPU" if s.get("vram_total_mib") else ""
         name = (m.get("machine") or {}).get("name") or m.get("name")
         print(f"{m.get('name', name):{w}s} {state:14s} {(m.get('machine') or m).get('os', ''):8s} {mem:22s} {run or 'idle'}")
+    f = res.get("fleet")
+    if f and res["peers"]:
+        pct = lambda v: "-" if v is None else f"{v:.0f}%"  # noqa: E731
+        print(f"{'all':{w}s} {str(f['machines']) + ' online':14s} {f['gen_tps']:.1f} tok/s out, "
+              f"GPU {_mib(f['vram_used_mib'])} / {_mib(f['vram_total_mib'])} (load {pct(f['gpu_util_percent'])}), "
+              f"RAM {_mib(f['ram_used_mib'])} / {_mib(f['ram_total_mib'])}, CPU {pct(f['cpu_percent'])} of {f['cpu_count']} threads")
 
 
 def cmd_pair_code(_):

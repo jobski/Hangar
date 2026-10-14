@@ -9,7 +9,7 @@ from mcp.server.mcpserver import MCPServer
 
 from . import autostart, clients
 from .core import Manager
-from .peers import machine_info, summary
+from .peers import fleet, machine_info, summary
 
 INSTRUCTIONS = """Manages local LLM engines (llama.cpp, Strata, ...) on one PC with one GPU.
 Use `status` first. `list_profiles` shows what can run and what each needs. `plan` tells you what starting a profile
@@ -311,10 +311,12 @@ def build(mgr: Manager) -> MCPServer:
         except ValueError as e:
             return str(e)
 
-    @mcp.tool(description="This machine and its peers (other Hangars): name, OS, online, what runs and how fast, memory.")
+    @mcp.tool(description="This machine and its peers (other Hangars): name, OS, online, what runs and how fast, memory; "
+                          "and the fleet: every online machine added up (tok/s out, GPU memory, RAM, CPU and GPU load).")
     async def machines() -> str:
         me = {**machine_info(mgr.cfg), "this_machine": True, "summary": summary(await run(mgr.status))}
-        return _j([me] + await run(mgr.peers.public))
+        others = await run(mgr.peers.public)
+        return _j({"machines": [me] + others, "fleet": fleet([me["summary"]] + [p["summary"] for p in others if p["online"]])})
 
     @mcp.tool(description="Add a peer: another Hangar this one can see and control. Easiest: code = its pairing code "
                           "(hangar-pair:..., from Share this machine on its dashboard or `hangar pair-code` there). Or "

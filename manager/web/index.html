@@ -298,6 +298,13 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 .mcd .run { margin-top: 8px; font-size: 12.5px; color: var(--ink2); display: grid; gap: 3px; }
 .mcd .run .num { color: var(--accent); }
 .mcd.off { opacity: .7; }
+.fsum { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.fsum .stats { margin-top: 0; }
+.fsum .stat .bar { margin-top: 7px; }
+@media (max-width: 1100px) { .fsum .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } .fsum .stat.hero { grid-column: 1 / -1; } }
+@media (max-width: 860px) { .fsum .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.vital.fleetv { flex: none; cursor: pointer; border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.vital.fleetv:hover { background: var(--panel2); }
 
 .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 1px; background: var(--line); }
 .pair .pc { background: var(--panel); padding: 16px; display: grid; gap: 10px; align-content: start; min-width: 0; }
@@ -409,7 +416,7 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
   <!-- overview -->
   <section class="view" id="v-overview">
     <div class="vh"><div><h1>Overview</h1><p>Engines, the machine, and what is happening right now.</p></div><span class="sp"></span><label class="switch" id="autostartsw" title="Start Hangar when you sign in"><input type="checkbox" id="autostart" disabled><span class="track"></span><span id="autostartlbl">Start with Windows</span></label><button class="btn" id="chk"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Check updates</button></div>
-    <div class="panel" id="fleetsec" hidden><div class="ph"><h3>Machines</h3><span class="sp"></span><span class="meta" id="fleetmeta"></span><button class="btn ghost sm" data-act="mshare" id="mshareb">Share this machine</button><button class="btn ghost sm" data-act="maddshow" id="maddb">+ Add machine</button></div><div class="fleet" id="fleet"></div></div>
+    <div class="panel" id="fleetsec" hidden><div class="ph"><h3>Machines</h3><span class="sp"></span><span class="meta" id="fleetmeta"></span><button class="btn ghost sm" data-act="mshare" id="mshareb">Share this machine</button><button class="btn ghost sm" data-act="maddshow" id="maddb">+ Add machine</button></div><div class="fsum" id="fsum" hidden></div><div class="fleet" id="fleet"></div></div>
     <div class="panel roles" id="rolesec" hidden><div class="ph"><h3>Roles</h3><span class="sp"></span><span class="meta" id="rolemeta"></span><button class="btn ghost sm" data-act="gwinfo" id="gwbtn">Use it (endpoint)</button><button class="btn ghost sm" data-act="roleedit" data-role="" id="roleadd">+ Role</button></div><div id="roles"></div></div>
     <div class="panel job" id="jobsec" hidden>
       <div class="ph"><span id="jobspin"></span><h3 style="color:var(--ink)" id="jobtitle"></h3><span class="sp"></span><span id="jobstate" class="tag"></span></div>
@@ -628,7 +635,7 @@ function renderStatus(s) {
   $("#engines").innerHTML = h;
   $("#engmeta").textContent = `${nrun} of ${s.engines.length} running`;
   v += `<div class="vital"><span class="k">Out</span><span class="v ${out ? "ok-t" : ""}">${tps(out)} tok/s</span></div>`;
-  $("#vitals").innerHTML = v;
+  $("#vitals").innerHTML = v + fleetVital();
   if (s.machine) {
     if (!MACHINE) SELF = s.machine;
   }
@@ -1000,6 +1007,7 @@ document.addEventListener("click", async ev => {
   if (mb) { ev.preventDefault(); return switchMachine(mb.dataset.machine); }
   if (ev.target.closest("[data-act=maddshow]")) { ev.preventDefault(); return addMachineDialog(); }
   if (ev.target.closest("[data-act=mshare]")) { ev.preventDefault(); return shareDialog(); }
+  if (ev.target.closest("[data-act=fleetgo]")) { ev.preventDefault(); setView("overview"); return $("#fleetsec").scrollIntoView({ behavior: "smooth", block: "start" }); }
   if (ev.target.closest("[data-act=copycode]")) { ev.preventDefault(); const c = await loadMyCode(); return copyText(c.code); }
   if (ev.target.closest("[data-act=pastego]")) { ev.preventDefault(); const c = $("#pastecode").value.trim(); if (!c) return toast("Paste the other machine's pairing code first", true); return addFromCode(c, $("#pasteboth").checked, ev.target.closest("button")); }
   const b = ev.target.closest("[data-act],[data-period],[data-bucket],[data-job],[data-cnkind],[data-cnclient],[data-view]");
@@ -1103,12 +1111,37 @@ async function renderMachines() {
         <div class="mh2"><span class="dot ${online ? "ok" : "bad"}"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="sp"></span>
           ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
         ${online && sm ? `<div class="run"><span>${runline(sm)}</span>${sm.gpu ? `<span class="small muted">${esc(sm.gpu)}</span>` : ""}</div>
-          <div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div><div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM</div>`
+          <div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div><div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""}${sm.gpu_util_percent != null ? ` · load ${pc(sm.gpu_util_percent)}` : ""}</div>`
           : `<div class="run bad-t">${esc(err || "offline")}</div>`}</button>`;
     };
     $("#fleet").innerHTML = card(SELF.name, SELF.os, true, SELF.summary, null, true) + PEERS.map(p => card(p.name, (p.machine || {}).os, p.online, p.summary, p.error, false, p.source)).join("");
     $("#fleetmeta").textContent = `${PEERS.filter(p => p.online).length + 1} of ${PEERS.length + 1} online`;
   }
+  renderFleet(res.fleet);
+}
+// every online machine added up: in the Machines panel, and as one chip at the end of the top bar
+let FLEET = null;
+const pc = v => v == null ? "–" : v.toFixed(0) + "%";
+function fleetVital() {
+  const f = FLEET;
+  if (!f || !PEERS.length) return "";
+  const tip = `All ${f.machines} online machines: ${tps(f.gen_tps)} tok/s out · GPU memory ${gb(f.vram_used_mib)}/${gb(f.vram_total_mib)} GB · RAM ${gb(f.ram_used_mib)}/${gb(f.ram_total_mib)} GB · CPU ${pc(f.cpu_percent)} · GPU load ${pc(f.gpu_util_percent)}`;
+  return `<div class="vital fleetv" data-act="fleetgo" title="${esc(tip)}"><span class="k">All ${f.machines}</span><span class="v ${f.gen_tps ? "ok-t" : ""}">${tps(f.gen_tps)} tok/s</span></div>`;
+}
+function renderFleet(f) {
+  FLEET = f || null;
+  const el = $("#fsum"), old = $("#vitals .vital.fleetv");
+  if (old) old.outerHTML = fleetVital(); else if ($("#vitals").innerHTML) $("#vitals").insertAdjacentHTML("beforeend", fleetVital());
+  if (!f || !PEERS.length) { el.hidden = true; return; }
+  const vp = f.vram_total_mib ? f.vram_used_mib / f.vram_total_mib * 100 : 0, rp = f.ram_total_mib ? f.ram_used_mib / f.ram_total_mib * 100 : 0;
+  el.hidden = false;
+  el.innerHTML = `<div class="stats">
+    <div class="stat hero"><div class="sv">${tps(f.gen_tps)}<small>tok/s</small></div><div class="sl">out · all machines · ${f.running} running</div></div>
+    <div class="stat" title="${f.unified ? "includes Apple unified memory, which is also counted in RAM" : ""}"><div class="sv">${gb(f.vram_used_mib)}<small>/ ${gb(f.vram_total_mib)} GB</small></div><div class="sl">GPU memory${f.unified ? " · incl. unified" : ""}</div><div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div></div>
+    <div class="stat"><div class="sv">${gb(f.ram_used_mib)}<small>/ ${gb(f.ram_total_mib)} GB</small></div><div class="sl">RAM</div><div class="bar thin ram ${pctCls(rp)}"><i style="width:${rp}%"></i></div></div>
+    <div class="stat"><div class="sv">${pc(f.cpu_percent)}</div><div class="sl">CPU · ${f.cpu_count} threads</div><div class="bar thin cpu"><i style="width:${f.cpu_percent || 0}%"></i></div></div>
+    <div class="stat"><div class="sv">${pc(f.gpu_util_percent)}</div><div class="sl">GPU load · ${f.gpus} GPU${f.gpus === 1 ? "" : "s"}</div><div class="bar thin"><i style="width:${f.gpu_util_percent || 0}%"></i></div></div>
+  </div>`;
 }
 function switchMachine(name) {
   if (name === MACHINE) { $("#mswmenu").hidden = true; return; }

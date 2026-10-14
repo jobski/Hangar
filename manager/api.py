@@ -17,7 +17,7 @@ from . import autostart, clients
 from . import config as config_mod
 from .core import Manager
 from .mcp_server import build as build_mcp
-from .peers import Peers, machine_info, make_code, normalize_url, summary
+from .peers import Peers, fleet, machine_info, make_code, normalize_url, summary
 from .roles import Roles
 
 WEB = Path(__file__).parent / "web"
@@ -446,7 +446,9 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.get("/api/peers")
     def peers_list():
-        return {"self": {**machine_info(mgr.cfg), "summary": summary(mgr.status())}, "peers": peers.public()}
+        me, others = summary(mgr.status()), peers.public()
+        return {"self": {**machine_info(mgr.cfg), "summary": me}, "peers": others,
+                "fleet": fleet([me] + [p["summary"] for p in others if p["online"]])}
 
     def my_code() -> dict:
         """This machine's pairing code: its name, every address another machine may reach it at, and its token."""

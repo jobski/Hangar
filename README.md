@@ -186,7 +186,7 @@ type its address and token*.
 ```
 hangar pair-code                             # this machine's code (on the machine to add)
 hangar peer add hangar-pair:... --both       # paste it on the other one
-hangar machines                              # every machine: online, what runs and how fast, memory
+hangar machines                              # every machine: online, what runs and how fast, memory; and all added up
 hangar --on macbook status                   # any command on a peer: start, stop, logs -f, connect, ...
 ```
 
@@ -198,6 +198,13 @@ call (live log streams included) to that peer with its token. In MCP, `machines`
 Peers can also be written in `config.yaml` (`peers: {macbook: {url: ..., token: ...}}`); `manager.name` sets how a
 machine is called (default: its host name). Peers of a peer are not reachable through it — add each machine where you
 want to see it.
+
+**All machines added up.** With peers, the Machines panel opens with the fleet's totals: tokens per second out
+across every online machine and how many models run, GPU memory and RAM used of the total, CPU load (weighted by
+thread count) and GPU load; each machine's card adds its CPU and GPU load. The top bar ends with an **All** chip
+showing the fleet's tok/s (hover for the rest, click to jump to the panel) next to the viewed machine's own gauges.
+On Apple Silicon the GPU memory is part of the RAM, so it is counted in both totals. `hangar machines` prints the
+same totals as a last line, MCP `machines` returns them as `fleet`, and `/api/peers` carries them under `fleet`.
 
 ### Remote access
 

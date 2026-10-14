@@ -252,9 +252,30 @@ def summary(st: dict) -> dict:
             g = (st.get("live") or {}).get("gen_tps") or (w.get("1m") or {}).get("gen_tps") or (w.get("5m") or {}).get("gen_tps")
             running.append({"engine": e["name"], "profile": run["profile"], "state": run["state"], "port": e["port"],
                             "gen_tps": g})
+    loads = [g["util_percent"] for g in gpus if g.get("util_percent") is not None]
     return {"running": running, "engines": len(st.get("engines") or []),
+            "gen_tps": sum(x["gen_tps"] or 0 for x in running),
             "vram_used_mib": sum(g.get("vram_used_mib") or 0 for g in gpus),
             "vram_total_mib": sum(g.get("vram_total_mib") or 0 for g in gpus),
+            "unified": any(g.get("unified") for g in gpus),
+            "gpu_util_percent": sum(loads) / len(loads) if loads else None,
             "ram_used_mib": (r.get("ram_total_mib") or 0) - (r.get("ram_available_mib") or 0),
-            "ram_total_mib": r.get("ram_total_mib") or 0, "gpu": gpus[0]["name"] if gpus else None,
-            "job": (st.get("job") or {}).get("title")}
+            "ram_total_mib": r.get("ram_total_mib") or 0,
+            "cpu_percent": r.get("cpu_percent"), "cpu_count": r.get("cpu_count"),
+            "gpu": gpus[0]["name"] if gpus else None, "job": (st.get("job") or {}).get("title")}
+
+
+def fleet(summaries: list[dict]) -> dict:
+    """Every online machine added up: tokens per second out, memory, and load. CPU and GPU load are averaged, CPU
+    weighted by thread count (32 busy threads on one machine and 14 idle on another is ~70%, not 50%). On Apple Silicon
+    the GPU memory is part of the RAM, so the two totals overlap there."""
+    s = [x for x in summaries if x]
+    add = lambda k: sum(x.get(k) or 0 for x in s)  # noqa: E731
+    cpus = [(x["cpu_percent"], x.get("cpu_count") or 1) for x in s if x.get("cpu_percent") is not None]
+    loads = [(x["gpu_util_percent"], x.get("vram_total_mib") or 1) for x in s if x.get("gpu_util_percent") is not None]
+    avg = lambda xs: sum(v * w for v, w in xs) / sum(w for _, w in xs) if xs else None  # noqa: E731
+    return {"machines": len(s), "running": sum(len(x.get("running") or []) for x in s), "gen_tps": add("gen_tps"),
+            "vram_used_mib": add("vram_used_mib"), "vram_total_mib": add("vram_total_mib"),
+            "unified": any(x.get("unified") for x in s), "gpus": sum(1 for x in s if x.get("gpu")),
+            "gpu_util_percent": avg(loads), "ram_used_mib": add("ram_used_mib"), "ram_total_mib": add("ram_total_mib"),
+            "cpu_percent": avg(cpus), "cpu_count": add("cpu_count")}
