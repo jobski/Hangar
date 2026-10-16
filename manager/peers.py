@@ -177,6 +177,7 @@ class Peers:
         self.file_lock = threading.Lock()                # peers.json is read-modified-written from several threads
         self.state: dict[str, dict] = {}
         self.woken: dict[str, float] = {}                # name -> when a magic packet last went to it
+        self.callers: dict[str, tuple[float, str]] = {}  # address -> (when, device name)
         self.arp_tried: dict[str, float] = {}            # name -> when its MAC was last looked for in the ARP table
         self.stop_flag = threading.Event()
 
@@ -262,6 +263,37 @@ class Peers:
                 return
             saved[key] = {**cur, **kw}
             self._write(saved)
+
+    # ---- who sent a request: a device name for an address
+    def caller_name(self, ip: str | None) -> str:
+        """Who sent a request: its DNS host name (the tailnet's MagicDNS name, else reverse DNS, e.g. the home DNS
+        server's), else the peer name it has here, else the address. Cached for 10 minutes."""
+        if not ip:
+            return ""
+        if ip in ("127.0.0.1", "::1", "localhost"):
+            return machine_name(self.cfg)
+        hit = self.callers.get(ip)
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
+        from .clients import tailscale_status
+        name = ""
+        st = tailscale_status()
+        for node in [st.get("Self") or {}, *(st.get("Peer") or {}).values()]:
+            if ip in (node.get("TailscaleIPs") or []):
+                name = (node.get("DNSName") or "").split(".")[0] or node.get("HostName") or ""
+                break
+        if not name:
+            with contextlib.suppress(OSError, UnicodeError):
+                host = socket.gethostbyaddr(ip)[0]
+                name = "" if host == ip else host.split(".")[0]
+        if not name:
+            for n, p in self.all().items():
+                if p["url"].split("://", 1)[1].rsplit(":", 1)[0].strip("[]") == ip or ip in [e.get("ip") for e in p.get("lan") or []]:
+                    name = n
+                    break
+        name = (name or ip).lower()[:40]
+        self.callers[ip] = (time.time(), name)
+        return name
 
     # ---- wake-on-LAN
     def set_wake(self, name: str, on: bool):

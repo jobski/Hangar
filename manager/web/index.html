@@ -930,7 +930,7 @@ async function renderGateway(s) {
       return `<span class="tchip" style="border-left:3px solid ${col(m)}"><span class="dot ${p && p.online ? "ok" : "bad"}"></span><span class="p">${esc(m)}</span>${r ? `<span class="m">${num(r.requests)} · ${Math.round(r.requests / Math.max(1, t.requests - t.errors) * 100)}%</span>` : ""}</span>`; }).join("") : ` <span>nothing yet: add machines and give the roles targets on them</span>`}</div>
     ${rows.length ? `<div class="gwsplit">${rows.map(r => `<i style="width:${r.requests / rows.reduce((a, x) => a + x.requests, 0) * 100}%;background:${col(r.machine)}" title="${esc(r.machine)}: ${r.requests}"></i>`).join("")}</div>` : ""}
     <div class="gwlast feed">${GW.last.length ? GW.last.map(r => `<div class="it"><span class="ts">${ago(r.ts)}</span>
-      <span class="msg"><span class="k">${esc(r.model)}</span>${r.machine ? `→ ${esc(r.machine)}/${esc(r.profile)}` : `<span class="bad-t">${esc(r.error || "failed")}</span>`} <span class="muted small">· ${esc(r.client || "")}</span></span>
+      <span class="msg"><span class="k">${esc(r.model)}</span>${r.machine ? `→ ${esc(r.machine)}/${esc(r.profile)}` : `<span class="bad-t">${esc(r.error || "failed")}</span>`} <span class="muted small">· ${esc(r.client || "")}${r.caller ? ` on ${esc(r.caller)}` : ""}</span></span>
       <span class="ts">${r.gen_s ? tps(r.gen_tokens / r.gen_s) + " tok/s" : r.error && r.machine ? esc(r.error) : ""}</span></div>`).join("")
       : `<div class="empty" style="padding:16px">No requests yet: point a tool at the address above.</div>`}</div></div>`;
 }
@@ -971,7 +971,7 @@ async function renderStats() {
 }
 
 // ---- requests the gateway (/v1) passed on: per target, client or role, and the latest ones
-const REQBY = [["target", "Machine · profile"], ["client", "Client"], ["model", "Role"]];
+const REQBY = [["target", "Machine · profile"], ["client", "Client"], ["caller", "Device"], ["model", "Role"]];
 async function renderRequests() {
   let s, latest;
   try { [s, latest] = await Promise.all([api(`/api/requests/summary?period=${period}&by=${reqBy}`), api("/api/requests?limit=25")]); }
@@ -999,7 +999,7 @@ async function renderRequests() {
     : `<tr><td class="empty">No requests in this period.</td></tr>`;
   $("#reqlatest").innerHTML = latest.length ? `<tr><th>When</th><th>Asked for</th><th>Served by</th><th>Client</th><th>Out</th><th>In</th><th>tok/s</th><th>First token</th><th>Took</th></tr>` +
     latest.map(r => `<tr title="${esc(r.error || "")}"><td>${ago(r.ts)}</td><td>${esc(r.model)}</td><td>${r.machine ? `<span class="tag">${esc(r.machine)}</span> ${esc(r.profile)}` : `<span class="tag bad">${r.status}</span> ${esc(r.error || "")}`}</td>` +
-      `<td>${esc(r.client)}${r.via ? ` <span class="muted small">via ${esc(r.via)}</span>` : ""}${r.error && r.machine ? ` <span class="tag warn">${esc(r.error)}</span>` : ""}</td><td>${num(r.gen_tokens)}</td><td>${num(r.prompt_tokens)}</td>` +
+      `<td>${esc(r.client)}${r.caller ? ` <span class="muted small">on ${esc(r.caller)}</span>` : ""}${r.via ? ` <span class="muted small">via ${esc(r.via)}</span>` : ""}${r.error && r.machine ? ` <span class="tag warn">${esc(r.error)}</span>` : ""}</td><td>${num(r.gen_tokens)}</td><td>${num(r.prompt_tokens)}</td>` +
       `<td>${tps(r.gen_s ? r.gen_tokens / r.gen_s : null)}</td><td>${ms(r.ttft_s)}</td><td>${ms(r.duration_s)}</td></tr>`).join("")
     : `<tr><td class="empty">No requests yet.</td></tr>`;
 }
