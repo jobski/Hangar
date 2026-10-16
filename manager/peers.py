@@ -8,9 +8,11 @@ exactly as on this machine.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 import socket
 import sys
 import threading
@@ -19,6 +21,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 
 import httpx
+import psutil
 
 def slug_name(raw: str) -> str:
     """Any name people (or host names) come with, as a peer name: "Jobo's MacBook Pro" -> jobos-macbook-pro,
@@ -79,7 +82,90 @@ def machine_name(cfg: dict) -> str:
 
 
 def machine_info(cfg: dict) -> dict:
-    return {"name": machine_name(cfg), "os": {"darwin": "macos", "win32": "windows"}.get(sys.platform, sys.platform)}
+    return {"name": machine_name(cfg), "os": {"darwin": "macos", "win32": "windows"}.get(sys.platform, sys.platform),
+            "lan": lan_interfaces()}
+
+
+_lan_cache: tuple[float, list] = (0.0, [])
+
+
+def lan_interfaces() -> list[dict]:
+    """This machine's LAN interfaces (address, netmask, MAC), so a peer can wake it later with a magic packet."""
+    global _lan_cache
+    if time.time() - _lan_cache[0] < 60:
+        return _lan_cache[1]
+    out = []
+    try:
+        stats = psutil.net_if_stats()
+        for name, addrs in psutil.net_if_addrs().items():
+            if name in stats and not stats[name].isup:
+                continue
+            mac = next((a.address for a in addrs if a.family == psutil.AF_LINK), "")
+            mac = mac.replace("-", ":").lower()
+            if not re.fullmatch(r"([0-9a-f]{2}:){5}[0-9a-f]{2}", mac) or mac == "00:00:00:00:00:00":
+                continue
+            for a in addrs:
+                if a.family == socket.AF_INET and a.netmask and not a.address.startswith(("127.", "169.254.", "100.")):
+                    out.append({"ip": a.address, "netmask": a.netmask, "mac": mac})
+    except (OSError, ValueError):
+        pass
+    _lan_cache = (time.time(), out)
+    return out
+
+
+def arp_mac(host: str) -> tuple[str, str] | None:
+    """A LAN neighbour's MAC from this machine's ARP table (it is there once we have talked to it): for peers on a
+    Hangar too old to report their own."""
+    import subprocess
+    try:
+        ip = socket.gethostbyname(host)
+        if sys.platform.startswith("linux"):
+            for line in Path("/proc/net/arp").read_text().splitlines()[1:]:
+                f = line.split()
+                if len(f) >= 4 and f[0] == ip and f[2] != "0x0":
+                    mac = f[3].lower()
+                    break
+            else:
+                return None
+        else:
+            out = subprocess.run(["arp", "-a" if sys.platform == "win32" else "-n", ip], capture_output=True, text=True,
+                                 timeout=3, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+            m = re.search(r"([0-9a-fA-F]{1,2}[:-]){5}[0-9a-fA-F]{1,2}", out)
+            if not m:
+                return None
+            mac = ":".join(x.zfill(2) for x in re.split("[:-]", m.group(0).lower()))
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+        return None
+    ok = re.fullmatch(r"([0-9a-f]{2}:){5}[0-9a-f]{2}", mac) and mac not in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff")
+    return (ip, mac) if ok else None
+
+
+def magic_packet(mac: str) -> bytes:
+    return b"\xff" * 6 + bytes.fromhex(mac.replace(":", "")) * 16
+
+
+def send_wake(lan: list[dict], prefer_ip: str | None = None) -> list[str]:
+    """Wake-on-LAN: a magic packet for each of a machine's MACs, to its subnet's broadcast and 255.255.255.255."""
+    entries = [e for e in lan if e["ip"] == prefer_ip] or lan
+    # this machine's own subnets too: a MAC learned from ARP has no netmask, and the packet must reach that subnet
+    mine = set()
+    for e in lan_interfaces():
+        with contextlib.suppress(ValueError):
+            mine.add(str(ipaddress.ip_network(f"{e['ip']}/{e['netmask']}", strict=False).broadcast_address))
+    sent = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        for e in entries:
+            pkt = magic_packet(e["mac"])
+            targets = {"255.255.255.255", *mine}
+            with contextlib.suppress(ValueError, TypeError):
+                targets.add(str(ipaddress.ip_network(f"{e['ip']}/{e['netmask']}", strict=False).broadcast_address))
+            for t in targets:
+                for port in (9, 7):
+                    with contextlib.suppress(OSError):
+                        s.sendto(pkt, (t, port))
+            sent.append(e["mac"])
+    return sent
 
 
 class Peers:
@@ -88,7 +174,10 @@ class Peers:
         self.file: Path = cfg["manager"]["data_dir"] / "peers.json"
         self.interval = max(3, int(cfg["resources"].get("sample_interval_s", 5)))
         self.lock = threading.Lock()
+        self.file_lock = threading.Lock()                # peers.json is read-modified-written from several threads
         self.state: dict[str, dict] = {}
+        self.woken: dict[str, float] = {}                # name -> when a magic packet last went to it
+        self.arp_tried: dict[str, float] = {}            # name -> when its MAC was last looked for in the ARP table
         self.stop_flag = threading.Event()
 
     # ---- the list
@@ -101,7 +190,11 @@ class Peers:
     def all(self) -> dict[str, dict]:
         out = {n: {**p, "source": "managed"} for n, p in self._saved().items()}
         for n, p in (self.cfg.get("peers") or {}).items():
-            out[str(n).lower()] = {"url": p["url"], "token": p.get("token", ""), "source": "config"}
+            learned = self._saved().get(f"~{str(n).lower()}") or {}      # what was learned about a config peer
+            out[str(n).lower()] = {"url": p["url"], "token": p.get("token", ""), "source": "config",
+                                   "lan": learned.get("lan") or [],
+                                   "wake": bool(learned["wake"] if "wake" in learned else p.get("wake"))}
+        out = {n: p for n, p in out.items() if not n.startswith("~")}
         for p in out.values():
             p["url"] = p["url"].rstrip("/")
         return out
@@ -137,21 +230,59 @@ class Peers:
             raise ValueError(f"{name} is this machine's own name; give the other machine a different one")
         if name in (self.cfg.get("peers") or {}):
             raise ValueError(f"{name} is set in config.yaml; change it there")
-        saved = self._saved()
-        saved[name] = {"url": url, "token": token}
-        self.file.write_text(json.dumps(saved, indent=1), encoding="utf-8")
+        with self.file_lock:
+            saved = self._saved()
+            saved[name] = {**{k: v for k, v in (saved.get(name) or {}).items() if k in ("lan", "wake")}, "url": url, "token": token}
+            self._write(saved)
         self.poll_one(name)
         return {"name": name, "url": url, "machine": (info or {}).get("machine")}
 
     def remove(self, name: str):
-        saved = self._saved()
-        name = name if name in saved else slug_name(name)
-        if name not in saved:
-            raise KeyError(f"no UI-managed peer called {name}" + (" (it is in config.yaml)" if name in self.all() else ""))
-        del saved[name]
-        self.file.write_text(json.dumps(saved, indent=1), encoding="utf-8")
+        with self.file_lock:
+            saved = self._saved()
+            name = name if name in saved else slug_name(name)
+            if name not in saved or name.startswith("~"):
+                raise KeyError(f"no UI-managed peer called {name}" + (" (it is in config.yaml)" if name in self.all() else ""))
+            del saved[name]
+            self._write(saved)
         with self.lock:
             self.state.pop(name, None)
+
+    def _write(self, saved: dict):
+        self.file.write_text(json.dumps(saved, indent=1), encoding="utf-8")
+
+    def _remember(self, name: str, **kw):
+        """Keep something learned about a peer (its LAN interfaces, wake setting) in peers.json; a config.yaml peer's
+        goes under ~name."""
+        with self.file_lock:
+            saved = self._saved()
+            key = name if name in saved else f"~{name}"
+            cur = saved.get(key) or {}
+            if all(cur.get(k) == v for k, v in kw.items()):
+                return
+            saved[key] = {**cur, **kw}
+            self._write(saved)
+
+    # ---- wake-on-LAN
+    def set_wake(self, name: str, on: bool):
+        p = self.get(name)
+        if on and not p.get("lan"):
+            raise ValueError(f"{name}'s network card is not known yet: it is learned while {name} is online (and on a "
+                             "Hangar new enough to report it)")
+        self._remember(slug_name(name) if name not in self.all() else name, wake=bool(on))
+
+    def wake(self, name: str, force: bool = False) -> dict:
+        """Send a magic packet to a peer (at most every 30 s unless forced). It must be on this machine's network: a
+        packet does not cross a router or a VPN."""
+        p = self.get(name)
+        if not p.get("lan"):
+            raise ValueError(f"{name}'s network card is not known yet (it is learned while {name} is online)")
+        if not force and time.time() - self.woken.get(name, 0) < 30:
+            return {"machine": name, "sent": [], "skipped": "sent in the last 30 s"}
+        host = p["url"].split("://", 1)[1].rsplit(":", 1)[0].strip("[]")
+        sent = send_wake(p["lan"], host)
+        self.woken[name] = time.time()
+        return {"machine": name, "sent": sent}
 
     @classmethod
     def probe_any(cls, urls: list[str], token: str) -> tuple[str, dict]:
@@ -223,6 +354,16 @@ class Peers:
             st, err = r.json(), None
         except (httpx.HTTPError, ValueError) as e:
             st, err = None, str(e) if isinstance(e, ValueError) else f"unreachable ({type(e).__name__})"
+        lan = ((st or {}).get("machine") or {}).get("lan")
+        # a Hangar too old to report its network cards: look for the MAC in the ARP table (now and then)
+        if (st and "lan" not in (st.get("machine") or {}) and not p.get("lan")
+                and time.time() - self.arp_tried.get(name, 0) > 300):
+            self.arp_tried[name] = time.time()
+            host = p["url"].split("://", 1)[1].rsplit(":", 1)[0].strip("[]")
+            found = arp_mac(host)
+            lan = [{"ip": found[0], "netmask": None, "mac": found[1], "from": "arp"}] if found else None
+        if lan and lan != p.get("lan"):
+            self._remember(name, lan=lan)
         with self.lock:
             old = self.state.get(name, {})
             self.state[name] = {"online": st is not None, "error": err, "status": st or old.get("status"),
@@ -234,7 +375,8 @@ class Peers:
             with self.lock:
                 s = dict(self.state.get(name) or {"online": False, "error": "not checked yet"})
             st = s.pop("status", None) or {}
-            out.append({"name": name, "url": p["url"], "source": p["source"], **s,
+            wake = {"known": bool(p.get("lan")), "auto": bool(p.get("wake")), "sent": self.woken.get(name)}
+            out.append({"name": name, "url": p["url"], "source": p["source"], **s, "wake": wake,
                         "machine": st.get("machine") or {"name": name}, "summary": summary(st) if st else None})
         return out
 
@@ -247,9 +389,9 @@ def summary(st: dict) -> dict:
     for e in st.get("engines") or []:
         run = e.get("running")
         if run:
-            st = run.get("stats") or {}
-            w = st.get("window") or {}
-            g = (st.get("live") or {}).get("gen_tps") or (w.get("1m") or {}).get("gen_tps") or (w.get("5m") or {}).get("gen_tps")
+            rs = run.get("stats") or {}
+            w = rs.get("window") or {}
+            g = (rs.get("live") or {}).get("gen_tps") or (w.get("1m") or {}).get("gen_tps") or (w.get("5m") or {}).get("gen_tps")
             running.append({"engine": e["name"], "profile": run["profile"], "state": run["state"], "port": e["port"],
                             "gen_tps": g})
     loads = [g["util_percent"] for g in gpus if g.get("util_percent") is not None]
@@ -268,8 +410,9 @@ def summary(st: dict) -> dict:
 def fleet(summaries: list[dict]) -> dict:
     """Every online machine added up: tokens per second out, memory, and load. CPU and GPU load are averaged, CPU
     weighted by thread count (32 busy threads on one machine and 14 idle on another is ~70%, not 50%). On Apple Silicon
-    the GPU memory is part of the RAM, so the two totals overlap there."""
-    s = [x for x in summaries if x]
+    the GPU memory is part of the RAM, so the two totals overlap there. A machine with no engines (a hub) runs no
+    models, so it is left out."""
+    s = [x for x in summaries if x and x.get("engines", 1)]
     add = lambda k: sum(x.get(k) or 0 for x in s)  # noqa: E731
     cpus = [(x["cpu_percent"], x.get("cpu_count") or 1) for x in s if x.get("cpu_percent") is not None]
     loads = [(x["gpu_util_percent"], x.get("vram_total_mib") or 1) for x in s if x.get("gpu_util_percent") is not None]

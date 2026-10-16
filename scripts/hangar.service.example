@@ -1,0 +1,15 @@
+# systemd unit for Hangar on Linux — copy to /etc/systemd/system/hangar.service, fix the paths and User, then systemctl enable --now hangar.
+[Unit]
+Description=Hangar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=YOU
+WorkingDirectory=/home/YOU/hangar
+ExecStart=/home/YOU/hangar/.venv/bin/python -m manager serve
+Restart=always          # also brings it back after install.sh stops it to update
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

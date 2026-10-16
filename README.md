@@ -139,6 +139,25 @@ Set roles on the Overview's **Roles** panel (badges on the engine cards show whi
 models are the roles, with the smallest context among each role's targets, so the settings it gives work whichever
 target answers.
 
+#### Request log
+
+Every request that passes through a gateway (/v1) is logged on the machine that received it: when, the model or role
+asked for, which machine and profile served it, the client (from `X-Hangar-Client`, `X-Title` or the User-Agent —
+QwenCode, opencode, claude-cli, ...), tokens in, out and cached, time to first token, tok/s (from the engine's own
+timings when it reports them), how long it took, and failures (503 nothing up, 502 every target failed, closed
+before the end). A request a hub passes on to another machine is logged there too, under the original client and
+marked "via hub".
+
+Where to see it:
+
+- **Usage page** > **Requests through the gateway** — grouped by machine/profile, client or role, plus the latest
+  requests; on a machine with no engines (a hub) those numbers lead the page.
+- CLI: `hangar requests [period] [--by target|client|model|machine]` and `hangar requests --latest`.
+- API: `GET /api/requests?limit=&before=`, `GET /api/requests/summary?period=&by=`.
+
+Handy for comparing two quantisations of the same model on real work: same role, look at tok/s and time to first
+token per profile.
+
 ### Reasoning effort
 
 How hard a thinking model thinks before it answers. A running engine that supports it shows **Reasoning: <level>**
@@ -216,6 +235,71 @@ machine. This Hangar asks each machine for its own numbers (`/api/stats/fleet/su
 `/api/stats/fleet/series?bucket=…&count=…`); a machine that does not answer is named under the switch and left out.
 Run time is the machines' run times added together.
 
+#### Wake-on-LAN
+
+A machine reports its LAN network cards (address, netmask, MAC) in its status, and machines that know it as a peer
+remember them (an older Hangar that does not report them: the MAC is read from the ARP table once it has been reached
+on the LAN).
+
+- **Wake it now:** the **Wake** button on its card under **Overview → Machines** (shown while it is offline), or
+  `hangar wake <pc>`.
+- **Wake on request:** switch **Wake-on-LAN** to **on request** on its card, or `hangar wake <pc> --auto on`. Then a
+  role request that could use that machine wakes it while it is offline. The request is answered at once by whatever
+  else is up (the next ones get the woken machine); only when nothing at all can answer does it wait (up to 90 s) for
+  the machine to come up, starting the role's model there if it is not running.
+
+Packets are broadcast on the local network, so the machine that sends them must be on the same LAN (a container on
+the LAN is fine; over Tailscale it does not work). The machine itself must have wake-on-LAN turned on (BIOS/UEFI and
+the network adapter's power settings; on Windows: Device Manager > the adapter > Power Management > "Allow this
+device to wake the computer", and Advanced > "Wake on Magic Packet"). Wired Ethernet is the reliable case — most
+laptops on Wi-Fi do not wake this way.
+
+### An always-on hub (Linux server or container)
+
+If your tools point at one machine's gateway — say the PC — that machine sleeping or rebooting breaks them. A small
+always-on Linux box (a Proxmox LXC, a NAS VM, a Raspberry Pi) running Hangar with no engines can be the one address
+your tools use.
+
+Install it like any other machine: on Debian/Ubuntu, `apt install git python3 python3-venv curl lsof`, then the normal
+`install.sh` one-liner. Two cores, 2 GB RAM and a few GB of disk are plenty — it runs no models. Give it a name
+(`manager.name: hub`) and no engines or profiles of its own.
+
+Start it with the system through a systemd unit (`scripts/hangar.service.example`):
+
+```ini
+[Unit]
+Description=Hangar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hangar
+WorkingDirectory=/home/hangar/hangar
+ExecStart=/home/hangar/hangar/.venv/bin/python -m manager serve
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+    systemctl enable --now hangar
+
+Add the other machines on the hub — **Overview → Machines** or `hangar peer add` (one way is enough: the hub needs
+their tokens, they do not need the hub's). Then define the roles on the hub, with targets on the machines — say
+`main` = `pc/<big model>` then `macbook/<smaller model>` as a fallback, and `helper` = `macbook/<coder model>`. A role
+answers from the first target that is up; when none is, from `main`, then anything running.
+
+Point your tools at the hub: its dashboard's **Connect** page gives each tool's settings (on a machine with no engines
+it offers its network address rather than 127.0.0.1), or use `http://<hub>:9000/v1` with the hub's token as the API
+key. Responses carry an `X-Hangar-Served-By: machine/profile` header so you can see what actually answered.
+
+The hub is optional — every machine still works on its own, and tools can still point straight at a machine.
+
+**Networking.** The hub must be able to reach the machines' port 9000. A container on the LAN reaches them by LAN
+address; a laptop that leaves home is only reachable over a VPN such as Tailscale, so add the laptop by an address that
+works where the hub is.
+
 ### Remote access
 
 Use [Tailscale](https://tailscale.com) (it is already installed on this PC): every device on your tailnet reaches
@@ -265,6 +349,8 @@ hangar custom tiel-coder-35b --ctx 65536 -- --temp 0.6
 hangar autostart on                   (start with Windows; off to stop)
 hangar logs strata -f                 (follow the log live; Ctrl+C stops)
 hangar start last [engine]            (start what that engine ran last; also a Run button on a stopped engine's card)
+hangar requests day                   hangar requests --latest
+hangar wake pc                        hangar wake pc --auto on
 ```
 
 REST: everything is under `/api` (interactive docs at `/api/docs`). Actions return a job; add `?wait=60` to wait for

@@ -5,7 +5,7 @@ takes effect at the next sign-in.
 
 Windows only. On macOS a LaunchAgent would do it, but endpoint security tools (SentinelOne, for one) quarantine
 LaunchAgents written by scripts, so Hangar does not make one; start it with scripts/start.sh. Turning it off still
-removes the LaunchAgent earlier versions wrote.
+removes the LaunchAgent earlier versions wrote. On Linux, use a systemd service (see scripts/hangar.service.example).
 """
 from __future__ import annotations
 
@@ -21,14 +21,30 @@ LINK = STARTUP / "Hangar.lnk"
 OLD_LINK = STARTUP / "LLM Manager.lnk"          # the name before the rename
 START_PS1 = ROOT / "scripts" / "start.ps1"
 OLD_AGENT = Path.home() / "Library" / "LaunchAgents" / "dev.hangar.manager.plist"     # written by earlier macOS versions
+LINUX_UNIT = "/etc/systemd/system/hangar.service"
 
 UNSUPPORTED = ("starting with the system is only built in on Windows. On macOS, security tools such as SentinelOne "
                "quarantine LaunchAgents, so start Hangar with scripts/start.sh (or add it to Login Items yourself).")
 
 
+def _linux_note() -> str:
+    import getpass
+    unit = ("[Unit]\nDescription=Hangar\nAfter=network-online.target\nWants=network-online.target\n\n"
+            "[Service]\nUser={user}\nWorkingDirectory={root}\nExecStart={root}/.venv/bin/python -m manager serve\n"
+            "Restart=always\nRestartSec=3\n\n[Install]\nWantedBy=multi-user.target").format(root=ROOT, user=getpass.getuser())
+    return (f"starting with the system on Linux uses a systemd service. Put this in {LINUX_UNIT} and run "
+            f"systemctl enable --now hangar:\n\n{unit}")
+
+
+def _note() -> str:
+    if sys.platform.startswith("linux"):
+        return _linux_note()
+    return UNSUPPORTED
+
+
 def status() -> dict:
     if not WINDOWS:
-        return {"supported": False, "enabled": False, "note": UNSUPPORTED, "leftover": str(OLD_AGENT) if OLD_AGENT.exists() else None,
+        return {"supported": False, "enabled": False, "note": _note(), "leftover": str(OLD_AGENT) if OLD_AGENT.exists() else None,
                 "platform": "macos" if sys.platform == "darwin" else sys.platform}
     out = {"supported": True, "enabled": LINK.exists(), "shortcut": str(LINK), "runs": str(START_PS1), "platform": "windows"}
     if LINK.exists():
@@ -39,7 +55,7 @@ def status() -> dict:
 
 def enable() -> dict:
     if not WINDOWS:
-        raise ValueError(UNSUPPORTED)
+        raise ValueError(_note())
     import pythoncom
     import win32com.client
     STARTUP.mkdir(parents=True, exist_ok=True)

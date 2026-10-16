@@ -5,6 +5,7 @@ import codecs
 import contextlib
 import hmac
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -19,8 +20,8 @@ from . import config as config_mod
 from .core import Manager
 from .mcp_server import build as build_mcp
 from .peers import Peers, fleet, machine_info, make_code, normalize_url, summary
-from .roles import Roles
-from .stats import merge_series, merge_summaries
+from .roles import WAKE_WAIT_S, Roles
+from .stats import RequestMeter, client_name, merge_series, merge_summaries
 
 WEB = Path(__file__).parent / "web"
 OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
@@ -385,23 +386,42 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     async def gateway_call(path: str, request: Request):
         """OpenAI / Anthropic API calls for a role (or a profile): sent to the first target that is up, the next one
         when it fails before answering. A peer's target goes through that peer's gateway, with its token."""
+        t0 = time.time()
         raw = await request.body()
         try:
             data = json.loads(raw or b"{}")
         except ValueError:
             raise HTTPException(400, "the gateway takes JSON requests")
         model = str(data.get("model") or "main")
+        me = machine_info(mgr.cfg)["name"]
+        client, via = client_name(request.headers), request.headers.get("x-hangar-via")
+
+        def log(**kw):
+            try:
+                mgr.store.log_request(t0, model=model, client=client, via=via, path=path, stream=int(bool(data.get("stream"))),
+                                      duration_s=time.time() - t0, **kw)
+            except Exception:  # noqa: BLE001 - the log never fails a request
+                pass
+        woken = await anyio.to_thread.run_sync(roles.wake_for, model)
         cands = await anyio.to_thread.run_sync(roles.candidates, model)
+        if not cands and (woken or await anyio.to_thread.run_sync(roles.starting, model)):
+            cands = await anyio.to_thread.run_sync(roles.wait_for, model, woken)
         if not cands:
             names = ", ".join(r["name"] for r in roles.public())
-            return JSONResponse({"error": {"type": "unavailable", "message": f"nothing is up to serve {model!r} "
-                                           f"(roles: {names}; or a running profile's id)"}}, status_code=503)
+            why = (f"woke {', '.join(woken)}, but nothing could answer within {WAKE_WAIT_S} s (a model may still be "
+                   "loading there: try again shortly)") if woken else (f"a model for {model!r} is still starting: try again "
+                   "shortly") if roles.starting(model) else f"nothing is up to serve {model!r}"
+            log(status=503, error="woke " + ", ".join(woken) if woken else "nothing up")
+            return JSONResponse({"error": {"type": "unavailable", "message": f"{why} (roles: {names}; or a running "
+                                           "profile's id)"}}, status_code=503)
         passthrough = {k: v for k, v in request.headers.items() if k.lower() in ("accept", "anthropic-version", "anthropic-beta")}
         errors = []
         for t in cands:
             if t["machine"]:
                 p = peers.get(t["machine"])
-                url, auth, mid = f"{p['url']}/v1/{path}", {"Authorization": f"Bearer {p['token']}"}, f"profile:{t['profile']}"
+                url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
+                # the peer logs it under the original client, marked as come through here
+                auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client}
             else:
                 ents = await anyio.to_thread.run_sync(lambda: clients.model_entries(mgr, [t["profile"]], "127.0.0.1"))
                 if not ents:
@@ -434,18 +454,34 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                 await r.aclose()
                 continue
             roles.note_used(t)
+            meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
 
-            async def relay(r=r):
+            async def relay(r=r, t=t, meter=meter):
+                done = False
                 try:
                     async for chunk in r.aiter_raw():
+                        meter.feed(chunk, time.time())
                         yield chunk
+                    done = True
                 finally:
                     await r.aclose()
+                    log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code,
+                        error=("closed before the end" if not done else f"HTTP {r.status_code}" if r.status_code >= 400 else None),
+                        **meter.result())
             return StreamingResponse(relay(), status_code=r.status_code, media_type=r.headers.get("content-type"),
                                      headers={"X-Hangar-Served-By": f"{t['machine'] or machine_info(mgr.cfg)['name']}/{t['profile']}",
                                               "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        log(status=502, error="; ".join(errors)[:500])
         return JSONResponse({"error": {"type": "unavailable", "message": f"every target for {model!r} failed: "
                                        + "; ".join(errors)}}, status_code=502)
+
+    @app.get("/api/requests")
+    def requests_list(limit: int = 50, before: float | None = None):
+        return mgr.store.requests(min(500, max(1, limit)), before)
+
+    @app.get("/api/requests/summary")
+    def requests_summary(period: str = "day", by: str = "target"):
+        return guard(mgr.store.request_summary, period, by)
 
     # ---- reasoning effort of a thinking model (live on Strata; a restart on llama.cpp)
     @app.get("/api/reasoning")
@@ -524,6 +560,18 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         mgr.store.event("peer", f"added peer {res['name']} ({res['url']})")
         return res
 
+    @app.post("/api/wake")
+    def wake(machine: str = Body(..., embed=True)):
+        res = guard(peers.wake, machine, True)
+        mgr.store.event("wake", f"sent a wake-on-LAN packet to {machine}")
+        return res
+
+    @app.post("/api/wake/auto")
+    def wake_auto(machine: str = Body(..., embed=True), on: bool = Body(..., embed=True)):
+        guard(peers.set_wake, machine, on)
+        mgr.store.event("wake", f"{machine} is {'now' if on else 'no longer'} woken when a request needs it")
+        return {"machine": machine, "auto": on}
+
     @app.delete("/api/peers/{name}")
     def peers_remove(name: str):
         guard(peers.remove, name)
@@ -532,7 +580,8 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.api_route("/api/peers/{name}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"], include_in_schema=False)
     async def peers_proxy(name: str, path: str, request: Request):
-        if path == "peers" or path.startswith("peers/"):
+        # a peer's list of its machines may be read (its role editor needs the names); nothing further through it
+        if (path == "peers" and request.method != "GET") or path.startswith("peers/"):
             raise HTTPException(400, "a peer's own peers are not reachable through it; add them here")
         p = guard(peers.get, name)
         body = await request.body()

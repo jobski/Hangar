@@ -17,6 +17,7 @@ import time
 import httpx
 
 DOWN_GRACE_S = 30            # a primary must be down this long before a backup is started (sleep/wake flapping)
+WAKE_WAIT_S = 90             # how long a request with nothing else to answer it waits for a woken machine
 IDLE_STOP_S = 600            # a backup Hangar started is stopped after this long unused, once the primary is back
 ROLE_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
@@ -117,6 +118,79 @@ class Roles:
                     add({"machine": name, "profile": e["running"]["profile"]})
         return out
 
+    def wake_for(self, model: str) -> list[str]:
+        """Wake the asleep machines a request for this role could use (those set to wake on request); their names.
+        Nothing waits here: the request is answered by whatever is up, and the next one gets the woken machine."""
+        woken = []
+        for t in self._chain(model):
+            if self.target_state(t) == "ready":
+                break                                   # it is answered; machines further down are not needed
+            m = t.get("machine")
+            if not m or m in woken or (self.peers.state.get(m) or {}).get("online"):
+                continue
+            p = self.peers.all().get(m) or {}
+            if p.get("wake") and p.get("lan"):
+                try:
+                    if self.peers.wake(m).get("sent"):
+                        self.mgr.store.event("wake", f"woke {m} for a {model} request")
+                    woken.append(m)
+                except (OSError, ValueError, KeyError) as e:
+                    self.mgr.store.event("wake", f"could not wake {m}: {e}", level="warn")
+        return woken
+
+    def _chain(self, model: str) -> list[dict]:
+        """The targets a request for this model may go to, in order: its role's, then main's. None for a profile
+        id or an unknown name (candidates() never sends those to a role)."""
+        roles = self.all()
+        if model.startswith("profile:") or (model not in roles and model in self.mgr.profiles):
+            return []
+        if model not in roles and model != "main":
+            return []
+        targets = list((roles.get(model) or {}).get("targets", []))
+        if model != "main":
+            targets += (roles.get("main") or {}).get("targets", [])
+        return targets
+
+    def starting(self, model: str) -> bool:
+        """A target for this request is on its way up (woken or started a moment ago): worth waiting for."""
+        roles = self.all()
+        if model.startswith("profile:") or (model not in roles and model in self.mgr.profiles):
+            pid = model.split(":", 1)[1] if model.startswith("profile:") else model
+            return self.target_state({"machine": "", "profile": pid}) == "starting"
+        if model == "main" and not (roles.get("main") or {}).get("targets"):       # no main role: anything starting
+            if any(i.state == "starting" for i in list(self.mgr.instances.values())):
+                return True
+            return any((e.get("running") or {}).get("state") == "starting"
+                       for st in self.peers.state.values() if st.get("online")
+                       for e in (st.get("status") or {}).get("engines") or [])
+        return any(self.target_state(t) == "starting" for t in self._chain(model))
+
+    def wait_for(self, model: str, machines: list[str], timeout: float = WAKE_WAIT_S) -> list[dict]:
+        """For a request nothing can answer yet, after waking machines or while a target starts: wait for one to
+        serve it. A woken machine whose target is not running gets it started."""
+        deadline, started = time.time() + timeout, set()
+        targets = self._chain(model)
+        while time.time() < deadline and not self.stop_flag.is_set():
+            for m in machines:
+                self.peers.poll_one(m)
+            cands = self.candidates(model)
+            if cands:
+                return cands
+            for t in targets:                       # the first one that can come up; never a second behind it
+                k = (t.get("machine"), t["profile"])
+                state = self.target_state(t)
+                if k in started or state in ("ready", "starting"):
+                    break
+                if t.get("machine") in machines and state == "stopped":
+                    started.add(k)
+                    try:
+                        self._start_target(model, t, "woke its machine for a request; starting", backup=False)
+                    except Exception as e:  # noqa: BLE001
+                        self.mgr.store.event("wake", f"could not start {_label(t)}: {e}", level="warn")
+                    break
+            self.stop_flag.wait(2)
+        return []
+
     def note_used(self, t: dict):
         self.last_used[(t["machine"], t["profile"])] = time.time()
 
@@ -177,14 +251,15 @@ class Roles:
             return False
         return bool(plan.get("ok")) and not plan.get("will_stop")
 
-    def _start_target(self, role: str, t: dict):
+    def _start_target(self, role: str, t: dict, why: str | None = None, backup: bool = True):
         k = (t["machine"], t["profile"])
         if t["machine"]:
             self._peer(t["machine"], "POST", "start", json={"profile": t["profile"], "update": "skip"})
         else:
             self.mgr.start(t["profile"], False, "skip")
-        self.started[k] = time.time()
-        self.mgr.store.event("roles", f"{role}: its primary has been down {DOWN_GRACE_S}+ s; starting the backup {_label(t)}")
+        if backup:                                  # only backups are stopped again when idle
+            self.started[k] = time.time()
+        self.mgr.store.event("roles", f"{role}: {why or f'its primary has been down {DOWN_GRACE_S}+ s; starting the backup'} {_label(t)}")
 
     def _stop_target(self, role: str, t: dict):
         k = (t["machine"], t["profile"])

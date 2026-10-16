@@ -324,6 +324,21 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
 .roles .rname { font: 600 13px var(--mono); }
 .chain { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
 .chain .arr { color: var(--faint); font-size: 12px; }
+.gw { padding: 18px 16px 16px; }
+.gw .gwh { display: flex; align-items: center; gap: 14px; }
+.gwi { flex: none; display: grid; place-items: center; width: 46px; height: 46px; border-radius: 12px; background: var(--accent-dim); color: var(--accent); }
+.gwi svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.gwi.sm { width: 22px; height: 22px; border-radius: 6px; }
+.gwi.sm svg { width: 14px; height: 14px; stroke-width: 2; }
+.gw .gwt { font-size: 15.5px; font-weight: 650; letter-spacing: -.01em; }
+.gw .gwd { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.gw .gwurl { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 8px 8px 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg2); font: 12.5px var(--mono); }
+.gw .gwurl span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gw .gwto { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; font-size: 12px; color: var(--muted); }
+.gw .gwsplit { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--bg2); margin-top: 8px; }
+.gw .gwsplit i { display: block; height: 100%; }
+.gw .gwlast { margin: 14px -16px -16px; border-top: 1px solid var(--line); }
+.gw .gwlast .it { grid-template-columns: 74px minmax(0, 1fr) auto; }
 .tchip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; border: 1px solid var(--line2); border-radius: 7px; background: var(--bg2); font-size: 12px; min-width: 0; max-width: 100%; }
 .tchip .m { color: var(--muted); }
 .tchip .p { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -424,7 +439,7 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
     </div>
     <div class="cols">
       <div style="display:grid;gap:16px;min-width:0">
-        <div class="panel"><div class="ph"><h3>Engines</h3><span class="sp"></span><span class="meta" id="engmeta"></span></div><div id="engines"></div></div>
+        <div class="panel"><div class="ph"><h3 id="engtitle">Engines</h3><span class="sp"></span><span class="meta" id="engmeta"></span></div><div id="engines"></div></div>
         <div class="panel"><div class="ph"><h3>Recent events</h3><span class="sp"></span><button class="btn ghost sm" data-view="activity">All activity →</button></div><div class="feed" id="ovevents"></div></div>
       </div>
       <div class="panel"><div class="ph"><h3>Machine</h3><span class="sp"></span><button class="btn ghost sm" data-act="budget" id="budgetbtn" title="How much memory Hangar's engines may use here">Budget</button></div>
@@ -474,10 +489,14 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
     <div class="vh"><div><h1>Usage</h1><p>Tokens, speed and run time, recorded per minute.</p></div><span class="sp"></span><div class="seg" id="uscope" hidden></div><div class="seg" id="periods"></div></div>
     <div class="small muted" id="umiss" hidden></div>
     <div class="kpis" id="totals"></div>
-    <div class="panel"><div class="ph"><h3>Tokens over time</h3><span class="sp"></span><div class="seg" id="buckets"></div></div>
+    <div class="panel" id="seriespanel"><div class="ph"><h3>Tokens over time</h3><span class="sp"></span><div class="seg" id="buckets"></div></div>
       <div class="pb"><svg id="series" class="chart" aria-label="tokens over time"></svg>
         <div class="legend" style="margin-top:6px"><span><i style="background:var(--s1)"></i>tokens out</span><span><i style="background:var(--s2)"></i>tokens in</span></div></div></div>
-    <div class="panel"><div class="ph"><h3>By profile</h3></div><div class="scroll"><table class="data" id="bytable"></table></div></div>
+    <div class="panel" id="bypanel"><div class="ph"><h3>By profile</h3></div><div class="scroll"><table class="data" id="bytable"></table></div></div>
+    <div class="panel" id="reqpanel" hidden><div class="ph"><h3>Requests through the gateway</h3><span class="sp"></span><div class="seg" id="reqby"></div></div>
+      <div class="scroll"><table class="data" id="reqtable"></table></div>
+      <div class="ph"><h3>Latest</h3><span class="sp"></span><span class="small muted">answered here, or passed on to the machine shown</span></div>
+      <div class="scroll"><table class="data" id="reqlatest"></table></div></div>
   </section>
 
   <!-- activity -->
@@ -504,7 +523,7 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 let TOKEN = new URLSearchParams(location.search).get("token") || store.get("llmm-token", null);
 if (new URLSearchParams(location.search).get("token")) { store.set("llmm-token", TOKEN); history.replaceState(null, "", location.pathname + location.hash); }
-let period = store.get("llmm-period", "day"), bucket = store.get("llmm-bucket", "day"), uscope = store.get("llmm-uscope", "this"), watchJob = null, lastStatus = null;
+let reqBy = store.get("llmm-reqby", "target"), period = store.get("llmm-period", "day"), bucket = store.get("llmm-bucket", "day"), uscope = store.get("llmm-uscope", "this"), watchJob = null, lastStatus = null;
 let view = (location.hash.slice(1) || store.get("llmm-view", "overview"));
 
 // the machine being viewed: "" is this one; a peer's calls go through this Hangar at /api/peers/<name>/...
@@ -536,6 +555,7 @@ const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? "now" : s < 
 const pctCls = p => p > 95 ? "bad" : p > 85 ? "warn" : "";
 const stateTag = s => ({ done: "ok", failed: "bad", refused: "bad", cancelled: "bad", ready: "ok" }[s] || "warn");
 const ICON = {
+  relay: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.6"/><circle cx="4.5" cy="5.5" r="2"/><circle cx="19.5" cy="5.5" r="2"/><circle cx="12" cy="20.5" r="2"/><path d="M6.1 7l3.9 3.3M17.9 7 14 10.3M12 14.6v3.9"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M7 5v14l11-7z" fill="currentColor" stroke="none"/></svg>',
   stop: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/></svg>',
   restart: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
@@ -574,7 +594,7 @@ function renderStatus(s) {
       <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>
       <div class="gs">${g.util_percent == null ? "" : `<span>load <b>${g.util_percent.toFixed(0)}%</b></span>`}${g.temp_c == null ? "" : `<span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</b></span>`}<span>free <b>${mib(g.vram_total_mib - g.vram_used_mib)}</b></span>${g.unified ? `<span class="tag" title="shares the machine's RAM; the limit is what Metal may use">unified</span>` : ""}</div></div>`;
   }
-  if (!r.gpus.length) m += `<div class="gauge"><div class="small muted">No NVIDIA GPU found (nvidia-smi).</div></div>`;
+  if (!r.gpus.length) m += `<div class="gauge"><div class="small muted">${s.engines.length ? "No NVIDIA GPU found (nvidia-smi)." : "No GPU here, and no engines: this machine passes requests on to the others."}</div></div>`;
   const rp = ramUsed / r.ram_total_mib * 100;
   v += `<div class="vital"><span class="k">RAM</span><span class="mini ram ${rp > 95 ? "hot" : ""}"><i style="width:${rp}%"></i></span><span class="v">${gb(ramUsed)}/${gb(r.ram_total_mib)}G</span></div>
         <div class="vital opt"><span class="k">CPU</span><span class="mini cpu"><i style="width:${r.cpu_percent}%"></i></span><span class="v">${r.cpu_percent.toFixed(0)}%</span></div>`;
@@ -633,8 +653,10 @@ function renderStatus(s) {
     }
     h += `</div>`;
   }
-  $("#engines").innerHTML = h;
-  $("#engmeta").textContent = `${nrun} of ${s.engines.length} running`;
+  $("#engtitle").textContent = s.engines.length ? "Engines" : "Gateway";
+  if (s.engines.length) $("#engines").innerHTML = h;
+  else renderGateway(s).catch(() => { $("#engines").innerHTML = `<div class="empty">No engines on this machine: its roles (above) send each request on to the machine that serves it.</div>`; });
+  if (s.engines.length) $("#engmeta").textContent = `${nrun} of ${s.engines.length} running`;
   v += `<div class="vital"><span class="k">Out</span><span class="v ${out ? "ok-t" : ""}">${tps(out)} tok/s</span></div>`;
   $("#vitals").innerHTML = v + fleetVital();
   if (s.machine) {
@@ -688,7 +710,7 @@ async function renderProfiles() {
       <div class="acts">
         ${p.editable ? `<button class="btn sm ghost" data-act="pedit" data-p="${esc(p.id)}">Edit</button>` : ""}
         ${p.discovered || p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcopy" data-p="${esc(p.id)}">Copy</button>`}
-        ${p.source === "custom" || MACHINE ? "" : `<button class="btn sm ghost" data-act="prole" data-p="${esc(p.id)}" title="make it main, helper, or a backup">Role</button>`}
+        ${p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="prole" data-p="${esc(p.id)}" title="make it main, helper, or a backup">Role</button>`}
         ${p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcustom" data-p="${esc(p.id)}">Custom run</button>`}
         ${p.editable ? `<button class="btn sm ghost danger" data-act="pdel" data-p="${esc(p.id)}">Delete</button>` : p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pwhy" data-p="${esc(p.id)}" title="why this profile has no Delete">Delete?</button>`}
         <button class="btn sm ${p.running ? "" : "primary"}" data-act="start" data-p="${esc(p.id)}">${p.running ? ICON.restart + "Restart" : ICON.play + "Start"}</button></div></div>`;
@@ -806,6 +828,11 @@ const CN_MODELS = [["opencode", "opencode"], ["qwen", "Qwen Code"], ["pi", "Pi"]
 let cnKind = store.get("llmm-cnkind", "models"), cnClient = store.get("llmm-cnclient", "opencode"), cnHost = store.get("llmm-cnhost", "127.0.0.1"), cnSnip = null, CN_READY = false;
 async function renderConnectHosts() {
   const hs = await api("/api/connect/hosts");
+  // a machine with no engines (a hub) is used from other machines: offer its network address, not 127.0.0.1
+  if (store.get("llmm-cnhost", null) === null && cnHost === "127.0.0.1") {
+    const st = lastStatus || await api("/api/status").catch(() => null);
+    if (st && !(st.engines || []).length) cnHost = (hs.find(h => h.host !== "127.0.0.1") || hs[0]).host;
+  }
   if (!hs.some(h => h.host === cnHost)) hs.push({ host: cnHost, label: "saved" });
   $("#cnhost").innerHTML = hs.map(h => `<option value="${esc(h.host)}" ${h.host === cnHost ? "selected" : ""}>${esc(h.host)} — ${esc(h.label)}</option>`).join("");
 }
@@ -873,6 +900,41 @@ function customRun(p) {
   };
 }
 
+// ---- a machine with no engines (a hub): its gateway in place of the engines, refreshed every 10 s
+let GW = null, gwAt = 0;
+const MCOL = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--info)", "var(--warn)"];
+async function renderGateway(s) {
+  if (!GW || Date.now() - gwAt > 10000) {
+    const [sum, last] = await Promise.all([api("/api/requests/summary?period=day&by=machine"), api("/api/requests?limit=5")]);
+    GW = { sum, last }; gwAt = Date.now();
+  }
+  const t = GW.sum.total, rows = GW.sum.rows.filter(r => r.machine), port = location.port || 9000;
+  const host = MACHINE ? ((PEERS.find(p => p.name === MACHINE) || {}).url || "").replace(/^https?:\/\//, "").split(":")[0] : location.hostname;
+  const url = `http://${host}:${port}/v1`;
+  const ms = v => v == null ? "–" : v < 1 ? Math.round(v * 1000) + "<small>ms</small>" : v.toFixed(1) + "<small>s</small>";
+  const serving = [...new Set((s.roles || []).map(r => r.serving && r.serving.machine).filter(Boolean))];
+  const to = [...new Set([...serving, ...rows.map(r => r.machine)])];
+  const col = m => MCOL[Math.max(0, to.indexOf(m)) % MCOL.length];
+  $("#engmeta").textContent = `${num(t.requests)} request${t.requests === 1 ? "" : "s"} today`;
+  $("#engines").innerHTML = `<div class="gw">
+    <div class="gwh"><span class="gwi">${ICON.relay}</span><div><div class="gwt">One address for your tools</div>
+      <div class="gwd">${esc(MACHINE || SELF?.name || "This machine")} runs no models: each request goes on to the machine serving its role, and is logged here.</div></div></div>
+    <div class="gwurl"><span>${esc(url)}</span><button class="btn sm" data-act="copygw" data-url="${esc(url)}">${ICON.copy}Copy</button></div>
+    <div class="stats">
+      <div class="stat hero"><div class="sv">${num(t.requests)}</div><div class="sl">requests today</div></div>
+      <div class="stat"><div class="sv">${num(t.gen_tokens)}</div><div class="sl">tokens out</div></div>
+      <div class="stat"><div class="sv">${tps(t.gen_tps)}<small>tok/s</small></div><div class="sl">avg out</div></div>
+      <div class="stat"><div class="sv">${ms(t.ttft_s)}</div><div class="sl">first token</div></div>
+      <div class="stat"><div class="sv ${t.errors ? "bad-t" : ""}">${num(t.errors)}</div><div class="sl">failed</div></div></div>
+    <div class="gwto">Sends to${to.length ? to.map(m => { const r = rows.find(x => x.machine === m), p = PEERS.find(x => x.name === m);
+      return `<span class="tchip" style="border-left:3px solid ${col(m)}"><span class="dot ${p && p.online ? "ok" : "bad"}"></span><span class="p">${esc(m)}</span>${r ? `<span class="m">${num(r.requests)} · ${Math.round(r.requests / Math.max(1, t.requests - t.errors) * 100)}%</span>` : ""}</span>`; }).join("") : ` <span>nothing yet: add machines and give the roles targets on them</span>`}</div>
+    ${rows.length ? `<div class="gwsplit">${rows.map(r => `<i style="width:${r.requests / rows.reduce((a, x) => a + x.requests, 0) * 100}%;background:${col(r.machine)}" title="${esc(r.machine)}: ${r.requests}"></i>`).join("")}</div>` : ""}
+    <div class="gwlast feed">${GW.last.length ? GW.last.map(r => `<div class="it"><span class="ts">${ago(r.ts)}</span>
+      <span class="msg"><span class="k">${esc(r.model)}</span>${r.machine ? `→ ${esc(r.machine)}/${esc(r.profile)}` : `<span class="bad-t">${esc(r.error || "failed")}</span>`} <span class="muted small">· ${esc(r.client || "")}</span></span>
+      <span class="ts">${r.gen_s ? tps(r.gen_tokens / r.gen_s) + " tok/s" : r.error && r.machine ? esc(r.error) : ""}</span></div>`).join("")
+      : `<div class="empty" style="padding:16px">No requests yet: point a tool at the address above.</div>`}</div></div>`;
+}
+
 // ---- usage
 const PERIODS = [["day", "Today"], ["week", "Week"], ["month", "Month"], ["year", "Year"], ["all", "All"], ["24h", "24h"], ["7d", "7d"], ["30d", "30d"]];
 const BUCKETS = [["hour", "Hour", 24], ["day", "Day", 30], ["week", "Week", 26], ["month", "Month", 12], ["year", "Year", 5]];
@@ -902,8 +964,44 @@ async function renderStats() {
     rows.map(([k, v]) => `<tr><td>${all ? `<span class="tag">${esc(v.machine)}</span> ${esc(v.profile)}` : esc(k)}<span class="share" style="width:${v.gen_tokens / top * 100}%"></span></td><td>${num(v.gen_tokens)}</td><td>${num(v.prompt_tokens)}</td><td>${tps(v.gen_tps)}</td><td>${tps(v.prompt_tps)}</td><td>${dur(v.uptime_seconds)}</td><td>${v.runs}</td></tr>`).join("")
     : `<tr><td class="empty">Nothing recorded in this period yet.</td></tr>`;
   const b = BUCKETS.find(x => x[0] === bucket);
+  $("#seriespanel").hidden = $("#bypanel").hidden = false;     // measured before drawing; a hub's view hides them again
   const ser = await api(`/api/stats${all ? "/fleet" : ""}/series?bucket=${bucket}&count=${b[2]}`, { local: all });
   drawBars($("#series"), ser, bucket);
+  await renderRequests();
+}
+
+// ---- requests the gateway (/v1) passed on: per target, client or role, and the latest ones
+const REQBY = [["target", "Machine · profile"], ["client", "Client"], ["model", "Role"]];
+async function renderRequests() {
+  let s, latest;
+  try { [s, latest] = await Promise.all([api(`/api/requests/summary?period=${period}&by=${reqBy}`), api("/api/requests?limit=25")]); }
+  catch (e) { $("#reqpanel").hidden = true; $("#seriespanel").hidden = $("#bypanel").hidden = false; return; }      // an older Hangar has no request log
+  $("#reqpanel").hidden = !s.total.requests && !latest.length;
+  // a hub runs no engines: its own token numbers are always empty, so its requests take their place
+  const hub = uscope !== "all" && lastStatus && !(lastStatus.engines || []).length && latest.length;
+  for (const id of ["#seriespanel", "#bypanel"]) $(id).hidden = !!hub;
+  if (hub) {
+    const t = s.total;
+    $("#totals").innerHTML = `
+      <div class="kpi hero"><div class="sl">Out · via gateway</div><div class="sv">${num(t.gen_tokens)}</div></div>
+      <div class="kpi"><div class="sl">Tokens in</div><div class="sv">${num(t.prompt_tokens)}</div></div>
+      <div class="kpi"><div class="sl">Cache reused</div><div class="sv">${num(t.cached_tokens)}</div></div>
+      <div class="kpi"><div class="sl">Avg out</div><div class="sv">${tps(t.gen_tps)}<small>tok/s</small></div></div>
+      <div class="kpi"><div class="sl">Requests</div><div class="sv">${num(t.requests)}</div></div>
+      <div class="kpi"><div class="sl">Failed</div><div class="sv ${t.errors ? "bad-t" : ""}">${num(t.errors)}</div></div>`;
+  }
+  $("#reqby").innerHTML = REQBY.map(([k, l]) => `<button class="${k === reqBy ? "on" : ""}" data-reqby="${k}">${l}</button>`).join("");
+  const ms = v => v == null ? "–" : v < 1 ? Math.round(v * 1000) + " ms" : v.toFixed(1) + " s";
+  const label = r => reqBy === "target" ? (r.machine ? `<span class="tag">${esc(r.machine)}</span> ${esc(r.profile)}` : `<span class="muted">not served</span>`) : esc(r[reqBy] || "–");
+  const top = Math.max(1, ...s.rows.map(r => r.requests));
+  $("#reqtable").innerHTML = s.rows.length ? `<tr><th>${REQBY.find(x => x[0] === reqBy)[1]}</th><th>Requests</th><th>Failed</th><th>Out</th><th>In</th><th>Cached</th><th>tok/s out</th><th>tok/s in</th><th>First token</th><th>Last</th></tr>` +
+    s.rows.map(r => `<tr><td>${label(r)}<span class="share" style="width:${r.requests / top * 100}%"></span></td><td>${num(r.requests)}</td><td>${r.errors ? `<span class="tag bad">${r.errors}</span>` : "–"}</td><td>${num(r.gen_tokens)}</td><td>${num(r.prompt_tokens)}</td><td>${num(r.cached_tokens)}</td><td>${tps(r.gen_tps)}</td><td>${tps(r.prompt_tps)}</td><td>${ms(r.ttft_s)}</td><td>${ago(r.last)}</td></tr>`).join("")
+    : `<tr><td class="empty">No requests in this period.</td></tr>`;
+  $("#reqlatest").innerHTML = latest.length ? `<tr><th>When</th><th>Asked for</th><th>Served by</th><th>Client</th><th>Out</th><th>In</th><th>tok/s</th><th>First token</th><th>Took</th></tr>` +
+    latest.map(r => `<tr title="${esc(r.error || "")}"><td>${ago(r.ts)}</td><td>${esc(r.model)}</td><td>${r.machine ? `<span class="tag">${esc(r.machine)}</span> ${esc(r.profile)}` : `<span class="tag bad">${r.status}</span> ${esc(r.error || "")}`}</td>` +
+      `<td>${esc(r.client)}${r.via ? ` <span class="muted small">via ${esc(r.via)}</span>` : ""}${r.error && r.machine ? ` <span class="tag warn">${esc(r.error)}</span>` : ""}</td><td>${num(r.gen_tokens)}</td><td>${num(r.prompt_tokens)}</td>` +
+      `<td>${tps(r.gen_s ? r.gen_tokens / r.gen_s : null)}</td><td>${ms(r.ttft_s)}</td><td>${ms(r.duration_s)}</td></tr>`).join("")
+    : `<tr><td class="empty">No requests yet.</td></tr>`;
 }
 
 function drawBars(svg, ser, bucket) {
@@ -1034,14 +1132,26 @@ document.addEventListener("click", async ev => {
     } catch (e) { fail(e); }
     return;
   }
+  const wk = ev.target.closest("[data-act=mwake],[data-act=mwakeauto]");
+  if (wk) {
+    ev.preventDefault(); ev.stopPropagation();
+    try {
+      const here = (path, data) => api(path, { method: "POST", body: JSON.stringify(data), local: true });     // this Hangar, not the one viewed
+      if (wk.dataset.act === "mwake") { const r = await here("/api/wake", { machine: wk.dataset.name }); toast(`Wake packet sent to ${r.machine}; it can take a minute to come online`); }
+      else { await here("/api/wake/auto", { machine: wk.dataset.name, on: wk.dataset.on === "1" }); renderMachines(); }
+    } catch (e) { fail(e); }
+    return;
+  }
   const mb = ev.target.closest("[data-machine]");
   if (mb) { ev.preventDefault(); return switchMachine(mb.dataset.machine); }
   if (ev.target.closest("[data-act=maddshow]")) { ev.preventDefault(); return addMachineDialog(); }
   if (ev.target.closest("[data-act=mshare]")) { ev.preventDefault(); return shareDialog(); }
   if (ev.target.closest("[data-act=fleetgo]")) { ev.preventDefault(); setView("overview"); return $("#fleetsec").scrollIntoView({ behavior: "smooth", block: "start" }); }
+  const cg = ev.target.closest("[data-act=copygw]");
+  if (cg) { ev.preventDefault(); return copyText(cg.dataset.url); }
   if (ev.target.closest("[data-act=copycode]")) { ev.preventDefault(); const c = await loadMyCode(); return copyText(c.code); }
   if (ev.target.closest("[data-act=pastego]")) { ev.preventDefault(); const c = $("#pastecode").value.trim(); if (!c) return toast("Paste the other machine's pairing code first", true); return addFromCode(c, $("#pasteboth").checked, ev.target.closest("button")); }
-  const b = ev.target.closest("[data-act],[data-uscope],[data-period],[data-bucket],[data-job],[data-cnkind],[data-cnclient],[data-view]");
+  const b = ev.target.closest("[data-act],[data-uscope],[data-period],[data-bucket],[data-reqby],[data-job],[data-cnkind],[data-cnclient],[data-view]");
   if (!b) return;
   ev.preventDefault();
   try {
@@ -1050,6 +1160,7 @@ document.addEventListener("click", async ev => {
     if (b.dataset.cnclient) { cnClient = b.dataset.cnclient; store.set("llmm-cnclient", cnClient); return renderConnect(); }
     if (b.dataset.uscope) { uscope = b.dataset.uscope; store.set("llmm-uscope", uscope); return renderStats(); }
     if (b.dataset.period) { period = b.dataset.period; store.set("llmm-period", period); return renderStats(); }
+    if (b.dataset.reqby) { reqBy = b.dataset.reqby; store.set("llmm-reqby", reqBy); return renderRequests(); }
     if (b.dataset.bucket) { bucket = b.dataset.bucket; store.set("llmm-bucket", bucket); return renderStats(); }
     if (b.dataset.job) { watchJob = b.dataset.job; setView("overview"); return renderJob(); }
     const act = b.dataset.act, e = b.dataset.e;
@@ -1138,16 +1249,29 @@ async function renderMachines() {
     return;
   }
   if (PEERS.length) {
-    const card = (name, os, online, sm, err, isSelf, src) => {
+    const wakeCtl = p => {
+      const w = p.wake || {};
+      if (!w.known) return "";
+      return (p.online ? "" : `<span class="btn sm" data-act="mwake" data-name="${esc(p.name)}" role="button" title="send a wake-on-LAN packet">Wake</span>`) +
+        `<span class="small muted">Wake-on-LAN</span><span class="tag ${w.auto ? "ok" : ""}" data-act="mwakeauto" data-name="${esc(p.name)}" data-on="${w.auto ? 0 : 1}" role="button" style="cursor:pointer"
+          title="${w.auto ? "woken when a role request needs it; click to turn off" : "click to wake it when a role request needs it"}">${w.auto ? "on request" : "off"}</span>`;
+    };
+    const card = (name, os, online, sm, err, isSelf, src, peer) => {
       const vp = sm && sm.vram_total_mib ? sm.vram_used_mib / sm.vram_total_mib * 100 : 0;
+      if (online && sm && sm.engines === 0)        // a hub: no models of its own, left out of the totals above
+        return `<button class="mcd ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
+          <div class="mh2"><span class="gwi sm">${ICON.relay}</span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="tag info">hub</span><span class="sp"></span>
+            ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
+          <div class="run"><span class="muted">${isSelf && !MACHINE && GW ? `${num(GW.sum.total.requests)} requests today · ${num(GW.sum.total.gen_tokens)} tokens out` : "passes requests on to the others"}</span></div>
+          <div class="small muted num" style="margin-top:4px">${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""} · not counted in the totals</div></button>`;
       return `<button class="mcd ${online ? "" : "off"} ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
         <div class="mh2"><span class="dot ${online ? "ok" : "bad"}"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="sp"></span>
           ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
         ${online && sm ? `<div class="run"><span>${runline(sm)}</span>${sm.gpu ? `<span class="small muted">${esc(sm.gpu)}</span>` : ""}</div>
           <div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div><div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""}${sm.gpu_util_percent != null ? ` · load ${pc(sm.gpu_util_percent)}` : ""}</div>`
-          : `<div class="run bad-t">${esc(err || "offline")}</div>`}</button>`;
+          : `<div class="run bad-t">${esc(err || "offline")}</div>`}${peer && (peer.wake || {}).known ? `<div class="row small" style="margin-top:6px;gap:6px">${wakeCtl(peer)}</div>` : ""}</button>`;
     };
-    $("#fleet").innerHTML = card(SELF.name, SELF.os, true, SELF.summary, null, true) + PEERS.map(p => card(p.name, (p.machine || {}).os, p.online, p.summary, p.error, false, p.source)).join("");
+    $("#fleet").innerHTML = card(SELF.name, SELF.os, true, SELF.summary, null, true) + PEERS.map(p => card(p.name, (p.machine || {}).os, p.online, p.summary, p.error, false, p.source, p)).join("");
     $("#fleetmeta").textContent = `${PEERS.filter(p => p.online).length + 1} of ${PEERS.length + 1} online`;
   }
   renderFleet(res.fleet);
@@ -1272,24 +1396,23 @@ let ROLES = [];
 function renderRoles(rs) {
   ROLES = rs;
   $("#rolesec").hidden = false;
-  $("#roleadd").hidden = !!MACHINE;
   const port = location.port || 9000;
-  $("#rolemeta").innerHTML = MACHINE ? "edit them on that machine" : `OpenAI-compatible: <span class="mono">http://${esc(location.hostname)}:${port}/v1</span> · model = role name`;
+  $("#rolemeta").innerHTML = MACHINE ? `${esc(MACHINE)}'s own roles: what its gateway serves` : `OpenAI-compatible: <span class="mono">http://${esc(location.hostname)}:${port}/v1</span> · model = role name`;
   $("#gwbtn").hidden = !!MACHINE;
   const main = rs.find(r => r.name === "main");
   const mainT = main && (main.targets[0] || main.serving);
   const stc = st => ({ ready: "ok", starting: "warn", offline: "bad", unknown: "bad" }[st] || "");
-  const chip = (t, extra) => `<span class="tchip ${t.serving ? "serving" : ""}" title="${esc(t.state || "")}${t.started_by_hangar ? " · started by Hangar as a backup" : ""}"><span class="dot ${stc(t.state)}"></span><span class="m">${esc(t.machine || "this")}</span><span class="p">${esc(t.profile)}</span>${extra || ""}</span>`;
+  const chip = (t, extra) => `<span class="tchip ${t.serving ? "serving" : ""}" title="${esc(t.state || "")}${t.started_by_hangar ? " · started by Hangar as a backup" : ""}"><span class="dot ${stc(t.state)}"></span><span class="m">${esc(t.machine || MACHINE || "this")}</span><span class="p">${esc(t.profile)}</span>${extra || ""}</span>`;
   $("#roles").innerHTML = rs.map(r => {
     const ts = r.targets.map((t, i) => chip(t, i ? `<span class="k">${t.auto_start ? "backup · auto" : "backup"}</span>` : "")).join(`<span class="arr">→</span>`);
     // what happens when every target is down: main answers (shown always, lit when it is answering)
     let fb = "";
     if (r.fallback && r.serving) fb = `<span class="arr">→</span>${chip({ ...r.serving, state: "ready", serving: true }, `<span class="k">${r.name === "main" ? "running" : "fallback · answering"}</span>`)}`;
-    else if (r.name !== "main" && mainT) fb = `<span class="arr">→</span><span class="tchip" style="opacity:.6" title="used automatically when the targets before it are down"><span class="m">then main</span><span class="p">${esc(mainT.machine || "this")}/${esc(mainT.profile)}</span></span>`;
+    else if (r.name !== "main" && mainT) fb = `<span class="arr">→</span><span class="tchip" style="opacity:.6" title="used automatically when the targets before it are down"><span class="m">then main</span><span class="p">${esc(mainT.machine || MACHINE || "this")}/${esc(mainT.profile)}</span></span>`;
     const none = !r.serving ? `<span class="tag bad">nothing up</span>` : "";
     const empty = !r.targets.length ? `<span class="small muted">${r.name === "main" ? "not set: whatever runs here" : "no targets"}</span>` : "";
     return `<div class="rrow"><span class="rname">${esc(r.name)}</span><div class="chain">${ts}${empty}${fb}${none}${r.down_for ? `<span class="small warn-t">primary down ${dur(r.down_for)}</span>` : ""}</div>
-      ${MACHINE ? "<span></span>" : `<button class="btn sm ghost" data-act="roleedit" data-role="${esc(r.name)}">Edit</button>`}</div>`;
+      <button class="btn sm ghost" data-act="roleedit" data-role="${esc(r.name)}">Edit</button></div>`;
   }).join("");
 }
 // the roles a profile on this machine has: [{name, backup}]
@@ -1329,9 +1452,15 @@ function profileRoleDialog(pid) {
 }
 async function roleDialog(name) {
   const r = ROLES.find(x => x.name === name) || { name: "", targets: [] };
-  const machines = [{ name: "", label: `${SELF ? SELF.name : "this machine"} (this)` }, ...PEERS.map(p => ({ name: p.name, label: p.name }))];
+  // a role is saved on the machine being viewed, and its machine names are that machine's peers
+  const get = path => fetch(path, { headers: { "Authorization": "Bearer " + TOKEN } }).then(x => x.ok ? x.json() : Promise.reject(x)).catch(() => null);
+  const theirs = MACHINE ? ((await get(`/api/peers/${encodeURIComponent(MACHINE)}/peers`)) || {}).peers || [] : PEERS;
+  const machines = [{ name: "", label: `${MACHINE || (SELF ? SELF.name : "this machine")} (${MACHINE ? "that machine" : "this"})` }, ...theirs.map(p => ({ name: p.name, label: p.name }))];
+  const via = m => !m ? (MACHINE ? `/api/peers/${encodeURIComponent(MACHINE)}/profiles` : "/api/profiles")
+    : MACHINE && SELF && m === SELF.name ? "/api/profiles"                              // the peer's name for this machine
+    : PEERS.some(p => p.name === m) ? `/api/peers/${encodeURIComponent(m)}/profiles` : null;  // reached from here by the same name
   const profCache = {};
-  const profilesOf = async m => profCache[m] ??= (await fetch(m ? `/api/peers/${encodeURIComponent(m)}/profiles` : "/api/profiles", { headers: { "Authorization": "Bearer " + TOKEN } }).then(x => x.json()).catch(() => [])).map(p => p.id);
+  const profilesOf = async m => profCache[m] ??= via(m) ? ((await get(via(m))) || []).map(p => p.id) : [];
   let rows = r.targets.map(t => ({ machine: t.machine, profile: t.profile, auto_start: t.auto_start }));
   if (!rows.length) rows = [{ machine: "", profile: "", auto_start: false }];
   dialog(name ? `Role · ${name}` : "New role", `
@@ -1345,7 +1474,7 @@ async function roleDialog(name) {
       const ps = await profilesOf(t.machine);
       return `<div class="trow" data-i="${i}">
         <select class="input rlm">${machines.map(m => `<option value="${esc(m.name)}" ${m.name === t.machine ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select>
-        <select class="input rlp"><option value="">choose a profile…</option>${ps.map(p => `<option ${p === t.profile ? "selected" : ""}>${esc(p)}</option>`).join("")}</select>
+        <select class="input rlp"><option value="">${ps.length || !t.machine ? "choose a profile…" : "not reachable from here"}</option>${[...new Set([...ps, ...(t.profile ? [t.profile] : [])])].map(p => `<option ${p === t.profile ? "selected" : ""}>${esc(p)}</option>`).join("")}</select>
         <div class="row" style="gap:4px;flex-wrap:nowrap">${i ? `<label class="chk small" title="start it when the targets before it are down"><input type="checkbox" class="rla" ${t.auto_start ? "checked" : ""}> start when needed</label>` : `<span class="tag">primary</span>`}
           ${i ? `<button class="btn sm ghost rlup" title="move up">↑</button>` : ""}${rows.length > 1 ? `<button class="btn sm ghost danger rlrm" title="remove">✕</button>` : ""}</div></div>`;
     }));
