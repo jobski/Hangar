@@ -10,6 +10,7 @@
     hangar logs <engine> [lines] [-f]      -f keeps printing new lines (Ctrl+C to stop)
     hangar jobs | job <id> | events
     hangar stats [day|week|month|year|all]
+    hangar requests [period] [--by target|client|model|machine] [--latest]   what the gateway (/v1) passed on
 
   models
     hangar models                                   the model library
@@ -42,6 +43,7 @@
     hangar peer add <pairing-code> [--both] [--name N]   add a machine from its code; --both adds this one there too
     hangar peer add <name> <url> <token> [--both]   the same with an address and token
     hangar peer remove <name>
+    hangar wake <machine> [--auto on|off]           wake-on-LAN now; --auto: also whenever a request needs it
     hangar --on <machine> <command> ...             run any command on a peer, e.g. hangar --on macbook status
 """
 from __future__ import annotations
@@ -256,6 +258,27 @@ def cmd_stats(a):
                 print(f"   {name:32s} out {_num(v['gen_tokens']):>8s}  in {_num(v['prompt_tokens']):>8s}  up {_dur(v['uptime_seconds'])}")
 
 
+def cmd_requests(a):
+    by = a[a.index("--by") + 1] if "--by" in a and a.index("--by") + 1 < len(a) else "target"
+    if "--latest" in a:
+        for r in reversed(_call("GET", "/api/requests", params={"limit": 30})):
+            who = (f"{r['machine']}/{r['profile']}" + (f" [{r['error']}]" if r["error"] else "")) if r["machine"] \
+                else f"HTTP {r['status']} {r['error'] or ''}"
+            tps = f"{r['gen_tokens'] / r['gen_s']:.1f} tok/s" if r.get("gen_s") else "-"
+            print(f"{time.strftime('%m-%d %H:%M:%S', time.localtime(r['ts']))} {r['model']:10s} {who:44s} {r['client'] or '-':12s}"
+                  f" out {_num(r['gen_tokens'] or 0):>6s}  {tps:>11s}  {r['duration_s'] or 0:6.1f} s")
+        return
+    period = next((x for x in _plain(a) if x != by), "day")
+    s = _call("GET", "/api/requests/summary", params={"period": period, "by": by})
+    keys = {"target": ("machine", "profile"), "client": ("client",), "model": ("model",), "machine": ("machine",)}[by]
+    for r in s["rows"] + [{**s["total"], "_total": True}]:
+        name = "total" if r.get("_total") else "/".join(str(r[k] or "-") for k in keys)
+        tps = f"{r['gen_tps']:.1f} tok/s" if r["gen_tps"] else "-"
+        ttft = f"{r['ttft_s']:.2f} s" if r.get("ttft_s") else "-"
+        print(f"{name:44s} {r['requests']:5d} req  {r['errors']:3d} failed  out {_num(r['gen_tokens']):>8s}  in {_num(r['prompt_tokens']):>8s}"
+              f"  {tps:>11s}  first token {ttft}")
+
+
 def _source(a):
     for flag, src in (("--modelscope", "modelscope"), ("--ollama", "ollama"), ("--url", "url")):
         if flag in a:
@@ -452,13 +475,28 @@ def cmd_machines(_):
         run = ", ".join(f"{r['profile']}" + (f" {r['gen_tps']:.1f} tok/s" if r.get("gen_tps") else "") for r in s.get("running", []))
         mem = f"{_mib(s.get('vram_used_mib'))} / {_mib(s.get('vram_total_mib'))} GPU" if s.get("vram_total_mib") else ""
         name = (m.get("machine") or {}).get("name") or m.get("name")
-        print(f"{m.get('name', name):{w}s} {state:14s} {(m.get('machine') or m).get('os', ''):8s} {mem:22s} {run or 'idle'}")
+        wk = m.get("wake") or {}
+        wake = "  [wakes on request]" if wk.get("auto") else ("  [can wake]" if wk.get("known") else "")
+        print(f"{m.get('name', name):{w}s} {state:14s} {(m.get('machine') or m).get('os', ''):8s} {mem:22s} {run or 'idle'}{wake}")
     f = res.get("fleet")
     if f and res["peers"]:
         pct = lambda v: "-" if v is None else f"{v:.0f}%"  # noqa: E731
         print(f"{'all':{w}s} {str(f['machines']) + ' online':14s} {f['gen_tps']:.1f} tok/s out, "
               f"GPU {_mib(f['vram_used_mib'])} / {_mib(f['vram_total_mib'])} (load {pct(f['gpu_util_percent'])}), "
               f"RAM {_mib(f['ram_used_mib'])} / {_mib(f['ram_total_mib'])}, CPU {pct(f['cpu_percent'])} of {f['cpu_count']} threads")
+
+
+def cmd_wake(a):
+    pl = [x for i, x in enumerate(a) if not x.startswith("--") and not (i and a[i - 1] == "--auto")]
+    if not pl:
+        sys.exit("usage: hangar wake <machine> [--auto on|off]")
+    if "--auto" in a:
+        on = a[a.index("--auto") + 1:a.index("--auto") + 2] != ["off"]
+        _call("POST", "/api/wake/auto", json={"machine": pl[0], "on": on})
+        print(f"{pl[0]} is {'now' if on else 'no longer'} woken when a request needs it")
+        return
+    res = _call("POST", "/api/wake", json={"machine": pl[0]})
+    print(f"sent a wake-on-LAN packet to {pl[0]} ({', '.join(res['sent'])})")
 
 
 def cmd_pair_code(_):
@@ -496,7 +534,7 @@ def cmd_login(a):
 COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "start": cmd_start, "switch": cmd_start,
             "stop": cmd_stop, "restart": cmd_restart, "check": cmd_check, "update": cmd_update,
             "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
-            "stats": cmd_stats, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
+            "stats": cmd_stats, "requests": cmd_requests, "wake": cmd_wake, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,
             "download": cmd_download, "downloads": cmd_downloads, "new-profile": cmd_new_profile, "custom": cmd_custom,
             "connect": cmd_connect, "hosts": cmd_hosts, "autostart": cmd_autostart, "machines": cmd_machines, "pair-code": cmd_pair_code, "budget": cmd_budget, "roles": cmd_roles, "role": cmd_role, "reasoning": cmd_reasoning,
             "peer": cmd_peer}

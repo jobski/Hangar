@@ -25,7 +25,10 @@ warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ---- what we need
-command -v git >/dev/null 2>&1 || die "git is missing. On macOS run: xcode-select --install"
+APT="sudo apt install git python3 python3-venv curl lsof"
+command -v curl >/dev/null 2>&1 || die "curl is missing. On Debian/Ubuntu run: $APT"
+command -v lsof >/dev/null 2>&1 || die "lsof is missing. On Debian/Ubuntu run: $APT"
+command -v git >/dev/null 2>&1 || die "git is missing. On macOS run: xcode-select --install; on Debian/Ubuntu run: $APT"
 PY=${PYTHON:-}
 if [ -z "$PY" ]; then
     for c in python3.13 python3.12 python3.11 python3.10 python3; do
@@ -34,7 +37,7 @@ if [ -z "$PY" ]; then
         fi
     done
 fi
-[ -n "$PY" ] || die "Python 3.10 or newer is needed. On macOS: brew install python@3.12 (or xcode-select --install)"
+[ -n "$PY" ] || die "Python 3.10 or newer is needed. On macOS: brew install python@3.12 (or xcode-select --install); on Debian/Ubuntu run: $APT"
 say "Using $("$PY" --version) at $PY"
 
 # ---- get the code (a token in GITHUB_TOKEN reaches a private repo; it is not stored in the clone)

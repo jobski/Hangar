@@ -1,4 +1,5 @@
-"""Usage history in SQLite: token counts per minute, run sessions, measured resource use, and an event log.
+"""Usage history in SQLite: token counts per minute, run sessions, measured resource use, an event log, and every
+request the gateway (/v1) passed on.
 
 Engines expose cumulative counters (llama.cpp's names). The collector turns them into deltas - a counter that went
 down means the engine restarted - and adds them up per minute, so rows stay few and any period can be summed.
@@ -6,6 +7,8 @@ down means the engine restarted - and adds them up per minute, so rows stay few 
 from __future__ import annotations
 
 import datetime as dt
+import json
+import re
 import sqlite3
 import threading
 import time
@@ -24,7 +27,16 @@ CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, level TEXT, kind TEXT, engine TEXT, profile TEXT, message TEXT);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
+CREATE TABLE IF NOT EXISTS requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, model TEXT, machine TEXT, profile TEXT, client TEXT,
+  via TEXT, path TEXT, status INTEGER, stream INTEGER, ttft_s REAL, duration_s REAL, prompt_tokens REAL,
+  cached_tokens REAL, gen_tokens REAL, prompt_s REAL, gen_s REAL, error TEXT);
+CREATE INDEX IF NOT EXISTS requests_ts ON requests(ts);
 """
+
+REQ_FIELDS = ("model", "machine", "profile", "client", "via", "path", "status", "stream", "ttft_s", "duration_s",
+              "prompt_tokens", "cached_tokens", "gen_tokens", "prompt_s", "gen_s", "error")
+REQ_GROUPS = {"target": ("machine", "profile"), "client": ("client",), "model": ("model",), "machine": ("machine",)}
 
 FIELDS = ("prompt_tokens", "cached_tokens", "gen_tokens", "prompt_seconds", "gen_seconds", "requests")
 # counter name -> usage field
@@ -114,6 +126,33 @@ class Store:
         upd = ",".join(f"{f}={f}+excluded.{f}" for f in FIELDS)
         self.x(f"INSERT INTO usage(minute,engine,profile,{cols}) VALUES(?,?,?,{','.join('?' * len(FIELDS))}) "
                f"ON CONFLICT(minute,engine,profile) DO UPDATE SET {upd}", (minute, engine, profile, *vals))
+
+    # ---- gateway requests
+    def log_request(self, ts: float, **kw):
+        cols = [f for f in REQ_FIELDS if f in kw]
+        self.x(f"INSERT INTO requests(ts,{','.join(cols)}) VALUES(?{',?' * len(cols)})", (ts, *[kw[c] for c in cols]))
+
+    def requests(self, limit: int = 50, before: float | None = None) -> list[dict]:
+        """The latest gateway requests, newest first (before: only older than this time, for paging)."""
+        return self.q("SELECT * FROM requests WHERE ts < ? ORDER BY ts DESC LIMIT ?", (before or time.time() + 1, limit))
+
+    def request_summary(self, period: str = "day", by: str = "target") -> dict:
+        """Gateway requests in a period, grouped by target (machine + profile), client, model asked for or machine.
+        Speeds only count requests whose engine reported its timing."""
+        if by not in REQ_GROUPS:
+            raise ValueError(f"by: {', '.join(REQ_GROUPS)}")
+        since, keys = self.period_start(period), REQ_GROUPS[by]
+        agg = ("COUNT(*) requests, SUM(status >= 400 OR error IS NOT NULL) errors, SUM(prompt_tokens) prompt_tokens, "
+               "SUM(cached_tokens) cached_tokens, SUM(gen_tokens) gen_tokens, "
+               "SUM(CASE WHEN gen_s > 0 THEN gen_tokens END) timed_gen_tokens, SUM(CASE WHEN gen_s > 0 THEN gen_s END) gen_s, "
+               "SUM(CASE WHEN prompt_s > 0 THEN prompt_tokens - COALESCE(cached_tokens, 0) END) timed_prompt_tokens, "
+               "SUM(CASE WHEN prompt_s > 0 THEN prompt_s END) prompt_s, AVG(ttft_s) ttft_s, SUM(duration_s) busy_s, MAX(ts) last")
+        rows = self.q(f"SELECT {','.join(keys)}, {agg} FROM requests WHERE ts >= ? GROUP BY {','.join(keys)} "
+                      "ORDER BY requests DESC", (since,))
+        total = self.q(f"SELECT {agg} FROM requests WHERE ts >= ?", (since,))[0]
+        for r in rows + [total]:
+            _req_rates(r)
+        return {"period": period, "since": since, "by": by, "total": total, "rows": rows}
 
     # ---- reports
     @staticmethod
@@ -234,6 +273,98 @@ def merge_series(parts: list[list[dict]]) -> list[dict]:
 def _rates(v: dict):
     v["gen_tps"] = v["gen_tokens"] / v["gen_seconds"] if v.get("gen_seconds") else None
     v["prompt_tps"] = v["prompt_tokens"] / v["prompt_seconds"] if v.get("prompt_seconds") else None
+
+
+def _req_rates(r: dict):
+    r["gen_tps"] = r["timed_gen_tokens"] / r["gen_s"] if r.get("gen_s") else None
+    r["prompt_tps"] = r["timed_prompt_tokens"] / r["prompt_s"] if r.get("prompt_s") else None
+    for k in ("requests", "errors", "prompt_tokens", "cached_tokens", "gen_tokens"):
+        r[k] = r.get(k) or 0
+
+
+# a streamed chunk with generated text: OpenAI content/reasoning that is not empty, or an Anthropic content delta
+_TOKEN = re.compile(rb'"(?:content|reasoning_content|reasoning)":\s*"[^"]|"type":\s*"content_block_delta"')
+
+
+class RequestMeter:
+    """Token counts and speeds read from a gateway response as it streams past (nothing is held back or buffered,
+    except a non-streamed body, which is small). Understands llama.cpp/Strata `timings`, OpenAI `usage` and the
+    Anthropic events (message_start / message_delta)."""
+
+    MAX_BODY = 4 << 20
+
+    def __init__(self, t0: float, sse: bool):
+        self.t0, self.first, self.last, self.token_at = t0, None, None, None
+        self.sse, self.body, self.rest = sse, bytearray(), b""
+        self.timings: dict = {}
+        self.usage: dict = {}
+
+    def feed(self, chunk: bytes, now: float):
+        if not chunk:
+            return
+        self.first = self.first or now
+        self.last = now
+        if not self.sse:
+            if len(self.body) < self.MAX_BODY:
+                self.body += chunk
+            return
+        lines = (self.rest + chunk).split(b"\n")
+        self.rest = lines.pop()[-65536:]
+        for line in lines:
+            if not line.startswith(b"data:"):
+                continue
+            if self.token_at is None and _TOKEN.search(line):
+                self.token_at = now
+            if b'"usage"' in line or b'"timings"' in line:
+                self._take(line[5:])
+
+    def _take(self, raw: bytes):
+        try:
+            o = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(o, dict):
+            return
+        if isinstance(o.get("timings"), dict):
+            self.timings.update(o["timings"])
+        u = o.get("usage") or (o.get("message") or {}).get("usage")
+        if isinstance(u, dict):
+            self.usage.update({k: v for k, v in u.items() if v is not None})
+
+    def result(self) -> dict:
+        if self.body:
+            self._take(bytes(self.body))
+        # time to the first text or reasoning token (a stream's opening chunks carry none)
+        out = {"ttft_s": (self.token_at - self.t0) if self.token_at else None}
+        t, u = self.timings, self.usage
+        if t.get("predicted_n") is not None:
+            out["gen_tokens"] = t["predicted_n"]
+            out["cached_tokens"] = t.get("cache_n") or 0
+            out["prompt_tokens"] = (t.get("prompt_n") or 0) + out["cached_tokens"]
+            out["prompt_s"] = (t.get("prompt_ms") or 0) / 1000 or None
+            out["gen_s"] = (t.get("predicted_ms") or 0) / 1000 or None
+            return out
+        if "completion_tokens" in u or "prompt_tokens" in u:             # OpenAI
+            out["gen_tokens"] = u.get("completion_tokens") or 0
+            out["prompt_tokens"] = u.get("prompt_tokens") or 0
+            out["cached_tokens"] = (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+        elif "output_tokens" in u or "input_tokens" in u:                # Anthropic: input excludes the cache
+            out["cached_tokens"] = u.get("cache_read_input_tokens") or 0
+            out["prompt_tokens"] = (u.get("input_tokens") or 0) + out["cached_tokens"] + (u.get("cache_creation_input_tokens") or 0)
+            out["gen_tokens"] = u.get("output_tokens") or 0
+        start = self.token_at or self.first
+        if self.sse and out.get("gen_tokens") and start and self.last and self.last > start:
+            out["gen_s"] = self.last - start                             # streamed without timings: first token to last chunk
+        return out
+
+
+def client_name(headers) -> str:
+    """Which tool sent a request: X-Hangar-Client, else X-Title, else the product in its User-Agent."""
+    for h in ("x-hangar-client", "x-title"):
+        if headers.get(h):
+            return headers[h].strip()[:40]
+    ua = (headers.get("user-agent") or "").strip()
+    return (ua.split("/", 1)[0].split(" ", 1)[0] or "unknown")[:40]
 
 
 def _union_seconds(spans):

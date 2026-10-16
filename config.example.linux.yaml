@@ -1,0 +1,51 @@
+# Hangar on Linux with no engines of its own (a hub). Copy to config.yaml (which git ignores) and edit.
+# ${NAME} anywhere is replaced by the environment variable NAME; a leading ~/ is your home folder.
+#
+# This machine runs no engines itself: it acts as a hub. Add the other machines under Machines (peers) in the
+# dashboard and define roles there, then point your tools at this machine's /v1 gateway.
+
+manager:
+  host: 0.0.0.0          # listen on every interface; the API token protects everything but the bare web page
+  port: 9000
+  # name: hub             # how this machine is called in the dashboard and by peers (default: the host name)
+  data_dir: data         # token.txt, stats.db, state.json, downloads
+  logs_dir: logs         # one log per engine
+
+resources:
+  vram_reserve_mib: 0            # nothing runs here, so no GPU to keep spare
+  ram_reserve_mib: 256
+  vram_release_timeout_s: 60
+  sample_interval_s: 5
+  warn_ram_percent: 92
+
+updates:
+  auto_before_start: false       # no engines to update here
+  min_interval_hours: 6
+  background_check_hours: 0      # off; the machines report their own updates
+
+models:
+  dir: ~/models                  # the model library: one folder per model (GGUF + its mmproj + notes.md)
+  scan: []                       # other folders to show GGUFs from (read-only); none on a hub
+
+downloads:
+  max_parallel: 2
+  aria2: auto                    # auto = use aria2c (parallel connections) when installed; on | off
+  aria2_connections: 16
+  auto_resume: false             # resume downloads that a restart/crash/reboot cut off, when Hangar starts
+
+engines: {}                      # no engines here; enable the example below only on a machine with a GPU
+
+profiles: {}                     # profiles live on the machines; this one's roles (Overview > Roles) point at them
+
+# A Linux machine that does have a GPU can run an engine of its own; uncomment to enable it:
+# engines:
+#   llamacpp:
+#     plugin: llamacpp
+#     dir: ~/llama.cpp
+#     port: 8081
+#     host: 0.0.0.0
+#     api_key: ${LLAMA_API_KEY}  # clients send it as "Authorization: Bearer ..."; empty = no key
+#     startup_timeout_s: 900
+#     update:
+#       channel: builds          # builds = every bNNNN build (what the Linux zips are published as), stable = releases/latest
+#       asset: '^llama-b\d+-bin-ubuntu-x64\.zip$'   # check the asset name on llama.cpp's releases page
