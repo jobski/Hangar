@@ -324,6 +324,21 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
 .roles .rname { font: 600 13px var(--mono); }
 .chain { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
 .chain .arr { color: var(--faint); font-size: 12px; }
+.gw { padding: 18px 16px 16px; }
+.gw .gwh { display: flex; align-items: center; gap: 14px; }
+.gwi { flex: none; display: grid; place-items: center; width: 46px; height: 46px; border-radius: 12px; background: var(--accent-dim); color: var(--accent); }
+.gwi svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.gwi.sm { width: 22px; height: 22px; border-radius: 6px; }
+.gwi.sm svg { width: 14px; height: 14px; stroke-width: 2; }
+.gw .gwt { font-size: 15.5px; font-weight: 650; letter-spacing: -.01em; }
+.gw .gwd { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.gw .gwurl { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 8px 8px 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg2); font: 12.5px var(--mono); }
+.gw .gwurl span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gw .gwto { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; font-size: 12px; color: var(--muted); }
+.gw .gwsplit { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--bg2); margin-top: 8px; }
+.gw .gwsplit i { display: block; height: 100%; }
+.gw .gwlast { margin: 14px -16px -16px; border-top: 1px solid var(--line); }
+.gw .gwlast .it { grid-template-columns: 74px minmax(0, 1fr) auto; }
 .tchip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; border: 1px solid var(--line2); border-radius: 7px; background: var(--bg2); font-size: 12px; min-width: 0; max-width: 100%; }
 .tchip .m { color: var(--muted); }
 .tchip .p { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -424,7 +439,7 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
     </div>
     <div class="cols">
       <div style="display:grid;gap:16px;min-width:0">
-        <div class="panel"><div class="ph"><h3>Engines</h3><span class="sp"></span><span class="meta" id="engmeta"></span></div><div id="engines"></div></div>
+        <div class="panel"><div class="ph"><h3 id="engtitle">Engines</h3><span class="sp"></span><span class="meta" id="engmeta"></span></div><div id="engines"></div></div>
         <div class="panel"><div class="ph"><h3>Recent events</h3><span class="sp"></span><button class="btn ghost sm" data-view="activity">All activity →</button></div><div class="feed" id="ovevents"></div></div>
       </div>
       <div class="panel"><div class="ph"><h3>Machine</h3><span class="sp"></span><button class="btn ghost sm" data-act="budget" id="budgetbtn" title="How much memory Hangar's engines may use here">Budget</button></div>
@@ -540,6 +555,7 @@ const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? "now" : s < 
 const pctCls = p => p > 95 ? "bad" : p > 85 ? "warn" : "";
 const stateTag = s => ({ done: "ok", failed: "bad", refused: "bad", cancelled: "bad", ready: "ok" }[s] || "warn");
 const ICON = {
+  relay: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.6"/><circle cx="4.5" cy="5.5" r="2"/><circle cx="19.5" cy="5.5" r="2"/><circle cx="12" cy="20.5" r="2"/><path d="M6.1 7l3.9 3.3M17.9 7 14 10.3M12 14.6v3.9"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M7 5v14l11-7z" fill="currentColor" stroke="none"/></svg>',
   stop: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/></svg>',
   restart: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
@@ -637,8 +653,10 @@ function renderStatus(s) {
     }
     h += `</div>`;
   }
-  $("#engines").innerHTML = h || `<div class="empty">No engines on this machine. It can still be the address your tools use: its roles (above) send each request on to the machine that serves it.</div>`;
-  $("#engmeta").textContent = `${nrun} of ${s.engines.length} running`;
+  $("#engtitle").textContent = s.engines.length ? "Engines" : "Gateway";
+  if (s.engines.length) $("#engines").innerHTML = h;
+  else renderGateway(s).catch(() => { $("#engines").innerHTML = `<div class="empty">No engines on this machine: its roles (above) send each request on to the machine that serves it.</div>`; });
+  if (s.engines.length) $("#engmeta").textContent = `${nrun} of ${s.engines.length} running`;
   v += `<div class="vital"><span class="k">Out</span><span class="v ${out ? "ok-t" : ""}">${tps(out)} tok/s</span></div>`;
   $("#vitals").innerHTML = v + fleetVital();
   if (s.machine) {
@@ -882,6 +900,41 @@ function customRun(p) {
   };
 }
 
+// ---- a machine with no engines (a hub): its gateway in place of the engines, refreshed every 10 s
+let GW = null, gwAt = 0;
+const MCOL = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--info)", "var(--warn)"];
+async function renderGateway(s) {
+  if (!GW || Date.now() - gwAt > 10000) {
+    const [sum, last] = await Promise.all([api("/api/requests/summary?period=day&by=machine"), api("/api/requests?limit=5")]);
+    GW = { sum, last }; gwAt = Date.now();
+  }
+  const t = GW.sum.total, rows = GW.sum.rows.filter(r => r.machine), port = location.port || 9000;
+  const host = MACHINE ? ((PEERS.find(p => p.name === MACHINE) || {}).url || "").replace(/^https?:\/\//, "").split(":")[0] : location.hostname;
+  const url = `http://${host}:${port}/v1`;
+  const ms = v => v == null ? "–" : v < 1 ? Math.round(v * 1000) + "<small>ms</small>" : v.toFixed(1) + "<small>s</small>";
+  const serving = [...new Set((s.roles || []).map(r => r.serving && r.serving.machine).filter(Boolean))];
+  const to = [...new Set([...serving, ...rows.map(r => r.machine)])];
+  const col = m => MCOL[Math.max(0, to.indexOf(m)) % MCOL.length];
+  $("#engmeta").textContent = `${num(t.requests)} request${t.requests === 1 ? "" : "s"} today`;
+  $("#engines").innerHTML = `<div class="gw">
+    <div class="gwh"><span class="gwi">${ICON.relay}</span><div><div class="gwt">One address for your tools</div>
+      <div class="gwd">${esc(MACHINE || SELF?.name || "This machine")} runs no models: each request goes on to the machine serving its role, and is logged here.</div></div></div>
+    <div class="gwurl"><span>${esc(url)}</span><button class="btn sm" data-act="copygw" data-url="${esc(url)}">${ICON.copy}Copy</button></div>
+    <div class="stats">
+      <div class="stat hero"><div class="sv">${num(t.requests)}</div><div class="sl">requests today</div></div>
+      <div class="stat"><div class="sv">${num(t.gen_tokens)}</div><div class="sl">tokens out</div></div>
+      <div class="stat"><div class="sv">${tps(t.gen_tps)}<small>tok/s</small></div><div class="sl">avg out</div></div>
+      <div class="stat"><div class="sv">${ms(t.ttft_s)}</div><div class="sl">first token</div></div>
+      <div class="stat"><div class="sv ${t.errors ? "bad-t" : ""}">${num(t.errors)}</div><div class="sl">failed</div></div></div>
+    <div class="gwto">Sends to${to.length ? to.map(m => { const r = rows.find(x => x.machine === m), p = PEERS.find(x => x.name === m);
+      return `<span class="tchip" style="border-left:3px solid ${col(m)}"><span class="dot ${p && p.online ? "ok" : "bad"}"></span><span class="p">${esc(m)}</span>${r ? `<span class="m">${num(r.requests)} · ${Math.round(r.requests / Math.max(1, t.requests - t.errors) * 100)}%</span>` : ""}</span>`; }).join("") : ` <span>nothing yet: add machines and give the roles targets on them</span>`}</div>
+    ${rows.length ? `<div class="gwsplit">${rows.map(r => `<i style="width:${r.requests / rows.reduce((a, x) => a + x.requests, 0) * 100}%;background:${col(r.machine)}" title="${esc(r.machine)}: ${r.requests}"></i>`).join("")}</div>` : ""}
+    <div class="gwlast feed">${GW.last.length ? GW.last.map(r => `<div class="it"><span class="ts">${ago(r.ts)}</span>
+      <span class="msg"><span class="k">${esc(r.model)}</span>${r.machine ? `→ ${esc(r.machine)}/${esc(r.profile)}` : `<span class="bad-t">${esc(r.error || "failed")}</span>`} <span class="muted small">· ${esc(r.client || "")}</span></span>
+      <span class="ts">${r.gen_s ? tps(r.gen_tokens / r.gen_s) + " tok/s" : r.error && r.machine ? esc(r.error) : ""}</span></div>`).join("")
+      : `<div class="empty" style="padding:16px">No requests yet: point a tool at the address above.</div>`}</div></div>`;
+}
+
 // ---- usage
 const PERIODS = [["day", "Today"], ["week", "Week"], ["month", "Month"], ["year", "Year"], ["all", "All"], ["24h", "24h"], ["7d", "7d"], ["30d", "30d"]];
 const BUCKETS = [["hour", "Hour", 24], ["day", "Day", 30], ["week", "Week", 26], ["month", "Month", 12], ["year", "Year", 5]];
@@ -1094,6 +1147,8 @@ document.addEventListener("click", async ev => {
   if (ev.target.closest("[data-act=maddshow]")) { ev.preventDefault(); return addMachineDialog(); }
   if (ev.target.closest("[data-act=mshare]")) { ev.preventDefault(); return shareDialog(); }
   if (ev.target.closest("[data-act=fleetgo]")) { ev.preventDefault(); setView("overview"); return $("#fleetsec").scrollIntoView({ behavior: "smooth", block: "start" }); }
+  const cg = ev.target.closest("[data-act=copygw]");
+  if (cg) { ev.preventDefault(); return copyText(cg.dataset.url); }
   if (ev.target.closest("[data-act=copycode]")) { ev.preventDefault(); const c = await loadMyCode(); return copyText(c.code); }
   if (ev.target.closest("[data-act=pastego]")) { ev.preventDefault(); const c = $("#pastecode").value.trim(); if (!c) return toast("Paste the other machine's pairing code first", true); return addFromCode(c, $("#pasteboth").checked, ev.target.closest("button")); }
   const b = ev.target.closest("[data-act],[data-uscope],[data-period],[data-bucket],[data-reqby],[data-job],[data-cnkind],[data-cnclient],[data-view]");
@@ -1205,9 +1260,9 @@ async function renderMachines() {
       const vp = sm && sm.vram_total_mib ? sm.vram_used_mib / sm.vram_total_mib * 100 : 0;
       if (online && sm && sm.engines === 0)        // a hub: no models of its own, left out of the totals above
         return `<button class="mcd ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
-          <div class="mh2"><span class="dot ok"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="tag info">relay</span><span class="sp"></span>
+          <div class="mh2"><span class="gwi sm">${ICON.relay}</span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="tag info">hub</span><span class="sp"></span>
             ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
-          <div class="run"><span class="muted">no engines · passes requests on to the others</span></div>
+          <div class="run"><span class="muted">${isSelf && !MACHINE && GW ? `${num(GW.sum.total.requests)} requests today · ${num(GW.sum.total.gen_tokens)} tokens out` : "passes requests on to the others"}</span></div>
           <div class="small muted num" style="margin-top:4px">${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""} · not counted in the totals</div></button>`;
       return `<button class="mcd ${online ? "" : "off"} ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
         <div class="mh2"><span class="dot ${online ? "ok" : "bad"}"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="sp"></span>
