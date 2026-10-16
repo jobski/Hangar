@@ -30,13 +30,14 @@ CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, model TEXT, machine TEXT, profile TEXT, client TEXT,
   via TEXT, path TEXT, status INTEGER, stream INTEGER, ttft_s REAL, duration_s REAL, prompt_tokens REAL,
-  cached_tokens REAL, gen_tokens REAL, prompt_s REAL, gen_s REAL, error TEXT);
+  cached_tokens REAL, gen_tokens REAL, prompt_s REAL, gen_s REAL, error TEXT, caller TEXT);
 CREATE INDEX IF NOT EXISTS requests_ts ON requests(ts);
 """
 
-REQ_FIELDS = ("model", "machine", "profile", "client", "via", "path", "status", "stream", "ttft_s", "duration_s",
+REQ_FIELDS = ("model", "machine", "profile", "client", "caller", "via", "path", "status", "stream", "ttft_s", "duration_s",
               "prompt_tokens", "cached_tokens", "gen_tokens", "prompt_s", "gen_s", "error")
-REQ_GROUPS = {"target": ("machine", "profile"), "client": ("client",), "model": ("model",), "machine": ("machine",)}
+REQ_GROUPS = {"target": ("machine", "profile"), "client": ("client",), "caller": ("caller",), "model": ("model",),
+              "machine": ("machine",)}
 
 FIELDS = ("prompt_tokens", "cached_tokens", "gen_tokens", "prompt_seconds", "gen_seconds", "requests")
 # counter name -> usage field
@@ -58,6 +59,9 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(requests)")}
+        if "caller" not in cols:                    # a request log made before callers were recorded
+            self.db.execute("ALTER TABLE requests ADD COLUMN caller TEXT")
 
     def q(self, sql, args=()):
         with self.lock:

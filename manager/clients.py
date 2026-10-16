@@ -23,15 +23,23 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 # ------------------------------------------------------------------------------------------------ addresses
-def hosts() -> list[dict]:
-    """Addresses this PC can be reached at: localhost, Tailscale (name and IP), LAN."""
-    out = [{"host": "127.0.0.1", "label": "This PC only"}]
+def tailscale_status() -> dict:
+    """`tailscale status --json`, or {} when Tailscale is not installed or not running."""
     ts = shutil.which("tailscale") or next((p for p in (r"C:\Program Files\Tailscale\tailscale.exe",
                                                         "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
                                               if Path(p).exists()), "tailscale")
     try:
-        st = json.loads(subprocess.run([ts, "status", "--json"], capture_output=True, text=True, timeout=5,
-                                       creationflags=NO_WINDOW).stdout or "{}")
+        return json.loads(subprocess.run([ts, "status", "--json"], capture_output=True, text=True, timeout=5,
+                                         creationflags=NO_WINDOW).stdout or "{}")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+
+
+def hosts() -> list[dict]:
+    """Addresses this PC can be reached at: localhost, Tailscale (name and IP), LAN."""
+    out = [{"host": "127.0.0.1", "label": "This PC only"}]
+    try:
+        st = tailscale_status()
         me = st.get("Self") or {}
         if me.get("DNSName"):
             out.append({"host": me["DNSName"].rstrip("."), "label": "Tailscale name"})

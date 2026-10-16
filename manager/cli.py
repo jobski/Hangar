@@ -10,7 +10,7 @@
     hangar logs <engine> [lines] [-f]      -f keeps printing new lines (Ctrl+C to stop)
     hangar jobs | job <id> | events
     hangar stats [day|week|month|year|all]
-    hangar requests [period] [--by target|client|model|machine] [--latest]   what the gateway (/v1) passed on
+    hangar requests [period] [--by target|client|caller|model|machine] [--latest]   what the gateway (/v1) passed on
 
   models
     hangar models                                   the model library
@@ -265,12 +265,14 @@ def cmd_requests(a):
             who = (f"{r['machine']}/{r['profile']}" + (f" [{r['error']}]" if r["error"] else "")) if r["machine"] \
                 else f"HTTP {r['status']} {r['error'] or ''}"
             tps = f"{r['gen_tokens'] / r['gen_s']:.1f} tok/s" if r.get("gen_s") else "-"
-            print(f"{time.strftime('%m-%d %H:%M:%S', time.localtime(r['ts']))} {r['model']:10s} {who:44s} {r['client'] or '-':12s}"
+            src = f"{r['client'] or '-'}@{r.get('caller') or '?'}"
+            print(f"{time.strftime('%m-%d %H:%M:%S', time.localtime(r['ts']))} {r['model']:10s} {who:44s} {src:24s}"
                   f" out {_num(r['gen_tokens'] or 0):>6s}  {tps:>11s}  {r['duration_s'] or 0:6.1f} s")
         return
     period = next((x for x in _plain(a) if x != by), "day")
     s = _call("GET", "/api/requests/summary", params={"period": period, "by": by})
-    keys = {"target": ("machine", "profile"), "client": ("client",), "model": ("model",), "machine": ("machine",)}[by]
+    keys = {"target": ("machine", "profile"), "client": ("client",), "caller": ("caller",), "model": ("model",),
+            "machine": ("machine",)}[by]
     for r in s["rows"] + [{**s["total"], "_total": True}]:
         name = "total" if r.get("_total") else "/".join(str(r[k] or "-") for k in keys)
         tps = f"{r['gen_tps']:.1f} tok/s" if r["gen_tps"] else "-"

@@ -395,10 +395,13 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         model = str(data.get("model") or "main")
         me = machine_info(mgr.cfg)["name"]
         client, via = client_name(request.headers), request.headers.get("x-hangar-via")
+        # the device: as a hub that passed it on saw it, else who connected here
+        caller = (request.headers.get("x-hangar-caller", "")[:40] if via else "") or \
+            await anyio.to_thread.run_sync(peers.caller_name, request.client.host if request.client else "")
 
         def log(**kw):
             try:
-                mgr.store.log_request(t0, model=model, client=client, via=via, path=path, stream=int(bool(data.get("stream"))),
+                mgr.store.log_request(t0, model=model, client=client, caller=caller, via=via, path=path, stream=int(bool(data.get("stream"))),
                                       duration_s=time.time() - t0, **kw)
             except Exception:  # noqa: BLE001 - the log never fails a request
                 pass
@@ -421,7 +424,8 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                 p = peers.get(t["machine"])
                 url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
                 # the peer logs it under the original client, marked as come through here
-                auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client}
+                auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client,
+                        "X-Hangar-Caller": caller}
             else:
                 ents = await anyio.to_thread.run_sync(lambda: clients.model_entries(mgr, [t["profile"]], "127.0.0.1"))
                 if not ents:
