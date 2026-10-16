@@ -389,9 +389,9 @@ def summary(st: dict) -> dict:
     for e in st.get("engines") or []:
         run = e.get("running")
         if run:
-            st = run.get("stats") or {}
-            w = st.get("window") or {}
-            g = (st.get("live") or {}).get("gen_tps") or (w.get("1m") or {}).get("gen_tps") or (w.get("5m") or {}).get("gen_tps")
+            rs = run.get("stats") or {}
+            w = rs.get("window") or {}
+            g = (rs.get("live") or {}).get("gen_tps") or (w.get("1m") or {}).get("gen_tps") or (w.get("5m") or {}).get("gen_tps")
             running.append({"engine": e["name"], "profile": run["profile"], "state": run["state"], "port": e["port"],
                             "gen_tps": g})
     loads = [g["util_percent"] for g in gpus if g.get("util_percent") is not None]
@@ -410,8 +410,9 @@ def summary(st: dict) -> dict:
 def fleet(summaries: list[dict]) -> dict:
     """Every online machine added up: tokens per second out, memory, and load. CPU and GPU load are averaged, CPU
     weighted by thread count (32 busy threads on one machine and 14 idle on another is ~70%, not 50%). On Apple Silicon
-    the GPU memory is part of the RAM, so the two totals overlap there."""
-    s = [x for x in summaries if x]
+    the GPU memory is part of the RAM, so the two totals overlap there. A machine with no engines (a hub) runs no
+    models, so it is left out."""
+    s = [x for x in summaries if x and x.get("engines", 1)]
     add = lambda k: sum(x.get(k) or 0 for x in s)  # noqa: E731
     cpus = [(x["cpu_percent"], x.get("cpu_count") or 1) for x in s if x.get("cpu_percent") is not None]
     loads = [(x["gpu_util_percent"], x.get("vram_total_mib") or 1) for x in s if x.get("gpu_util_percent") is not None]

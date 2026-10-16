@@ -580,7 +580,8 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.api_route("/api/peers/{name}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"], include_in_schema=False)
     async def peers_proxy(name: str, path: str, request: Request):
-        if path == "peers" or path.startswith("peers/"):
+        # a peer's list of its machines may be read (its role editor needs the names); nothing further through it
+        if (path == "peers" and request.method != "GET") or path.startswith("peers/"):
             raise HTTPException(400, "a peer's own peers are not reachable through it; add them here")
         p = guard(peers.get, name)
         body = await request.body()

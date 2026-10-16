@@ -692,7 +692,7 @@ async function renderProfiles() {
       <div class="acts">
         ${p.editable ? `<button class="btn sm ghost" data-act="pedit" data-p="${esc(p.id)}">Edit</button>` : ""}
         ${p.discovered || p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcopy" data-p="${esc(p.id)}">Copy</button>`}
-        ${p.source === "custom" || MACHINE ? "" : `<button class="btn sm ghost" data-act="prole" data-p="${esc(p.id)}" title="make it main, helper, or a backup">Role</button>`}
+        ${p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="prole" data-p="${esc(p.id)}" title="make it main, helper, or a backup">Role</button>`}
         ${p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pcustom" data-p="${esc(p.id)}">Custom run</button>`}
         ${p.editable ? `<button class="btn sm ghost danger" data-act="pdel" data-p="${esc(p.id)}">Delete</button>` : p.source === "custom" ? "" : `<button class="btn sm ghost" data-act="pwhy" data-p="${esc(p.id)}" title="why this profile has no Delete">Delete?</button>`}
         <button class="btn sm ${p.running ? "" : "primary"}" data-act="start" data-p="${esc(p.id)}">${p.running ? ICON.restart + "Restart" : ICON.play + "Start"}</button></div></div>`;
@@ -1203,6 +1203,12 @@ async function renderMachines() {
     };
     const card = (name, os, online, sm, err, isSelf, src, peer) => {
       const vp = sm && sm.vram_total_mib ? sm.vram_used_mib / sm.vram_total_mib * 100 : 0;
+      if (online && sm && sm.engines === 0)        // a hub: no models of its own, left out of the totals above
+        return `<button class="mcd ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
+          <div class="mh2"><span class="dot ok"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="tag info">relay</span><span class="sp"></span>
+            ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
+          <div class="run"><span class="muted">no engines · passes requests on to the others</span></div>
+          <div class="small muted num" style="margin-top:4px">${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""} · not counted in the totals</div></button>`;
       return `<button class="mcd ${online ? "" : "off"} ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
         <div class="mh2"><span class="dot ${online ? "ok" : "bad"}"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="sp"></span>
           ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
@@ -1335,24 +1341,23 @@ let ROLES = [];
 function renderRoles(rs) {
   ROLES = rs;
   $("#rolesec").hidden = false;
-  $("#roleadd").hidden = !!MACHINE;
   const port = location.port || 9000;
-  $("#rolemeta").innerHTML = MACHINE ? "edit them on that machine" : `OpenAI-compatible: <span class="mono">http://${esc(location.hostname)}:${port}/v1</span> · model = role name`;
+  $("#rolemeta").innerHTML = MACHINE ? `${esc(MACHINE)}'s own roles: what its gateway serves` : `OpenAI-compatible: <span class="mono">http://${esc(location.hostname)}:${port}/v1</span> · model = role name`;
   $("#gwbtn").hidden = !!MACHINE;
   const main = rs.find(r => r.name === "main");
   const mainT = main && (main.targets[0] || main.serving);
   const stc = st => ({ ready: "ok", starting: "warn", offline: "bad", unknown: "bad" }[st] || "");
-  const chip = (t, extra) => `<span class="tchip ${t.serving ? "serving" : ""}" title="${esc(t.state || "")}${t.started_by_hangar ? " · started by Hangar as a backup" : ""}"><span class="dot ${stc(t.state)}"></span><span class="m">${esc(t.machine || "this")}</span><span class="p">${esc(t.profile)}</span>${extra || ""}</span>`;
+  const chip = (t, extra) => `<span class="tchip ${t.serving ? "serving" : ""}" title="${esc(t.state || "")}${t.started_by_hangar ? " · started by Hangar as a backup" : ""}"><span class="dot ${stc(t.state)}"></span><span class="m">${esc(t.machine || MACHINE || "this")}</span><span class="p">${esc(t.profile)}</span>${extra || ""}</span>`;
   $("#roles").innerHTML = rs.map(r => {
     const ts = r.targets.map((t, i) => chip(t, i ? `<span class="k">${t.auto_start ? "backup · auto" : "backup"}</span>` : "")).join(`<span class="arr">→</span>`);
     // what happens when every target is down: main answers (shown always, lit when it is answering)
     let fb = "";
     if (r.fallback && r.serving) fb = `<span class="arr">→</span>${chip({ ...r.serving, state: "ready", serving: true }, `<span class="k">${r.name === "main" ? "running" : "fallback · answering"}</span>`)}`;
-    else if (r.name !== "main" && mainT) fb = `<span class="arr">→</span><span class="tchip" style="opacity:.6" title="used automatically when the targets before it are down"><span class="m">then main</span><span class="p">${esc(mainT.machine || "this")}/${esc(mainT.profile)}</span></span>`;
+    else if (r.name !== "main" && mainT) fb = `<span class="arr">→</span><span class="tchip" style="opacity:.6" title="used automatically when the targets before it are down"><span class="m">then main</span><span class="p">${esc(mainT.machine || MACHINE || "this")}/${esc(mainT.profile)}</span></span>`;
     const none = !r.serving ? `<span class="tag bad">nothing up</span>` : "";
     const empty = !r.targets.length ? `<span class="small muted">${r.name === "main" ? "not set: whatever runs here" : "no targets"}</span>` : "";
     return `<div class="rrow"><span class="rname">${esc(r.name)}</span><div class="chain">${ts}${empty}${fb}${none}${r.down_for ? `<span class="small warn-t">primary down ${dur(r.down_for)}</span>` : ""}</div>
-      ${MACHINE ? "<span></span>" : `<button class="btn sm ghost" data-act="roleedit" data-role="${esc(r.name)}">Edit</button>`}</div>`;
+      <button class="btn sm ghost" data-act="roleedit" data-role="${esc(r.name)}">Edit</button></div>`;
   }).join("");
 }
 // the roles a profile on this machine has: [{name, backup}]
@@ -1392,9 +1397,15 @@ function profileRoleDialog(pid) {
 }
 async function roleDialog(name) {
   const r = ROLES.find(x => x.name === name) || { name: "", targets: [] };
-  const machines = [{ name: "", label: `${SELF ? SELF.name : "this machine"} (this)` }, ...PEERS.map(p => ({ name: p.name, label: p.name }))];
+  // a role is saved on the machine being viewed, and its machine names are that machine's peers
+  const get = path => fetch(path, { headers: { "Authorization": "Bearer " + TOKEN } }).then(x => x.ok ? x.json() : Promise.reject(x)).catch(() => null);
+  const theirs = MACHINE ? ((await get(`/api/peers/${encodeURIComponent(MACHINE)}/peers`)) || {}).peers || [] : PEERS;
+  const machines = [{ name: "", label: `${MACHINE || (SELF ? SELF.name : "this machine")} (${MACHINE ? "that machine" : "this"})` }, ...theirs.map(p => ({ name: p.name, label: p.name }))];
+  const via = m => !m ? (MACHINE ? `/api/peers/${encodeURIComponent(MACHINE)}/profiles` : "/api/profiles")
+    : MACHINE && SELF && m === SELF.name ? "/api/profiles"                              // the peer's name for this machine
+    : PEERS.some(p => p.name === m) ? `/api/peers/${encodeURIComponent(m)}/profiles` : null;  // reached from here by the same name
   const profCache = {};
-  const profilesOf = async m => profCache[m] ??= (await fetch(m ? `/api/peers/${encodeURIComponent(m)}/profiles` : "/api/profiles", { headers: { "Authorization": "Bearer " + TOKEN } }).then(x => x.json()).catch(() => [])).map(p => p.id);
+  const profilesOf = async m => profCache[m] ??= via(m) ? ((await get(via(m))) || []).map(p => p.id) : [];
   let rows = r.targets.map(t => ({ machine: t.machine, profile: t.profile, auto_start: t.auto_start }));
   if (!rows.length) rows = [{ machine: "", profile: "", auto_start: false }];
   dialog(name ? `Role · ${name}` : "New role", `
@@ -1408,7 +1419,7 @@ async function roleDialog(name) {
       const ps = await profilesOf(t.machine);
       return `<div class="trow" data-i="${i}">
         <select class="input rlm">${machines.map(m => `<option value="${esc(m.name)}" ${m.name === t.machine ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select>
-        <select class="input rlp"><option value="">choose a profile…</option>${ps.map(p => `<option ${p === t.profile ? "selected" : ""}>${esc(p)}</option>`).join("")}</select>
+        <select class="input rlp"><option value="">${ps.length || !t.machine ? "choose a profile…" : "not reachable from here"}</option>${[...new Set([...ps, ...(t.profile ? [t.profile] : [])])].map(p => `<option ${p === t.profile ? "selected" : ""}>${esc(p)}</option>`).join("")}</select>
         <div class="row" style="gap:4px;flex-wrap:nowrap">${i ? `<label class="chk small" title="start it when the targets before it are down"><input type="checkbox" class="rla" ${t.auto_start ? "checked" : ""}> start when needed</label>` : `<span class="tag">primary</span>`}
           ${i ? `<button class="btn sm ghost rlup" title="move up">↑</button>` : ""}${rows.length > 1 ? `<button class="btn sm ghost danger rlrm" title="remove">✕</button>` : ""}</div></div>`;
     }));
