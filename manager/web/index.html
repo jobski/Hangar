@@ -530,21 +530,29 @@ let view = (location.hash.slice(1) || store.get("llmm-view", "overview"));
 // the machine being viewed: "" is this one; a peer's calls go through this Hangar at /api/peers/<name>/...
 let MACHINE = store.get("llmm-machine", ""), SELF = null, PEERS = [];
 const route = path => MACHINE && path.startsWith("/api/") && !path.startsWith("/api/peers") ? `/api/peers/${encodeURIComponent(MACHINE)}/` + path.slice(5) : path;
+const pendingRequests = new Set();
 async function api(path, opts = {}) {
-  if (!opts.local) path = route(path);
-  const r = await fetch(path, { ...opts, headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) } });
-  if (r.status === 401) { showLogin(); throw new Error("unauthorized"); }
-  const ct = r.headers.get("content-type") || "";
-  const body = ct.includes("json") ? await r.json() : await r.text();
-  if (!r.ok) throw new Error(body.detail || body.error || body);
-  return body;
+  const epoch = machineEpoch, token = TOKEN, controller = new AbortController();
+  const stale = () => { if (epoch !== machineEpoch || token !== TOKEN) throw Object.assign(new Error("stale machine"), { stale: true }); };
+  pendingRequests.add(controller);
+  try {
+    if (!opts.local) path = route(path);
+    const r = await fetch(path, { ...opts, signal: opts.signal || controller.signal, headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json", ...(opts.headers || {}) } });
+    stale();
+    if (r.status === 401) { showLogin(); throw new Error("unauthorized"); }
+    const ct = r.headers.get("content-type") || "";
+    const body = ct.includes("json") ? await r.json() : await r.text();
+    stale();
+    if (!r.ok) throw new Error(body.detail || body.error || body);
+    return body;
+  } finally { pendingRequests.delete(controller); }
 }
 const post = (path, data) => api(path, { method: "POST", body: JSON.stringify(data) });
 
 function toast(msg, err) { const t = document.createElement("div"); t.className = "toast" + (err ? " err" : ""); t.textContent = msg; $("#toasts").append(t); setTimeout(() => t.remove(), 4500); }
-const fail = e => toast(e.message, true);
+const fail = e => { if (!e.stale && e.name !== "AbortError") toast(e.message, true); };
 function showLogin() {
-  bootGeneration++; clearTimeout(bootRetry); timers.forEach(clearInterval); timers = [];
+  bootGeneration++; clearTimeout(bootRetry); timers.forEach(t => clearTimeout(t.timer)); timers = [];
   $("#app").hidden = true; $("#login").hidden = false;
 }
 $("#tokbtn").onclick = () => { TOKEN = $("#tok").value.trim(); store.set("llmm-token", TOKEN); $("#login").hidden = true; boot(); };
@@ -581,6 +589,7 @@ function setView(v) {
   document.querySelectorAll(".nav").forEach(x => x.classList.toggle("on", x.dataset.view === v));
   if (v === "overview") renderLive().catch(() => { });
   if (v === "usage") renderStats().catch(() => { });
+  if (["profiles", "models", "activity"].includes(v)) refreshSlow();
   if (v === "connect" && !CN_READY) { CN_READY = true; renderConnectHosts().then(renderConnect).catch(fail); }
   window.scrollTo({ top: 0 });
 }
@@ -722,7 +731,7 @@ async function renderProfiles() {
     const n = p.needs || {};
     return `<div class="lrow"><div class="main"><div class="t"><span class="dot ${p.running ? "ok" : ""}"></span>${esc(p.id)}</div>
         ${p.description ? `<div class="d">${esc(p.description)}</div>` : ""}
-        <div class="tags">${p.vision ? `<span class="tag info" title="takes images">${ICON.eye}vision</span>` : ""}${rolesOf(p.id).map(r => `<span class="tag ok" title="${esc(r.backup ? "backup for " + r.name : r.name)}">${esc(r.backup ? r.name + " · backup" : r.name)}</span>`).join("")}${BUDGET.budget_mib && (n.vram_mib || 0) + (n.ram_mib || 0) > BUDGET.budget_mib ? `<span class="tag bad" title="needs ~${gb((n.vram_mib || 0) + (n.ram_mib || 0))} GB">over budget</span>` : ""}<span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
+        <div class="tags">${p.vision ? `<span class="tag info" title="takes images">${ICON.eye}vision</span>` : ""}${rolesOf(p.id).map(r => `<span class="tag ok" title="${esc(r.backup ? "backup for " + r.name : r.name)}">${esc(r.backup ? r.name + " · backup" : r.name)}</span>`).join("")}${BUDGET.budget_mib && (BUDGET.unified ? Math.max(n.vram_mib || 0, n.ram_mib || 0) : (n.vram_mib || 0) + (n.ram_mib || 0)) > BUDGET.budget_mib ? `<span class="tag bad" title="needs ~${gb((BUDGET.unified ? Math.max(n.vram_mib || 0, n.ram_mib || 0) : (n.vram_mib || 0) + (n.ram_mib || 0)))} GB">over budget</span>` : ""}<span class="tag info">${esc(p.engine)}</span><span class="tag">${esc(p.policy)}</span><span class="tag" title="${esc(n.note || "")}">${esc(n.source || "?")}</span>${p.source === "managed" ? `<span class="tag">ui</span>` : ""}</div></div>
       ${needBar("VRAM", n.vram_mib, vt)}${needBar("RAM", n.ram_mib, rt)}
       <div class="acts">
         ${p.editable ? `<button class="btn sm ghost" data-act="pedit" data-p="${esc(p.id)}">Edit</button>` : ""}
@@ -844,10 +853,12 @@ async function renderLibrary() {
 const CN_MODELS = [["opencode", "opencode"], ["qwen", "Qwen Code"], ["pi", "Pi"], ["codex", "Codex CLI"], ["claude", "Claude Code"], ["aider", "Aider"], ["continue", "Continue"], ["generic", "Any OpenAI app"]];
 let cnKind = store.get("llmm-cnkind", "models"), cnClient = store.get("llmm-cnclient", "opencode"), cnHost = store.get("llmm-cnhost", "127.0.0.1"), cnSnip = null, CN_READY = false;
 async function renderConnectHosts() {
+  const epoch = machineEpoch;
   const hs = await api("/api/connect/hosts");
   // a machine with no engines (a hub) is used from other machines: offer its network address, not 127.0.0.1
   if (store.get("llmm-cnhost", null) === null && cnHost === "127.0.0.1") {
     const st = lastStatus || await api("/api/status").catch(() => null);
+    if (epoch !== machineEpoch) return;
     if (st && !(st.engines || []).length) cnHost = (hs.find(h => h.host !== "127.0.0.1") || hs[0]).host;
   }
   if (!hs.some(h => h.host === cnHost)) hs.push({ host: cnHost, label: "saved" });
@@ -867,7 +878,7 @@ async function renderConnect() {
   }
   const s = cnSnip, local = ["127.0.0.1", "localhost"].includes(location.hostname);
   $("#cnbody").innerHTML = `<div class="code"><div class="chd"><span class="path">${esc(s.file)}</span><span class="tag">${esc(s.language)}</span>
-      ${s.apply ? `<button class="btn sm" data-act="cnapply" title="merges into the file on the manager's PC; a backup is kept">Write to ${local ? "this PC" : "the manager's PC"}</button>` : ""}
+      ${s.apply ? `<button class="btn sm" data-act="cnapply" title="merges into the file on the manager's PC; a backup is kept">Write to ${MACHINE ? esc(MACHINE) : local ? "this PC" : "the manager's PC"}</button>` : ""}
       <button class="btn sm primary" data-act="cncopy">${ICON.copy}Copy</button></div><pre>${esc(s.content)}</pre></div>
     ${s.notes ? `<div class="note">${ICON.info}<span>${esc(s.notes)}</span></div>` : ""}
     ${cnHost === "127.0.0.1" ? `<div class="note warn">${ICON.warn}<span>127.0.0.1 only works on the manager's PC. Pick a Tailscale or LAN address for other machines.</span></div>` : ""}`;
@@ -926,8 +937,8 @@ async function renderGateway(s) {
     GW = { sum, last }; gwAt = Date.now();
   }
   const t = GW.sum.total, rows = GW.sum.rows.filter(r => r.machine), port = location.port || 9000;
-  const host = MACHINE ? ((PEERS.find(p => p.name === MACHINE) || {}).url || "").replace(/^https?:\/\//, "").split(":")[0] : location.hostname;
-  const url = `http://${host}:${port}/v1`;
+  const base = MACHINE ? (PEERS.find(p => p.name === MACHINE) || {}).url : location.origin;
+  const url = `${base || ""}/v1`;
   const ms = v => v == null ? "–" : v < 1 ? Math.round(v * 1000) + "<small>ms</small>" : v.toFixed(1) + "<small>s</small>";
   const serving = [...new Set((s.roles || []).map(r => r.serving && r.serving.machine).filter(Boolean))];
   const to = [...new Set([...serving, ...rows.map(r => r.machine)])];
@@ -992,7 +1003,7 @@ const REQBY = [["target", "Machine · profile"], ["client", "Client"], ["caller"
 async function renderRequests() {
   let s, latest;
   try { [s, latest] = await Promise.all([api(`/api/requests/summary?period=${period}&by=${reqBy}`), api("/api/requests?limit=25")]); }
-  catch (e) { $("#reqpanel").hidden = true; $("#seriespanel").hidden = $("#bypanel").hidden = false; return; }      // an older Hangar has no request log
+  catch (e) { if (e.stale || e.name === "AbortError") return; $("#reqpanel").hidden = true; $("#seriespanel").hidden = $("#bypanel").hidden = false; return; }      // an older Hangar has no request log
   $("#reqpanel").hidden = !s.total.requests && !latest.length;
   // a hub runs no engines: its own token numbers are always empty, so its requests take their place
   const hub = uscope !== "all" && lastStatus && !(lastStatus.engines || []).length && latest.length;
@@ -1209,7 +1220,7 @@ document.addEventListener("click", async ev => {
     if (act === "mdel") { if (!confirm(`Delete ${b.dataset.folder} and every file in it?`)) return; await api(`/api/models?folder=${encodeURIComponent(b.dataset.folder)}`, { method: "DELETE" }); return renderLibrary(); }
     if (act === "cncopy") return copyText(cnSnip.content);
     if (act === "cnapply") {
-      if (!confirm(`Merge these settings into ${cnSnip.file} on the manager's PC? The old file is backed up next to it.`)) return;
+      if (!confirm(`Merge these settings into ${cnSnip.file} on ${MACHINE || "the manager's PC"}? The old file is backed up next to it.`)) return;
       const r = await post("/api/connect/apply", { kind: cnSnip.apply, client: cnKind === "models" ? cnClient : null, host: cnHost });
       return toast(`Written to ${r.file}` + (r.backup ? " (backup kept)" : ""));
     }
@@ -1228,7 +1239,7 @@ document.addEventListener("click", async ev => {
 // ---- machines (this one and its peers)
 const OS = { windows: "win", macos: "mac", linux: "linux" };
 async function renderMachines() {
-  const res = await fetch("/api/peers", { headers: { "Authorization": "Bearer " + TOKEN } }).then(r => r.json());
+  const res = await api("/api/peers", { local: true });
   SELF = { ...res.self }; PEERS = res.peers;
   if (MACHINE && !PEERS.some(p => p.name === MACHINE)) return switchMachine("");
   const cur = MACHINE ? PEERS.find(p => p.name === MACHINE) : null;
@@ -1324,6 +1335,9 @@ function renderFleet(f) {
 }
 function switchMachine(name) {
   if (name === MACHINE) { $("#mswmenu").hidden = true; return; }
+  pendingRequests.forEach(controller => controller.abort());
+  stopLog(); if ($("#dlg").open) $("#dlg").close();
+  GW = null; gwAt = 0; cnHost = "127.0.0.1";
   machineEpoch++; completedJob = null; clearTimeout(jobHideTimer); clearTimeout(dlTimer);
   MACHINE = name; store.set("llmm-machine", name);
   $("#mswmenu").hidden = true;
@@ -1341,7 +1355,7 @@ document.addEventListener("click", e => { if (!e.target.closest("#msw")) $("#msw
 // ---- pairing codes: hangar-pair:<base64url of {name, urls, token}>
 let MYCODE = null;
 async function loadMyCode() {
-  if (!MYCODE) MYCODE = await fetch("/api/pairing-code", { headers: { "Authorization": "Bearer " + TOKEN } }).then(r => r.json());
+  if (!MYCODE) MYCODE = await api("/api/pairing-code", { local: true });
   if ($("#mycode")) {
     $("#mycode").textContent = MYCODE.code.slice(0, 26) + "…";
     $("#mycodeinfo").innerHTML = `<b>${esc(MYCODE.name)}</b>, reachable at ` + MYCODE.urls.filter(u => !u.includes("127.0.0.1")).map(u => `<span class="tag">${esc(u.replace("http://", ""))}</span>`).join("") +
@@ -1474,9 +1488,10 @@ function profileRoleDialog(pid) {
   });
 }
 async function roleDialog(name) {
+  const epoch = machineEpoch;
   const r = ROLES.find(x => x.name === name) || { name: "", targets: [] };
   // a role is saved on the machine being viewed, and its machine names are that machine's peers
-  const get = path => fetch(path, { headers: { "Authorization": "Bearer " + TOKEN } }).then(x => x.ok ? x.json() : Promise.reject(x)).catch(() => null);
+  const get = path => api(path, { local: true }).catch(e => { if (e.stale || e.name === "AbortError") throw e; return null; });
   const theirs = MACHINE ? ((await get(`/api/peers/${encodeURIComponent(MACHINE)}/peers`)) || {}).peers || [] : PEERS;
   const machines = [{ name: "", label: `${MACHINE || (SELF ? SELF.name : "this machine")} (${MACHINE ? "that machine" : "this"})` }, ...theirs.map(p => ({ name: p.name, label: p.name }))];
   const via = m => !m ? (MACHINE ? `/api/peers/${encodeURIComponent(MACHINE)}/profiles` : "/api/profiles")
@@ -1503,6 +1518,7 @@ async function roleDialog(name) {
         <div class="row" style="gap:4px;flex-wrap:nowrap">${i ? `<label class="chk small" title="start it when the targets before it are down"><input type="checkbox" class="rla" ${t.auto_start ? "checked" : ""}> start when needed</label>` : `<span class="tag" title="tried first; it is never started for the role (start it yourself, or give it a backup that is)">primary</span>`}
           ${i ? `<button class="btn sm ghost rlup" title="move up">↑</button>` : ""}${rows.length > 1 ? `<button class="btn sm ghost danger rlrm" title="remove">✕</button>` : ""}</div></div>`;
     }));
+    if (epoch !== machineEpoch || !$("#dlg").open) return;
     $("#rltargets").innerHTML = html.join("") + (rows.length === 1 ? `<div class="small muted" style="margin:8px 2px 0">This is the role's only target. Add a backup to have one to fall back to: backups can be started when needed, moved up, or removed (and the primary removed once a backup can take its place).</div>` : "");
     document.querySelectorAll("#rltargets .trow").forEach(el => {
       const i = +el.dataset.i;
@@ -1514,6 +1530,7 @@ async function roleDialog(name) {
     });
   };
   await draw();
+  if (epoch !== machineEpoch || !$("#dlg").open) return;
   $("#rladd").onclick = () => { rows.push({ machine: "", profile: "", auto_start: true }); draw(); };
   $("#rlsave").onclick = async () => {
     const nm = name || ($("#rlname").value || "").trim().toLowerCase();
@@ -1600,7 +1617,14 @@ async function refreshFast() {
   catch (e) { if (epoch === machineEpoch && e.message !== "unauthorized") { $("#conn").className = "pill bad"; $("#conn").innerHTML = `<span class="dot bad"></span>${MACHINE ? esc(MACHINE) + " offline" : "offline"}`; } }
 }
 async function refreshSlow() {
-  try { await Promise.all([renderProfiles(), view === "usage" ? renderStats() : null, renderEvents(), renderLive(), renderLibrary(), pollDownloads(false)]); } catch (e) { }
+  try { await Promise.all([
+    ["overview", "profiles"].includes(view) ? renderProfiles() : null,
+    view === "usage" ? renderStats() : null,
+    ["overview", "activity"].includes(view) ? renderEvents() : null,
+    view === "overview" ? renderLive() : null,
+    view === "models" ? renderLibrary() : null,
+    view === "models" ? pollDownloads(false) : null
+  ]); } catch (e) { }
 }
 let dlTimer = null;
 async function pollDownloads(refreshLibrary = true) {
@@ -1608,7 +1632,7 @@ async function pollDownloads(refreshLibrary = true) {
   const epoch = machineEpoch;
   const active = await renderDownloads().catch(() => false);
   if (epoch !== machineEpoch) return;
-  if (active) dlTimer = setTimeout(pollDownloads, 2500);
+  if (active && view === "models" && !document.hidden) dlTimer = setTimeout(pollDownloads, 2500);
   else if (refreshLibrary) renderLibrary().catch(() => { });
 }
 $("#dlsearch").onclick = () => dlSearch().catch(fail);
@@ -1618,7 +1642,7 @@ let timers = [], resizeT = null, bootRetry = null, bootGeneration = 0;
 window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { renderLive().catch(() => { }); if (view === "usage") renderStats().catch(() => { }); }, 200); });
 async function boot() {
   const generation = ++bootGeneration;
-  clearTimeout(bootRetry); timers.forEach(clearInterval); timers = [];
+  clearTimeout(bootRetry); timers.forEach(t => clearTimeout(t.timer)); timers = [];
   if (!TOKEN) return showLogin();
   $("#app").hidden = false; $("#login").hidden = true;
   try { await api("/api/status", { local: true }); }
@@ -1635,8 +1659,17 @@ async function boot() {
   await refreshFast();
   if (generation !== bootGeneration) return;
   refreshSlow(); renderAutostart().catch(() => { });
-  timers = [setInterval(refreshFast, 3000), setInterval(refreshSlow, 30000), setInterval(() => { if (view === "overview") renderLive().catch(() => { }); }, 10000),
-            setInterval(() => renderMachines().catch(() => { }), 5000)];
+  const repeat = (fn, delay) => {
+    const task = { timer: null };
+    const tick = async () => {
+      if (generation !== bootGeneration) return;
+      try { if (!document.hidden) await fn(); } catch (e) { }
+      if (generation === bootGeneration) task.timer = setTimeout(tick, delay);
+    };
+    task.timer = setTimeout(tick, delay); return task;
+  };
+  timers = [repeat(refreshFast, 3000), repeat(refreshSlow, 30000),
+    repeat(async () => { if (view === "overview") await renderLive(); }, 10000), repeat(renderMachines, 5000)];
 }
 boot();
 </script>

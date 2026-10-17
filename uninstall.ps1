@@ -24,19 +24,27 @@ param([switch]$Yes, [switch]$Purge)
     # the Hangar on the port is this install when it accepts this install's token (each install makes its own);
     # the listening process is the base Python, not the venv's, so its command line cannot tell
     function Ours {
-        $tf = Join-Path $dir 'data\token.txt'
-        if (-not (Test-Path $tf)) { return $false }
-        $t = (Get-Content $tf | Select-Object -First 1).Trim()
-        try { Invoke-WebRequest "http://127.0.0.1:$port/api/jobs?limit=1" -Headers @{Authorization = "Bearer $t"} -UseBasicParsing -TimeoutSec 3 | Out-Null; return $true } catch { return $false }
+        Push-Location $dir
+        try { & (Join-Path $dir '.venv\Scripts\python.exe') -m manager.local --owns *> $null; return $LASTEXITCODE -eq 0 }
+        finally { Pop-Location }
     }
+    Push-Location $dir
+    try { $port = & (Join-Path $dir '.venv\Scripts\python.exe') -m manager.local --port }
+    finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot read the manager port' }
     # only what belongs to this install: another Hangar (a second copy, or a different port) is left alone
     $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($c) {
         if (Ours) {
             Say 'Stopping the engines and the manager'
-            & (Join-Path $dir 'hangar.cmd') stop all *> $null
-            Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
-            Start-Sleep 1
+            Push-Location $dir
+            try { & (Join-Path $dir '.venv\Scripts\python.exe') -m manager.local stop all *> $null }
+            finally { Pop-Location }
+            if ($LASTEXITCODE -ne 0) { throw 'Could not stop the engines; kept the installation' }
+            Push-Location $dir
+            try { & (Join-Path $dir '.venv\Scripts\python.exe') -m manager.local --stop-manager }
+            finally { Pop-Location }
+            if ($LASTEXITCODE -ne 0) { throw 'Could not stop the manager; kept the installation' }
         }
     }
 

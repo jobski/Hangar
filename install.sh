@@ -44,31 +44,48 @@ say "Using $("$PY" --version) at $PY"
 URL="https://github.com/$REPO.git"
 auth() {
     if [ -n "${GITHUB_TOKEN:-}" ]; then
-        git -c "http.extraHeader=Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')" "$@"
+        GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
+            GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')" git "$@"
     else
         git "$@"
     fi
 }
 # the Hangar on the port is this install when it accepts this install's token (each install makes its own)
 ours() {
-    [ -f "$DIR/data/token.txt" ] || return 1
-    curl -fs -o /dev/null -H "Authorization: Bearer $(cat "$DIR/data/token.txt")" "http://127.0.0.1:$PORT/api/jobs?limit=1"
+    [ -x "$DIR/.venv/bin/python" ] || return 1
+    (cd "$DIR" && "$DIR/.venv/bin/python" - <<'LOCAL'
+import os, sys, urllib.request
+try:
+    from manager import config
+    cfg = config.load()
+    port = int(os.environ.get("HANGAR_PORT") or cfg["manager"]["port"])
+    token = os.environ.get("LLM_MANAGER_TOKEN") or (cfg["manager"]["data_dir"] / "token.txt").read_text().strip()
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/api/jobs?limit=1", headers={"Authorization": "Bearer " + token})
+    with urllib.request.urlopen(request, timeout=3) as response:
+        sys.exit(0 if response.status == 200 else 1)
+except Exception:
+    sys.exit(1)
+LOCAL
+    )
 }
+
 RESTART=""
 if [ -d "$DIR/.git" ]; then
     say "Updating $DIR to $REF"
     git -C "$DIR" config core.fileMode false          # executable bits set here are not "local changes"
     ours && RESTART=1
     auth -C "$DIR" fetch --quiet origin "$REF"
-    git -C "$DIR" checkout --quiet "$REF" 2>/dev/null || git -C "$DIR" checkout --quiet -B "$REF" "origin/$REF"
-    if ! git -C "$DIR" merge --quiet --ff-only "origin/$REF" 2>/dev/null; then
-        # not a fast-forward: either real local edits (kept), or the repo's history was rewritten upstream (nothing
-        # local to lose: config.yaml, data/ and models are not tracked), in which case take GitHub's version
-        if git -C "$DIR" diff --quiet && git -C "$DIR" diff --cached --quiet; then
-            git -C "$DIR" reset --quiet --hard "origin/$REF" && say "Took the repository's rewritten history"
-        else
-            warn "local changes in $DIR; kept them and did not update"
-        fi
+    if git -C "$DIR" show-ref --verify --quiet "refs/heads/$REF" || git -C "$DIR" show-ref --verify --quiet "refs/tags/$REF"; then
+        git -C "$DIR" checkout --quiet "$REF" || die "local edits in $DIR; kept them and did not update"
+    else
+        git -C "$DIR" checkout --quiet -b "$REF" FETCH_HEAD || die "cannot check out $REF; kept the current checkout"
+    fi
+    if [ -n "$(git -C "$DIR" rev-list "FETCH_HEAD..HEAD")" ]; then
+        die "local commits in $DIR; kept them and did not update"
+    fi
+    if ! git -C "$DIR" merge --quiet --ff-only FETCH_HEAD 2>/dev/null; then
+        warn "local commits or edits in $DIR; kept them and did not update"
+        exit 1
     fi
 elif [ -e "$DIR" ]; then
     die "$DIR exists and is not a Hangar checkout; set HANGAR_DIR to install somewhere else"
@@ -81,6 +98,7 @@ cd "$DIR"
 
 # ---- Python environment, config.yaml, token
 PYTHON="$PY" sh scripts/setup.sh
+PORT=$("$DIR/.venv/bin/python" -m manager.local --port)
 chmod +x hangar scripts/*.sh install.sh uninstall.sh 2>/dev/null || true
 
 # ---- `hangar` on the PATH
@@ -102,13 +120,17 @@ fi
 # ---- start it (an updated Hangar that was running is restarted, so the new code runs)
 if [ -n "$RESTART" ]; then
     say "Restarting Hangar to run the update (engines keep running)"
-    PID=$(lsof -tnP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)
-    [ -n "$PID" ] && kill "$PID" 2>/dev/null
-    i=0
-    while [ $i -lt 15 ] && lsof -tnP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; do sleep 1; i=$((i + 1)); done
+    SERVICE=""
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-active --quiet hangar && [ "$(systemctl show hangar -p WorkingDirectory --value 2>/dev/null)" = "$DIR" ]; then SERVICE=system;
+        elif systemctl --user is-active --quiet hangar && [ "$(systemctl --user show hangar -p WorkingDirectory --value 2>/dev/null)" = "$DIR" ]; then SERVICE=user; fi
+    fi
+    if [ "$SERVICE" = system ]; then systemctl restart hangar; RESTART=service;
+    elif [ "$SERVICE" = user ]; then systemctl --user restart hangar; RESTART=service;
+    else "$DIR/.venv/bin/python" -m manager.local --stop-manager; fi
 fi
 if [ -z "${HANGAR_NO_START:-}" ] || [ -n "$RESTART" ]; then
-    sh scripts/start.sh
+    if [ "$RESTART" != service ]; then sh scripts/start.sh; fi
     i=0
     while [ $i -lt 30 ] && ! curl -fs "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1; do sleep 1; i=$((i + 1)); done
 fi

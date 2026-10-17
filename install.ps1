@@ -31,46 +31,76 @@
     if (-not $py) { throw 'Python 3.10 or newer is needed. Install it with: winget install Python.Python.3.12 (then open a new PowerShell)' }
 
     # ---- get the code (a token in GITHUB_TOKEN reaches a private repo; it is not stored in the clone)
-    $auth = @()
-    if ($env:GITHUB_TOKEN) {
-        $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$($env:GITHUB_TOKEN)"))
-        $auth = @('-c', "http.extraHeader=Authorization: Basic $b64")
+    function AuthGit {
+        if (-not $env:GITHUB_TOKEN) { & git @args; return }
+        $keys = @('GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0')
+        $saved = @{}
+        foreach ($key in $keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+        try {
+            $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$($env:GITHUB_TOKEN)"))
+            $env:GIT_CONFIG_COUNT = '1'
+            $env:GIT_CONFIG_KEY_0 = 'http.extraHeader'
+            $env:GIT_CONFIG_VALUE_0 = "Authorization: Basic $b64"
+            & git @args
+        } finally {
+            foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process') }
+        }
     }
     # the Hangar on the port is this install when it accepts this install's token (each install makes its own);
     # the listening process is the base Python, not the venv's, so its command line cannot tell
     function Ours {
-        $tf = Join-Path $dir 'data\token.txt'
-        if (-not (Test-Path $tf)) { return $false }
-        $t = (Get-Content $tf | Select-Object -First 1).Trim()
-        try { Invoke-WebRequest "http://127.0.0.1:$port/api/jobs?limit=1" -Headers @{Authorization = "Bearer $t"} -UseBasicParsing -TimeoutSec 3 | Out-Null; return $true } catch { return $false }
+        $python = Join-Path $dir '.venv\Scripts\python.exe'
+        if (-not (Test-Path $python)) { return $false }
+        $probe = @'
+import os, sys, urllib.request
+try:
+    from manager import config
+    cfg = config.load()
+    port = int(os.environ.get("HANGAR_PORT") or cfg["manager"]["port"])
+    token = os.environ.get("LLM_MANAGER_TOKEN") or (cfg["manager"]["data_dir"] / "token.txt").read_text().strip()
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/api/jobs?limit=1", headers={"Authorization": "Bearer " + token})
+    with urllib.request.urlopen(request, timeout=3) as response:
+        sys.exit(0 if response.status == 200 else 1)
+except Exception:
+    sys.exit(1)
+'@
+        $preference = $ErrorActionPreference
+        Push-Location $dir
+        try { $ErrorActionPreference = 'Continue'; & $python -c $probe 2>$null; return $LASTEXITCODE -eq 0 }
+        finally { $ErrorActionPreference = $preference; Pop-Location }
     }
     $restart = $false
     if (Test-Path (Join-Path $dir '.git')) {
         Say "Updating $dir to $ref"
         $restart = Ours
-        git @auth -C $dir fetch --quiet origin $ref
-        git -C $dir checkout --quiet $ref 2>$null
-        if ($LASTEXITCODE -ne 0) { git -C $dir checkout --quiet -B $ref "origin/$ref" }
-        git -C $dir merge --quiet --ff-only "origin/$ref" 2>$null
+        AuthGit -C $dir fetch --quiet origin $ref
+        if ($LASTEXITCODE -ne 0) { throw "could not fetch $ref from $repo" }
+        git -C $dir show-ref --verify --quiet "refs/heads/$ref"
+        $hasRef = $LASTEXITCODE -eq 0
+        if (-not $hasRef) { git -C $dir show-ref --verify --quiet "refs/tags/$ref"; $hasRef = $LASTEXITCODE -eq 0 }
+        if ($hasRef) { git -C $dir checkout --quiet $ref }
+        else { git -C $dir checkout --quiet -b $ref FETCH_HEAD }
+        if ($LASTEXITCODE -ne 0) { throw "cannot check out $ref; kept local commits and edits in $dir" }
+        if (git -C $dir rev-list 'FETCH_HEAD..HEAD') { throw "local commits in $dir; kept them and did not update" }
+        git -C $dir merge --quiet --ff-only FETCH_HEAD
         if ($LASTEXITCODE -ne 0) {
-            # not a fast-forward: real local edits (kept), or history rewritten upstream (config.yaml, data\ and
-            # models are not tracked, so nothing is lost by taking GitHub's version)
-            git -C $dir diff --quiet; $clean = ($LASTEXITCODE -eq 0)
-            git -C $dir diff --cached --quiet; $clean = $clean -and ($LASTEXITCODE -eq 0)
-            if ($clean) { git -C $dir reset --quiet --hard "origin/$ref"; Say "Took the repository's rewritten history" }
-            else { Warn "local changes in $dir; kept them and did not update" }
+            throw "local commits or edits in $dir; kept them and did not update"
         }
     } elseif (Test-Path $dir) {
         throw "$dir exists and is not a Hangar checkout; set HANGAR_DIR to install somewhere else"
     } else {
         Say "Downloading Hangar ($ref) into $dir"
-        git @auth clone --quiet --branch $ref "https://github.com/$repo.git" $dir
+        AuthGit clone --quiet --branch $ref "https://github.com/$repo.git" $dir
         if ($LASTEXITCODE -ne 0) { throw "could not clone $repo (private repo? set GITHUB_TOKEN)" }
     }
 
     # ---- Python environment, config.yaml, token
     $env:HANGAR_PYTHON = ($py -join ' ')
     & (Join-Path $dir 'scripts\setup.ps1')
+    Push-Location $dir
+    try { $port = & (Join-Path $dir '.venv\Scripts\python.exe') -m manager.local --port }
+    finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot read the manager port' }
 
     # ---- `hangar` on the PATH (hangar.cmd is in the install folder)
     if (-not $env:HANGAR_NO_PATH) {
@@ -85,9 +115,10 @@
     # ---- start it, and with Windows
     if ($restart) {
         Say 'Restarting Hangar to run the update (engines keep running)'
-        $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($c) { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue }
-        for ($i = 0; $i -lt 15 -and (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
+        Push-Location $dir
+        try { & (Join-Path $dir '.venv\Scripts\python.exe') -m manager.local --stop-manager }
+        finally { Pop-Location }
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot safely stop the installed manager' }
     }
     if (-not $env:HANGAR_NO_START -or $restart) {
         & (Join-Path $dir 'scripts\start.ps1')
@@ -95,7 +126,9 @@
             try { Invoke-WebRequest "http://127.0.0.1:$port/api/ping" -UseBasicParsing -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 1 }
         }
         if (-not $env:HANGAR_NO_AUTOSTART) {
-            & (Join-Path $dir 'hangar.cmd') autostart on
+            Push-Location $dir
+            try { & (Join-Path $dir '.venv\Scripts\python.exe') -m manager.local autostart on }
+            finally { Pop-Location }
             if ($LASTEXITCODE -ne 0) { Warn 'could not turn on start with Windows; try: hangar autostart on' }
         }
     }

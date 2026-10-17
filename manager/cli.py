@@ -64,6 +64,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _conn() -> tuple[str, str]:
     conf = CONF if CONF.exists() else OLD_CONF
+    if conf.exists():
+        from .config import private_file
+        private_file(conf)
     saved = json.loads(conf.read_text()) if conf.exists() else {}
     url = os.environ.get("HANGAR_URL") or os.environ.get("LLMCTL_URL") or saved.get("url") or "http://127.0.0.1:9000"
     tok = os.environ.get("HANGAR_TOKEN") or os.environ.get("LLMCTL_TOKEN") or saved.get("token")
@@ -111,16 +114,24 @@ def _num(v):
 
 def _follow(job: dict):
     """Print a job's log as it runs."""
-    seen = 0
+    seen = None
     while True:
         log = job.get("log", [])
-        for line in log[seen:]:
-            print(line)
-        seen = len(log)
+        if "log_start" in job:
+            start = job["log_start"]
+            if seen is not None and start > seen:
+                print(f"({start - seen} older log lines expired)")
+            for line in log[max(0, (seen or start) - start):]:
+                print(line)
+            seen = start + len(log)
+        else:
+            for line in log[seen or 0:]:
+                print(line)
+            seen = len(log)
         if job["state"] not in ("queued", "running"):
             break
         time.sleep(2)
-        job = _call("GET", f"/api/jobs/{job['id']}?lines=100000")
+        job = _call("GET", f"/api/jobs/{job['id']}?lines=2000&since={seen or 0}")
     print(f"-> {job['state']}" + (f": {job['error']}" if job.get("error") else ""))
     return 0 if job["state"] == "done" else 1
 
@@ -532,7 +543,8 @@ def cmd_peer(a):
 def cmd_login(a):
     if len(a) < 2:
         sys.exit("usage: hangar login <url> <token>")
-    CONF.write_text(json.dumps({"url": a[0], "token": a[1]}))
+    from .config import write_json
+    write_json(CONF, {"url": a[0], "token": a[1]})
     print(f"saved to {CONF}")
     print(_call("GET", "/api/status") and "connected")
 

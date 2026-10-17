@@ -63,6 +63,8 @@ class LlamaCppEngine(Engine):
         self.exe = self.dir / cfg.get("exe", "llama-server.exe" if WINDOWS else "llama-server")
         self.startup_timeout_s = int(cfg.get("startup_timeout_s", 900))
         u = cfg.get("update") or {}
+        if sys.platform.startswith("linux") and not u.get("asset"):
+            self.can_update = False
         self.repo = u.get("repo", "ggml-org/llama.cpp")
         self.channel = u.get("channel", "builds")            # builds = every bNNNN build, stable = releases/latest
         self.asset_re = re.compile(u.get("asset", _default_asset()))
@@ -114,9 +116,12 @@ class LlamaCppEngine(Engine):
             return super().estimate(profile, vram_total_mib, ram_total_mib)
         c = profile.cfg
         args = [str(a) for a in c.get("args", [])]
-        files = file_mib(c.get("model"), c.get("mmproj"), arg_value(args, "-md", "--model-draft"))
+        def model_path(value):
+            return str(self.dir / str(value)) if value else None
+        model = model_path(c.get("model"))
+        files = file_mib(model, model_path(c.get("mmproj")), model_path(arg_value(args, "-md", "--model-draft")))
         ctx = int(c.get("ctx") or arg_value(args, "-c", "--ctx-size") or 4096)
-        kv = kv_mib(str(c.get("model") or ""), args, ctx)
+        kv = kv_mib(model or "", args, ctx)
         ngl = arg_value(args, "-ngl", "--n-gpu-layers", "--gpu-layers")
         greedy = ngl in (None, "auto", "all") and ("--fit" in args or ngl in ("auto", "all"))
         if ngl == "0":
@@ -159,8 +164,18 @@ class LlamaCppEngine(Engine):
 
     # ---- updates
     def version(self) -> str | None:
+        try:
+            stat = self.exe.stat()
+            identity = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return None
+        cached = getattr(self, "_version_cache", None)
+        if cached and cached[0] == identity and time.monotonic() - cached[1] < 60:
+            return cached[2]
         b = self._installed_build(self.exe)
-        return f"b{b}" if b else None
+        value = f"b{b}" if b else None
+        self._version_cache = (identity, time.monotonic(), value)
+        return value
 
     @staticmethod
     def _installed_build(exe: Path) -> int | None:
@@ -183,12 +198,16 @@ class LlamaCppEngine(Engine):
         return r.json()
 
     def _latest_release(self) -> dict:
+        cached = getattr(self, "_release_cache", None)
+        if cached and time.monotonic() - cached[0] < 60:
+            return cached[1]
         if self.channel == "stable":
             rels = [self._gh("/releases/latest")]
         else:
             rels = self._gh("/releases?per_page=10")
         for rel in rels:
             if any(self.asset_re.match(a["name"]) for a in rel.get("assets", [])):
+                self._release_cache = (time.monotonic(), rel)
                 return rel
         raise RuntimeError(f"no release in {self.repo} has an asset matching {self.asset_re.pattern}")
 
@@ -198,7 +217,7 @@ class LlamaCppEngine(Engine):
         return int(m.group(1)) if m else None
 
     def check_update(self, log):
-        cur = self._installed_build(self.exe)
+        cur = self._build_of(self.version())
         rel = self._latest_release()
         latest = self._build_of(rel["tag_name"])
         if self.channel == "stable" and latest is None:
@@ -219,16 +238,22 @@ class LlamaCppEngine(Engine):
             return dest
         log(f"  downloading {asset['name']} ({asset['size'] / 2**20:.0f} MiB)")
         tmp = dest.with_suffix(".part")
-        with httpx.stream("GET", asset["browser_download_url"], follow_redirects=True, timeout=120) as r:
-            r.raise_for_status()
-            done, last = 0, time.time()
-            with open(tmp, "wb") as f:
-                for chunk in r.iter_bytes(1 << 20):
-                    f.write(chunk)
-                    done += len(chunk)
-                    if time.time() - last > 10:
-                        log(f"    {done / 2**20:.0f} / {asset['size'] / 2**20:.0f} MiB")
-                        last = time.time()
+        try:
+            with httpx.stream("GET", asset["browser_download_url"], follow_redirects=True, timeout=120) as r:
+                r.raise_for_status()
+                done, last = 0, time.time()
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_bytes(1 << 20):
+                        f.write(chunk)
+                        done += len(chunk)
+                        if time.time() - last > 10:
+                            log(f"    {done / 2**20:.0f} / {asset['size'] / 2**20:.0f} MiB")
+                            last = time.time()
+                if tmp.stat().st_size != asset["size"]:
+                    raise RuntimeError("downloaded archive size does not match the release")
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         tmp.replace(dest)
         return dest
 
@@ -262,7 +287,31 @@ class LlamaCppEngine(Engine):
             shutil.rmtree(tmp)
         tmp.mkdir()
         with tarfile.open(tf) as t:
-            t.extractall(tmp, filter="data")
+            if hasattr(tarfile, "data_filter"):
+                t.extractall(tmp, filter="data")
+            else:
+                for member in t:
+                    target = (tmp / member.name).resolve()
+                    if not target.is_relative_to(tmp.resolve()):
+                        raise ValueError("unsafe archive path")
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                    elif member.isfile():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with t.extractfile(member) as source, target.open("wb") as dest:
+                            shutil.copyfileobj(source, dest)
+                        target.chmod(member.mode & 0o777)
+                    elif member.issym() or member.islnk():
+                        link = (target.parent if member.issym() else tmp) / member.linkname
+                        if not link.resolve().is_relative_to(tmp.resolve()):
+                            raise ValueError("unsafe archive link")
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        if member.issym():
+                            target.symlink_to(member.linkname)
+                        else:
+                            os.link(link, target)
+                    else:
+                        raise ValueError("unsupported archive entry")
         tops = list(tmp.iterdir())
         src = tops[0] if len(tops) == 1 and tops[0].is_dir() else tmp
         for p in src.iterdir():
@@ -317,8 +366,18 @@ class LlamaCppEngine(Engine):
         if prev.exists():
             shutil.rmtree(prev)
         self.dir.rename(prev)
-        new.rename(self.dir)
+        try:
+            new.rename(self.dir)
+        except BaseException:
+            prev.rename(self.dir)
+            raise
         log(f"{self.name}: updated to b{built}; the previous build is in {prev}")
+        for archive in self.downloads.glob("*"):
+            if archive.is_file() and (self.asset_re.match(archive.name) or self.runtime_re.match(archive.name)):
+                try:
+                    archive.unlink(missing_ok=True)
+                except OSError as exc:
+                    log(f"  could not remove cached archive {archive.name}: {exc}")
         return {**info, "updated": True, "current": f"b{built}"}
 
     def rollback(self, log):
@@ -326,8 +385,19 @@ class LlamaCppEngine(Engine):
         if not prev.exists():
             raise RuntimeError(f"nothing to roll back to: {prev} does not exist")
         tmp = self.dir.with_name(self.dir.name + ".rollback-tmp")
+        if tmp.exists():
+            raise RuntimeError(f"unfinished rollback at {tmp}; recover it before trying again")
         self.dir.rename(tmp)
-        prev.rename(self.dir)
-        tmp.rename(prev)
+        try:
+            prev.rename(self.dir)
+        except BaseException:
+            tmp.rename(self.dir)
+            raise
+        try:
+            tmp.rename(prev)
+        except BaseException:
+            self.dir.rename(prev)
+            tmp.rename(self.dir)
+            raise
         log(f"{self.name}: rolled back to {self.version()} (the newer build is now in {prev})")
         return {"current": self.version()}

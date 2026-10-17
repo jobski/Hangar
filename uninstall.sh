@@ -31,16 +31,16 @@ fi
 cd "$DIR"
 DIR=$(pwd -P)
 # the Hangar on the port is this install when it accepts this install's token (each install makes its own)
+PORT=$("$DIR/.venv/bin/python" -m manager.local --port)
 ours() {
-    [ -f "$DIR/data/token.txt" ] || return 1
-    curl -fs -o /dev/null -H "Authorization: Bearer $(cat "$DIR/data/token.txt")" "http://127.0.0.1:$PORT/api/jobs?limit=1"
+    "$DIR/.venv/bin/python" -m manager.local --owns
 }
+
 # only what belongs to this install: another Hangar (a second copy, or a different port) is left alone
-PID=$(lsof -tnP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)
-if [ -n "$PID" ] && ours; then
+if ours; then
     say "Stopping the engines and the manager"
-    ./hangar stop all >/dev/null 2>&1 || true
-    kill "$PID" 2>/dev/null || true
+    "$DIR/.venv/bin/python" -m manager.local stop all >/dev/null
+    "$DIR/.venv/bin/python" -m manager.local --stop-manager
 fi
 
 say "Removing the command, the PATH line and any old LaunchAgent"

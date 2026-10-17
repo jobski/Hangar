@@ -172,10 +172,23 @@ def parse_prometheus(text: str) -> dict[str, float]:
 
 
 def file_mib(*paths) -> float:
-    total = 0
+    total, seen = 0, set()
     for p in paths:
         if p and Path(p).is_file():
-            total += Path(p).stat().st_size
+            path = Path(p)
+            shard = re.match(r"(.+)-\d{5}-of-(\d{5})\.gguf$", path.name, re.I)
+            if shard:
+                files = [path.with_name(f"{shard.group(1)}-{i:05d}-of-{int(shard.group(2)):05d}.gguf")
+                         for i in range(1, int(shard.group(2)) + 1)]
+                if any(not f.is_file() for f in files):
+                    raise ValueError(f"incomplete split model: {path.name}")
+            else:
+                files = [path]
+            for f in files:
+                identity = f.resolve()
+                if identity not in seen:
+                    seen.add(identity)
+                    total += f.stat().st_size
     return total / 2**20
 
 
@@ -183,4 +196,6 @@ def arg_value(args: list[str], *names: str) -> str | None:
     for i, a in enumerate(args):
         if a in names and i + 1 < len(args):
             return args[i + 1]
+        if any(a.startswith(name + "=") for name in names):
+            return a.split("=", 1)[1]
     return None

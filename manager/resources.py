@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
 
 import psutil
 
@@ -131,9 +132,15 @@ def cpu_percent() -> float:
     return psutil.cpu_percent(interval=None)
 
 
-def snapshot() -> dict:
+_cpu_sample = 0.0
+
+
+def snapshot(sample_cpu: bool = True) -> dict:
+    global _cpu_sample
     vm = psutil.virtual_memory()
     sw = psutil.swap_memory()
+    if sample_cpu:
+        _cpu_sample = cpu_percent()
     return {
         "time": time.time(),
         "gpus": gpus(),
@@ -141,7 +148,7 @@ def snapshot() -> dict:
         "ram_available_mib": vm.available / 2**20,
         "ram_percent": vm.percent,
         "swap_used_mib": sw.used / 2**20,
-        "cpu_percent": cpu_percent(),
+        "cpu_percent": _cpu_sample,
         "cpu_count": psutil.cpu_count(),
     }
 
@@ -161,31 +168,64 @@ def vram_total(snap: dict | None = None) -> float:
     return sum(x["vram_total_mib"] for x in g)
 
 
-def port_owner(port: int) -> psutil.Process | None:
-    """The process listening on a TCP port, if any."""
-    try:
-        conns = psutil.net_connections(kind="tcp")
-    except (psutil.AccessDenied, OSError):
-        return _port_owner_lsof(port)        # macOS: the system-wide list needs root; lsof shows our own processes
-    for c in conns:
-        if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port and c.pid:
+class UnknownPortOwner:
+    pid = None
+
+    def name(self):
+        return "unknown process"
+
+    def cmdline(self):
+        raise psutil.AccessDenied()
+
+
+_port_cache = (0.0, {})
+_port_lock = threading.Lock()
+
+
+def port_owner(port: int, fresh: bool = False) -> psutil.Process | UnknownPortOwner | None:
+    """Cache one socket scan for dashboard readers; lifecycle checks always request a fresh scan."""
+    global _port_cache
+    with _port_lock:
+        if fresh or time.monotonic() - _port_cache[0] >= 2:
             try:
-                return psutil.Process(c.pid)
-            except psutil.NoSuchProcess:
-                return None
-    return None
+                conns = psutil.net_connections(kind="tcp")
+            except (psutil.AccessDenied, OSError):
+                owners = _lsof_ports()
+            else:
+                owners = {}
+                for conn in conns:
+                    if conn.status == psutil.CONN_LISTEN and conn.laddr:
+                        owners[conn.laddr.port] = conn.pid
+            _port_cache = (time.monotonic(), owners)
+        owners = _port_cache[1]
+        if port not in owners:
+            return None
+        if owners[port] is None:
+            return UnknownPortOwner()
+        try:
+            return psutil.Process(owners[port])
+        except psutil.NoSuchProcess:
+            return None
 
 
-def _port_owner_lsof(port: int) -> psutil.Process | None:
+def _lsof_ports() -> dict:
     exe = shutil.which("lsof")
     if not exe:
-        return None
+        return {}
     try:
-        out = subprocess.run([exe, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"], capture_output=True, text=True,
-                             timeout=5).stdout.split()
-        return psutil.Process(int(out[0])) if out else None
-    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error):
-        return None
+        result = subprocess.run([exe, "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"], capture_output=True,
+                                text=True, timeout=5)
+        owners, pid = {}, None
+        for line in result.stdout.splitlines():
+            if line.startswith("p"):
+                pid = int(line[1:])
+            elif line.startswith("n"):
+                match = re.search(r":(\d+)$", line)
+                if match:
+                    owners[int(match.group(1))] = pid
+        return owners
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
 
 
 _procs: dict[int, psutil.Process] = {}       # kept between samples: CPU% is measured since the previous call

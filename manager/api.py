@@ -67,6 +67,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         peers.shutdown()
         await proxy.aclose()
         await gateway.aclose()
+        await mgr.mcp_client.aclose()
         mgr.shutdown()
 
     app = FastAPI(title="Hangar", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -93,9 +94,10 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         except ValueError as e:
             raise HTTPException(400, str(e))
 
-    def job_reply(job, wait: float):
-        if wait:
-            job.wait(min(wait, 600))
+    async def job_reply(job, wait: float):
+        deadline = time.monotonic() + max(0, min(wait, 600))
+        while not job.done_event.is_set() and time.monotonic() < deadline:
+            await anyio.sleep(0.1)
         return job.public(log_lines=60)
 
     # ---- pages
@@ -142,7 +144,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         async def follow():
             dec = codecs.getincrementaldecoder("utf-8")("replace")
             data, pos, ident = mgr.follow_log(engine, None, lines=min(lines, 5000))
-            yield data.decode("utf-8", "replace")
+            yield dec.decode(data)
             while not await request.is_disconnected():
                 await anyio.sleep(0.5)
                 data, pos, new = await anyio.to_thread.run_sync(mgr.follow_log, engine, pos, ident)
@@ -160,14 +162,13 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         return mgr.list_jobs(limit)
 
     @app.get("/api/jobs/{job_id}")
-    def job(job_id: str, wait: float = 0, lines: int = 200):
+    async def job(job_id: str, wait: float = 0, lines: int = 200, since: int | None = None):
         with mgr.lock:
             j = mgr.jobs.get(job_id)
         if not j:
             raise HTTPException(404, f"no job {job_id}")
-        if wait:
-            j.wait(min(wait, 600))
-        return j.public(log_lines=lines)
+        await job_reply(j, wait)
+        return j.public(log_lines=min(5000, max(0, lines)), since=since)
 
     @app.get("/api/events")
     def events(limit: int = 100):
@@ -221,40 +222,42 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     # ---- actions (each returns a job; ?wait=N waits up to N seconds for it)
     @app.post("/api/start")
-    def start(profile: str = Body(..., embed=True), force: bool = Body(False, embed=True),
+    async def start(profile: str = Body(..., embed=True), force: bool = Body(False, embed=True),
               update: str = Body("auto", embed=True), wait: float = 0):
-        return job_reply(guard(mgr.start, profile, force, update), wait)
+        return await job_reply(await anyio.to_thread.run_sync(lambda: guard(mgr.start, profile, force, update)), wait)
 
     @app.post("/api/switch")
-    def switch(profile: str = Body(..., embed=True), force: bool = Body(False, embed=True),
+    async def switch(profile: str = Body(..., embed=True), force: bool = Body(False, embed=True),
                update: str = Body("auto", embed=True), wait: float = 0):
-        return job_reply(guard(mgr.start, profile, force, update), wait)
+        return await job_reply(await anyio.to_thread.run_sync(lambda: guard(mgr.start, profile, force, update)), wait)
 
     @app.post("/api/stop")
-    def stop(engine: str = Body(..., embed=True), wait: float = 0):
-        return job_reply(guard(mgr.stop, engine), wait)
+    async def stop(engine: str = Body(..., embed=True), wait: float = 0,
+                   idle_profile: str | None = Body(None, embed=True)):
+        action = (lambda: guard(mgr.stop_idle, engine, idle_profile)) if idle_profile else (lambda: guard(mgr.stop, engine))
+        return await job_reply(await anyio.to_thread.run_sync(action), wait)
 
     @app.post("/api/restart")
-    def restart(engine: str = Body(..., embed=True), wait: float = 0):
-        return job_reply(guard(mgr.restart, engine), wait)
+    async def restart(engine: str = Body(..., embed=True), wait: float = 0):
+        return await job_reply(await anyio.to_thread.run_sync(lambda: guard(mgr.restart, engine)), wait)
 
     @app.post("/api/update")
-    def update(engine: str = Body(..., embed=True), start_after: bool = Body(True, embed=True), wait: float = 0):
-        return job_reply(guard(mgr.update, engine, start_after), wait)
+    async def update(engine: str = Body(..., embed=True), start_after: bool = Body(True, embed=True), wait: float = 0):
+        return await job_reply(await anyio.to_thread.run_sync(lambda: guard(mgr.update, engine, start_after)), wait)
 
     @app.post("/api/check-updates")
-    def check_updates(engine: str | None = Body(None, embed=True), wait: float = 0):
-        return job_reply(guard(mgr.check_updates, engine), wait)
+    async def check_updates(engine: str | None = Body(None, embed=True), wait: float = 0):
+        return await job_reply(await anyio.to_thread.run_sync(lambda: guard(mgr.check_updates, engine)), wait)
 
     @app.post("/api/rollback")
-    def rollback(engine: str = Body(..., embed=True), start_after: bool = Body(True, embed=True), wait: float = 0):
-        return job_reply(guard(mgr.rollback, engine, start_after), wait)
+    async def rollback(engine: str = Body(..., embed=True), start_after: bool = Body(True, embed=True), wait: float = 0):
+        return await job_reply(await anyio.to_thread.run_sync(lambda: guard(mgr.rollback, engine, start_after)), wait)
 
     @app.post("/api/run-custom")
-    def run_custom(profile: str = Body(..., embed=True), overrides: dict = Body({}, embed=True),
+    async def run_custom(profile: str = Body(..., embed=True), overrides: dict = Body({}, embed=True),
                    force: bool = Body(False, embed=True), update: str = Body("auto", embed=True),
                    save_as: str | None = Body(None, embed=True), wait: float = 0):
-        return job_reply(guard(mgr.run_custom, profile, overrides, force, update, save_as), wait)
+        return await job_reply(await anyio.to_thread.run_sync(lambda: guard(mgr.run_custom, profile, overrides, force, update, save_as)), wait)
 
     # ---- profiles (UI-managed ones live in profiles.yaml)
     @app.post("/api/profiles")
@@ -380,6 +383,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         return roles.public()
 
     routing_lock = anyio.Lock()
+    wake_limiter = anyio.CapacityLimiter(8)
     gateway = httpx.AsyncClient(timeout=httpx.Timeout(10, read=None))   # generations can stream for many minutes
 
     @app.get("/v1/models")
@@ -395,11 +399,12 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         port = next((e["port"] for e in st.get("engines") or [] if (e.get("running") or {}).get("profile") == t["profile"]), None)
         if not port:
             return None
-        host = peers.get(t["machine"])["url"].split("://", 1)[1].rsplit(":", 1)[0]
+        host = httpx.URL(peers.get(t["machine"])["url"]).host
+        host = f"[{host}]" if ":" in host else host
         url = f"http://{host}:{port}/v1/models"
         try:
             ids = [m["id"] for m in (await gateway.get(url, timeout=5)).json().get("data", [])]
-        except (httpx.HTTPError, ValueError, AttributeError):
+        except (httpx.HTTPError, ValueError, AttributeError, TypeError, KeyError):
             return None
         return (url, ids[0]) if ids else None
 
@@ -426,10 +431,10 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         caller = (request.headers.get("x-hangar-caller", "")[:40] if via else "") or \
             await anyio.to_thread.run_sync(peers.caller_name, request.client.host if request.client else "")
 
-        def log(**kw):
+        async def log(**kw):
             try:
-                mgr.store.log_request(t0, model=model, client=client, caller=caller, via=via, path=path, stream=int(bool(data.get("stream"))),
-                                      duration_s=time.time() - t0, **kw)
+                await anyio.to_thread.run_sync(lambda: mgr.store.log_request(t0, model=model, client=client, caller=caller, via=via, path=path, stream=int(bool(data.get("stream"))),
+                                      duration_s=time.time() - t0, **kw))
             except Exception:  # noqa: BLE001 - the log never fails a request
                 pass
         woken = await anyio.to_thread.run_sync(roles.wake_for, model)
@@ -437,13 +442,13 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         need = len(raw) // 4 + max(0, max_tokens)
         cands = await anyio.to_thread.run_sync(roles.candidates, model, need, (client, caller))
         if not cands and (woken or await anyio.to_thread.run_sync(roles.starting, model)):
-            cands = await anyio.to_thread.run_sync(roles.wait_for, model, woken)
+            cands = await anyio.to_thread.run_sync(roles.wait_for, model, woken, limiter=wake_limiter)
         if not cands:
             names = ", ".join(r["name"] for r in roles.public())
             why = (f"woke {', '.join(woken)}, but nothing could answer within {WAKE_WAIT_S} s (a model may still be "
                    "loading there: try again shortly)") if woken else (f"a model for {model!r} is still starting: try again "
                    "shortly") if roles.starting(model) else f"nothing is up to serve {model!r}"
-            log(status=503, error="woke " + ", ".join(woken) if woken else "nothing up")
+            await log(status=503, error="woke " + ", ".join(woken) if woken else "nothing up")
             return JSONResponse({"error": {"type": "unavailable", "message": f"{why} (roles: {names}; or a running "
                                            "profile's id)"}}, status_code=503)
         passthrough = {k: v for k, v in request.headers.items() if k.lower() in ("accept", "anthropic-version", "anthropic-beta")}
@@ -457,7 +462,8 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                     break
                 t = cands[0]
                 attempted.add((t["machine"], t["profile"]))
-                roles.opened(t)               # reserve before resolving/sending, including prompt processing
+                if not roles.opened(t):
+                    continue
             r, relaying = None, False
             try:
                 if t["machine"]:
@@ -494,8 +500,9 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                     if TOO_LONG.search(body[:4096].decode("utf-8", "replace")):
                         errors.append(f"{t['machine'] or 'here'}/{t['profile']}: too long for its context")
                         continue
-                    log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code, error=f"HTTP {r.status_code}")
-                    return Response(body, status_code=r.status_code, media_type=r.headers.get("content-type"))
+                    await log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code, error=f"HTTP {r.status_code}")
+                    return Response(body, status_code=r.status_code, media_type=r.headers.get("content-type"),
+                                    headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}"})
                 roles.note_used(t, model, (client, caller))
                 meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
                 done, finished = False, False
@@ -508,7 +515,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                     roles.closed(t)
                     with anyio.CancelScope(shield=True):
                         await r.aclose()
-                    log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code,
+                    await log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code,
                         error=("closed before the end" if not done else f"HTTP {r.status_code}" if r.status_code >= 400 else None),
                         **meter.result())
 
@@ -526,7 +533,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                                                       "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
                 relaying = True
                 return response
-            except httpx.HTTPError as ex:
+            except (httpx.HTTPError, KeyError) as ex:
                 errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {type(ex).__name__}")
             finally:
                 if not relaying:
@@ -534,7 +541,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                     if r is not None:
                         with anyio.CancelScope(shield=True):
                             await r.aclose()
-        log(status=502, error="; ".join(errors)[:500])
+        await log(status=502, error="; ".join(errors)[:500])
         return JSONResponse({"error": {"type": "unavailable", "message": f"every target for {model!r} failed: "
                                        + "; ".join(errors)}}, status_code=502)
 
@@ -643,12 +650,15 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.api_route("/api/peers/{name}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"], include_in_schema=False)
     async def peers_proxy(name: str, path: str, request: Request):
+        if "%" in path or path.startswith("/") or "\\" in path or any(p in (".", "..") for p in path.split("/")):
+            raise HTTPException(400, "invalid peer API path")
         # a peer's list of its machines may be read (its role editor needs the names); nothing further through it
         if (path == "peers" and request.method != "GET") or path.startswith("peers/"):
             raise HTTPException(400, "a peer's own peers are not reachable through it; add them here")
         p = guard(peers.get, name)
         body = await request.body()
-        req = proxy.build_request(request.method, f"{p['url']}/api/{path}", params=request.query_params, content=body or None,
+        params = [(k, v) for k, v in request.query_params.multi_items() if k.lower() != "token"]
+        req = proxy.build_request(request.method, f"{p['url']}/api/{path}", params=params, content=body or None,
                                   headers={"Authorization": f"Bearer {p['token']}",
                                            "Content-Type": request.headers.get("content-type", "application/json")})
         try:

@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,27 @@ def write_json(path: Path, data, indent: int = 1):
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def write_text(path: Path, value: str):
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(value)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+@lru_cache(maxsize=128)
+def _json_file(path: str, identity: tuple):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def read_json(path: Path):
+    stat = path.stat()
+    return copy.deepcopy(_json_file(str(path), (stat.st_ino, stat.st_mtime_ns, stat.st_size)))
 
 DEFAULTS = {
     "manager": {"host": "0.0.0.0", "port": 9000, "data_dir": "data", "logs_dir": "logs"},
@@ -79,6 +101,8 @@ def load() -> dict:
         raise FileNotFoundError(f"{p} not found: copy config.example.yaml to config.yaml and edit it")
     raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     cfg = _expand(_merge(DEFAULTS, raw))
+    if os.environ.get("HANGAR_PORT"):
+        cfg["manager"]["port"] = int(os.environ["HANGAR_PORT"])
     for key in ("data_dir", "logs_dir"):
         d = Path(cfg["manager"][key])
         cfg["manager"][key] = d if d.is_absolute() else ROOT / d

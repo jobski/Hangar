@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run the manager in the background. Logs go to logs/manager.log. --foreground runs it in this terminal instead.
 cd "$(dirname "$0")/.." && ROOT=$(pwd -P)
-PORT=${HANGAR_PORT:-9000}
+PORT=$("$ROOT/.venv/bin/python" -m manager.local --port) || exit 1
 mkdir -p logs
 if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Something already listens on port $PORT (pid $(lsof -tnP -iTCP:"$PORT" -sTCP:LISTEN | head -1))."
