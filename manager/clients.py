@@ -62,11 +62,11 @@ def hosts() -> list[dict]:
 
 
 # ------------------------------------------------------------------------------------------------ the models
-def model_entries(mgr, profile_ids: list[str] | None, host: str) -> list[dict]:
+def model_entries(mgr, profile_ids: list[str] | None, host: str, *, include_custom: bool = False) -> list[dict]:
     """What a client needs per profile: provider, base URL, key, model id, context, vision."""
     out = []
     for p in mgr.profiles.values():
-        if p.source == "custom" or (profile_ids and p.id not in profile_ids):
+        if (p.source == "custom" and not include_custom) or (profile_ids and p.id not in profile_ids):
             continue
         eng = mgr.engines[p.engine]
         e = {"profile": p.id, "engine": p.engine, "provider": f"{p.engine}", "provider_name": _provider_name(p.engine),

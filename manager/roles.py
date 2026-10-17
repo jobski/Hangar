@@ -232,7 +232,7 @@ class Roles:
                 ctx = ((next((p for p in ps if p["id"] == t["profile"]), None) or {}).get("settings") or {}).get("ctx")
             else:
                 from . import clients
-                ents = clients.model_entries(self.mgr, [t["profile"]], "127.0.0.1")
+                ents = clients.model_entries(self.mgr, [t["profile"]], "127.0.0.1", include_custom=True)
                 ctx = ents[0]["context"] if ents else None
         except Exception:  # noqa: BLE001 - unknown is fine: the engine says so if the request is too long
             ctx = None
@@ -259,7 +259,11 @@ class Roles:
     def closed(self, t: dict):
         k = (t["machine"], t["profile"])
         with self.lock:
-            self.inflight[k] = max(0, self.inflight.get(k, 0) - 1)
+            count = self.inflight.get(k, 0) - 1
+            if count > 0:
+                self.inflight[k] = count
+            else:
+                self.inflight.pop(k, None)
 
     def note_used(self, t: dict, role: str | None = None, who: tuple | None = None):
         self.last_used[(t["machine"], t["profile"])] = time.time()
@@ -365,7 +369,7 @@ class Roles:
                     ctx = (p or {}).get("settings", {}).get("ctx")
                 else:
                     from . import clients
-                    ents = clients.model_entries(self.mgr, [t["profile"]], "127.0.0.1")
+                    ents = clients.model_entries(self.mgr, [t["profile"]], "127.0.0.1", include_custom=True)
                     ctx = ents[0]["context"] if ents else None
                 if ctx:
                     sizes.append(int(ctx))

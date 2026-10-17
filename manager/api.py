@@ -29,6 +29,23 @@ TOO_LONG = re.compile(r"context|too long|too many tokens|exceed|n_ctx|maximum", 
 OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
 
 
+class UpstreamResponse(StreamingResponse):
+    """Close the upstream even if sending response headers fails before the body iterator starts."""
+    def __init__(self, *args, on_close, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.on_close = on_close
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                try:
+                    await self.body_iterator.aclose()
+                finally:
+                    await self.on_close()
+
+
 def create_app(mgr: Manager | None = None) -> FastAPI:
     mgr = mgr or Manager()
     token = config_mod.token(mgr.cfg)
@@ -144,7 +161,8 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.get("/api/jobs/{job_id}")
     def job(job_id: str, wait: float = 0, lines: int = 200):
-        j = mgr.jobs.get(job_id)
+        with mgr.lock:
+            j = mgr.jobs.get(job_id)
         if not j:
             raise HTTPException(404, f"no job {job_id}")
         if wait:
@@ -266,8 +284,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     @app.delete("/api/models")
     def delete_model(folder: str):
-        guard(mgr.library.delete, folder, mgr.profiles)
-        mgr.store.event("model", f"deleted {folder}")
+        guard(mgr.delete_model_folder, folder)
         return {"ok": True}
 
     @app.get("/api/search")
@@ -362,6 +379,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         guard(roles.delete, name)
         return roles.public()
 
+    routing_lock = anyio.Lock()
     gateway = httpx.AsyncClient(timeout=httpx.Timeout(10, read=None))   # generations can stream for many minutes
 
     @app.get("/v1/models")
@@ -395,6 +413,12 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
             data = json.loads(raw or b"{}")
         except ValueError:
             raise HTTPException(400, "the gateway takes JSON requests")
+        if not isinstance(data, dict):
+            raise HTTPException(400, "the gateway takes a JSON object")
+        try:
+            max_tokens = int(data.get("max_tokens") or data.get("max_completion_tokens") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "max_tokens must be an integer")
         model = str(data.get("model") or "main")
         me = machine_info(mgr.cfg)["name"]
         client, via = client_name(request.headers), request.headers.get("x-hangar-via")
@@ -410,7 +434,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                 pass
         woken = await anyio.to_thread.run_sync(roles.wake_for, model)
         # rough size of the request in tokens (~4 bytes each) plus what it may generate: a spill target must fit it
-        need = len(raw) // 4 + int(data.get("max_tokens") or data.get("max_completion_tokens") or 0)
+        need = len(raw) // 4 + max(0, max_tokens)
         cands = await anyio.to_thread.run_sync(roles.candidates, model, need, (client, caller))
         if not cands and (woken or await anyio.to_thread.run_sync(roles.starting, model)):
             cands = await anyio.to_thread.run_sync(roles.wait_for, model, woken)
@@ -424,73 +448,92 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                                            "profile's id)"}}, status_code=503)
         passthrough = {k: v for k, v in request.headers.items() if k.lower() in ("accept", "anthropic-version", "anthropic-beta")}
         errors = []
-        for n, t in enumerate(cands):
-            if t["machine"]:
-                p = peers.get(t["machine"])
-                url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
-                # the peer logs it under the original client, marked as come through here
-                auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client,
-                        "X-Hangar-Caller": caller}
-            else:
-                ents = await anyio.to_thread.run_sync(lambda: clients.model_entries(mgr, [t["profile"]], "127.0.0.1"))
-                if not ents:
-                    continue
-                e = ents[0]
-                url, mid = f"{e['base']}/v1/{path}", e["model"]
-                auth = {"Authorization": f"Bearer {e['api_key']}"} if e["api_key"] else {}
-            req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
-                                        headers={**passthrough, **auth, "Content-Type": "application/json"})
+        attempted = set()
+        while True:
+            async with routing_lock:
+                cands = await anyio.to_thread.run_sync(roles.candidates, model, need, (client, caller))
+                cands = [t for t in cands if (t["machine"], t["profile"]) not in attempted]
+                if not cands:
+                    break
+                t = cands[0]
+                attempted.add((t["machine"], t["profile"]))
+                roles.opened(t)               # reserve before resolving/sending, including prompt processing
+            r, relaying = None, False
             try:
-                r = await gateway.send(req, stream=True)
-            except httpx.HTTPError as ex:
-                errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {type(ex).__name__}")
-                continue
-            if t["machine"] and r.status_code == 404:
-                # a peer on an older Hangar has no gateway: go to its engine's port (fine when that has no API key)
-                await r.aclose()
-                direct = await direct_engine(t)
-                if direct:
-                    url, mid = direct
-                    req = gateway.build_request("POST", url.replace("/v1/models", f"/v1/{path}"), content=json.dumps(
-                        {**data, "model": mid}).encode(), headers={**passthrough, "Content-Type": "application/json"})
-                    try:
-                        r = await gateway.send(req, stream=True)
-                    except httpx.HTTPError as ex:
-                        errors.append(f"{t['machine']}/{t['profile']} (direct): {type(ex).__name__}")
+                if t["machine"]:
+                    p = peers.get(t["machine"])
+                    url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
+                    auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client,
+                            "X-Hangar-Caller": caller}
+                else:
+                    ents = await anyio.to_thread.run_sync(lambda: clients.model_entries(
+                        mgr, [t["profile"]], "127.0.0.1", include_custom=True))
+                    if not ents:
+                        errors.append(f"here/{t['profile']}: profile no longer available")
                         continue
-            if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 404)):
-                errors.append(f"{t['machine'] or 'here'}/{t['profile']}: HTTP {r.status_code}")
-                await r.aclose()
-                continue
-            if r.status_code in (400, 413) and n + 1 < len(cands):
-                # too long for this target's context: the next one may take it; any other 400 is the client's
-                body = await r.aread()
-                await r.aclose()
-                if TOO_LONG.search(body[:4096].decode("utf-8", "replace")):
-                    errors.append(f"{t['machine'] or 'here'}/{t['profile']}: too long for its context")
-                    continue
-                log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code, error=f"HTTP {r.status_code}")
-                return Response(body, status_code=r.status_code, media_type=r.headers.get("content-type"))
-            roles.note_used(t, model, (client, caller))
-            roles.opened(t)
-            meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
-
-            async def relay(r=r, t=t, meter=meter):
-                done = False
-                try:
-                    async for chunk in r.aiter_raw():
-                        meter.feed(chunk, time.time())
-                        yield chunk
-                    done = True
-                finally:
-                    roles.closed(t)
+                    e = ents[0]
+                    url, mid = f"{e['base']}/v1/{path}", e["model"]
+                    auth = {"Authorization": f"Bearer {e['api_key']}"} if e["api_key"] else {}
+                req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
+                                            headers={**passthrough, **auth, "Content-Type": "application/json"})
+                r = await gateway.send(req, stream=True)
+                if t["machine"] and r.status_code == 404:
+                    # older peers have no gateway: try their engine directly when it needs no API key
                     await r.aclose()
+                    direct = await direct_engine(t)
+                    if direct:
+                        url, mid = direct
+                        req = gateway.build_request("POST", url.replace("/v1/models", f"/v1/{path}"), content=json.dumps(
+                            {**data, "model": mid}).encode(), headers={**passthrough, "Content-Type": "application/json"})
+                        r = await gateway.send(req, stream=True)
+                if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 404)):
+                    errors.append(f"{t['machine'] or 'here'}/{t['profile']}: HTTP {r.status_code}")
+                    continue
+                if r.status_code in (400, 413) and len(cands) > 1:
+                    body = await r.aread()
+                    if TOO_LONG.search(body[:4096].decode("utf-8", "replace")):
+                        errors.append(f"{t['machine'] or 'here'}/{t['profile']}: too long for its context")
+                        continue
+                    log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code, error=f"HTTP {r.status_code}")
+                    return Response(body, status_code=r.status_code, media_type=r.headers.get("content-type"))
+                roles.note_used(t, model, (client, caller))
+                meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
+                done, finished = False, False
+
+                async def finish(r=r, t=t, meter=meter):
+                    nonlocal finished
+                    if finished:
+                        return
+                    finished = True
+                    roles.closed(t)
+                    with anyio.CancelScope(shield=True):
+                        await r.aclose()
                     log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code,
                         error=("closed before the end" if not done else f"HTTP {r.status_code}" if r.status_code >= 400 else None),
                         **meter.result())
-            return StreamingResponse(relay(), status_code=r.status_code, media_type=r.headers.get("content-type"),
-                                     headers={"X-Hangar-Served-By": f"{t['machine'] or machine_info(mgr.cfg)['name']}/{t['profile']}",
-                                              "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+                async def relay(r=r, t=t, meter=meter):
+                    nonlocal done
+                    try:
+                        async for chunk in r.aiter_bytes():
+                            meter.feed(chunk, time.time())
+                            yield chunk
+                        done = True
+                    finally:
+                        await finish()
+                response = UpstreamResponse(relay(), on_close=finish, status_code=r.status_code, media_type=r.headers.get("content-type"),
+                                             headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}",
+                                                      "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                relaying = True
+                return response
+            except httpx.HTTPError as ex:
+                errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {type(ex).__name__}")
+            finally:
+                if not relaying:
+                    roles.closed(t)
+                    if r is not None:
+                        with anyio.CancelScope(shield=True):
+                            await r.aclose()
         log(status=502, error="; ".join(errors)[:500])
         return JSONResponse({"error": {"type": "unavailable", "message": f"every target for {model!r} failed: "
                                        + "; ".join(errors)}}, status_code=502)
@@ -618,14 +661,18 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         if path.endswith("/stream"):
             async def relay():
                 try:
-                    async for chunk in r.aiter_raw():
+                    async for chunk in r.aiter_bytes():
                         yield chunk
                 finally:
-                    await r.aclose()
-            return StreamingResponse(relay(), status_code=r.status_code, media_type=r.headers.get("content-type"),
+                    with anyio.CancelScope(shield=True):
+                        await r.aclose()
+            return UpstreamResponse(relay(), on_close=r.aclose, status_code=r.status_code, media_type=r.headers.get("content-type"),
                                      headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-        content = await r.aread()
-        await r.aclose()
+        try:
+            content = await r.aread()
+        finally:
+            with anyio.CancelScope(shield=True):
+                await r.aclose()
         return Response(content, status_code=r.status_code, media_type=r.headers.get("content-type"))
 
     @app.post("/api/reload-config")

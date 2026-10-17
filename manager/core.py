@@ -87,10 +87,14 @@ class Instance:
     popen: subprocess.Popen | None = None
     tracker: CounterTracker | None = None
     peak_vram: float = 0.0
+    vram_measured: bool = False
+    vram_isolated: bool = False
     peak_ram: float = 0.0
     ram_mib: float = 0.0
     cpu_percent: float = 0.0
     gauges: dict = field(default_factory=dict)
+    custom_profile: Profile | None = None
+    startup_pending: bool = False
     last_activity: float = field(default_factory=time.time)   # last time it generated or had a request running
     totals: dict = field(default_factory=lambda: collections.defaultdict(float))   # since this start
     window: collections.deque = field(default_factory=lambda: collections.deque(maxlen=720))  # (t, delta dict)
@@ -105,7 +109,9 @@ class Instance:
     def persist(self) -> dict:
         return {"engine": self.engine, "profile": self.profile, "pid": self.pid, "create_time": self.create_time,
                 "session": self.session, "log_path": self.log_path, "ours": self.ours,
-                "baseline_vram": self.baseline_vram, "started": self.started, "ready": self.ready}
+                "baseline_vram": self.baseline_vram, "started": self.started, "ready": self.ready,
+                "custom_profile": dataclasses.asdict(self.custom_profile) if self.custom_profile else None,
+                "vram_isolated": self.vram_isolated}
 
 
 # ------------------------------------------------------------------------------------------------------ manager
@@ -122,7 +128,7 @@ class Manager:
         self.engines: dict[str, Engine] = {}
         self.profiles: dict[str, Profile] = {}
         self.jobs: dict[str, Job] = {}
-        self.job_order: collections.deque = collections.deque(maxlen=100)
+        self.job_order: collections.deque = collections.deque()
         self.queue: queue.Queue[Job] = queue.Queue()
         self.current_job: Job | None = None
         self.snap: dict = resources.snapshot()
@@ -155,20 +161,20 @@ class Manager:
         self.store.event("config", "configuration reloaded")
 
     def refresh_profiles(self):
-        profiles: dict[str, Profile] = {}
-        for e in self.engines.values():
-            profiles.update(e.discover_profiles())
-        managed = models_mod.load_managed()
-        for source, defs in (("managed", managed), ("config", self.cfg.get("profiles") or {})):
-            for pid, pcfg in defs.items():
-                eng = self.engines.get((pcfg or {}).get("engine"))
-                if eng is None:
-                    continue
-                prof = eng.make_profile(pid, dict(pcfg))
-                prof.source = source
-                profiles[pid] = prof
-        profiles.update(self.transient)
         with self.lock:
+            profiles: dict[str, Profile] = {}
+            for e in self.engines.values():
+                profiles.update(e.discover_profiles())
+            managed = models_mod.load_managed()
+            for source, defs in (("managed", managed), ("config", self.cfg.get("profiles") or {})):
+                for pid, pcfg in defs.items():
+                    eng = self.engines.get((pcfg or {}).get("engine"))
+                    if eng is None:
+                        continue
+                    prof = eng.make_profile(pid, dict(pcfg))
+                    prof.source = source
+                    profiles[pid] = prof
+            profiles.update(self.transient)
             self.profiles = profiles
 
     def profile(self, pid: str) -> Profile:
@@ -221,12 +227,18 @@ class Manager:
     # ---- jobs
     def submit(self, kind: str, title: str, fn) -> Job:
         job = Job(kind=kind, title=title, fn=fn)
-        self.jobs[job.id] = job
-        self.job_order.append(job.id)
-        while len(self.jobs) > 100:
-            self.jobs.pop(next(iter(self.jobs)))
-        self.queue.put(job)
+        with self.lock:
+            self.jobs[job.id] = job
+            self.job_order.append(job.id)
+            self._prune_jobs()
+            self.queue.put(job)
         return job
+
+    def _prune_jobs(self):
+        completed = [jid for jid in self.job_order if self.jobs[jid].finished is not None]
+        for jid in completed[:-100]:
+            self.jobs.pop(jid)
+            self.job_order.remove(jid)
 
     def _worker(self):
         while not self.stop_flag.is_set():
@@ -247,13 +259,19 @@ class Manager:
                     job.write("  " + line)
                 self.store.event(job.kind, f"{job.title}: failed - {job.error}", level="error")
             finally:
-                job.finished = time.time()
-                self.current_job = None
+                with self.lock:
+                    job.finished = time.time()
+                    self.current_job = None
+                    self._prune_jobs()
+                    active = {i.profile for i in self.instances.values()}
+                    self.transient = {pid: p for pid, p in self.transient.items() if pid in active}
                 job.done_event.set()
+                self.queue.task_done()
 
     def list_jobs(self, limit=20):
-        ids = [i for i in reversed(self.job_order) if i in self.jobs][:limit]
-        return [self.jobs[i].public(log_lines=0) for i in ids]
+        with self.lock:
+            jobs = [self.jobs[i] for i in reversed(self.job_order)][:max(0, limit)]
+        return [j.public(log_lines=0) for j in jobs]
 
     # ---- public actions (each returns a Job)
     def start(self, profile_id: str, force: bool = False, update: str = "auto") -> Job:
@@ -310,11 +328,11 @@ class Manager:
         if save_as:
             self.save_profile(save_as, cfg, overwrite=False)
             return self.start(models_mod.slug(save_as), force, update)
-        pid = f"{base.id}~custom"
+        pid = f"{base.id.split('~custom', 1)[0]}~custom-{uuid.uuid4().hex[:8]}"
+        if eng.plugin == "llamacpp" and not cfg.get("alias"):
+            cfg["alias"] = pid
         p = eng.make_profile(pid, cfg)
         p.source, p.description = "custom", f"{base.description} (custom run: {json.dumps(overrides)[:120]})"
-        self.transient = {pid: p}
-        self.refresh_profiles()
         return self.submit("start", f"custom run of {base.id}", lambda job: self._start(job, p, force, update))
 
     # ---- profiles managed from the UI/API (profiles.yaml)
@@ -324,26 +342,24 @@ class Manager:
             raise ValueError(f"engine must be one of: {', '.join(self.engines)}")
         if pid in (self.cfg.get("profiles") or {}):
             raise ValueError(f"{pid} is defined in config.yaml; edit it there or use another name")
-        managed = models_mod.load_managed()
-        if pid in managed and not overwrite:
-            raise ValueError(f"profile {pid} already exists")
-        if pid in self.profiles and self.profiles[pid].discovered:
-            raise ValueError(f"{pid} is a name the {self.profiles[pid].engine} engine already uses")
-        managed[pid] = {k: v for k, v in data.items() if v not in (None, "")}
-        models_mod.save_managed(managed)
+        with models_mod.edit_managed() as managed:
+            if pid in managed and not overwrite:
+                raise ValueError(f"profile {pid} already exists")
+            if pid in self.profiles and self.profiles[pid].discovered:
+                raise ValueError(f"{pid} is a name the {self.profiles[pid].engine} engine already uses")
+            managed[pid] = {k: v for k, v in data.items() if v not in (None, "")}
         self.refresh_profiles()
         self.store.event("profile", f"saved profile {pid}", data["engine"], pid)
         return pid
 
     def delete_profile(self, pid: str):
-        managed = models_mod.load_managed()
-        if pid not in managed:
-            raise KeyError(f"{pid} is not a UI-managed profile (config.yaml and discovered profiles are edited at "
-                           "their source)")
-        if any(i.profile == pid for i in self.instances.values()):
-            raise ValueError(f"{pid} is running; stop it first")
-        del managed[pid]
-        models_mod.save_managed(managed)
+        with models_mod.edit_managed() as managed:
+            if pid not in managed:
+                raise KeyError(f"{pid} is not a UI-managed profile (config.yaml and discovered profiles are edited at "
+                               "their source)")
+            if any(i.profile == pid for i in list(self.instances.values())):
+                raise ValueError(f"{pid} is running; stop it first")
+            del managed[pid]
         self.refresh_profiles()
         self.store.event("profile", f"deleted profile {pid}", None, pid)
 
@@ -352,6 +368,12 @@ class Manager:
         if p.discovered:
             raise ValueError(f"{src} comes from the {p.engine} engine itself and cannot be copied into a profile")
         return self.save_profile(new_id, {**p.cfg, "engine": p.engine, **(changes or {})}, overwrite=False)
+
+    def delete_model_folder(self, folder: str):
+        with self.lock, models_mod.profiles_lock:
+            self.refresh_profiles()
+            self.library.delete(folder, self.profiles)
+        self.store.event("model", f"deleted {folder}")
 
     def profile_from_model(self, model: str, name: str | None = None, engine: str = "llamacpp",
                            ctx: int | None = None, mmproj: str | None = None, extra: dict | None = None) -> str:
@@ -491,9 +513,15 @@ class Manager:
 
     def budget_public(self) -> dict:
         b = self.budget_mib()
-        used = sum(self.footprint(i.peak_vram or 0, i.ram_mib or 0) for i in self.instances.values())
+        used = sum(self.footprint(self._instance_vram(i), i.ram_mib or 0) for i in list(self.instances.values()))
         return {"budget_mib": b, "used_mib": used, "unified": any(g.get("unified") for g in self.snap.get("gpus", [])),
                 "limit_mib": self.profile_limit_mib()}
+
+    def _instance_vram(self, inst: Instance) -> float:
+        if inst.vram_measured:
+            return inst.peak_vram
+        p = self.profiles.get(inst.profile)
+        return self.needs(p)["vram_mib"] if p and p.engine in self.engines else inst.peak_vram
 
     def profile_limit_mib(self) -> float | None:
         """What a new profile should fit in: the budget, capped on a Mac by what Metal lets the GPU use."""
@@ -505,10 +533,10 @@ class Manager:
         return b
 
     # ---- planning
-    def needs(self, p: Profile) -> dict:
+    def needs(self, p: Profile, measurements: dict | None = None) -> dict:
         eng = self.engines[p.engine]
         est = eng.estimate(p, resources.vram_total(self.snap), self.snap["ram_total_mib"])
-        learned = self.store.learned(p.id)
+        learned = self.store.learned(p.id) if measurements is None else measurements.get(p.id)
         out = {"vram_mib": est.vram_mib, "ram_mib": est.ram_mib, "greedy_vram": est.greedy_vram,
                "source": "config" if p.cfg.get("requires") else "estimate", "note": est.note}
         if learned and not p.cfg.get("requires"):
@@ -556,7 +584,7 @@ class Manager:
         # the memory budget counts what keeps running next to it
         budget = self.budget_mib()
         if ok and budget:
-            staying = sum(self.footprint(i.peak_vram or 0, i.ram_mib or 0) for n, i in others.items() if n not in stop)
+            staying = sum(self.footprint(self._instance_vram(i), i.ram_mib or 0) for n, i in others.items() if n not in stop)
             own = self.footprint(need["vram_mib"], need["ram_mib"])
             total = own + staying
             if total > budget:
@@ -587,6 +615,9 @@ class Manager:
 
     # ---- the work
     def _start(self, job: Job, p: Profile, force: bool, update: str):
+        if p.source == "custom":
+            with self.lock:
+                self.transient[p.id] = p
         eng = self.engines[p.engine]
         plan = self.plan(p.id, force)
         job.write(f"plan: policy {plan['policy']}, needs ~{plan['needs']['vram_mib']:.0f} MiB VRAM / "
@@ -644,72 +675,94 @@ class Manager:
         if log_path.exists() and log_path.stat().st_size > 50 * 2**20:
             log_path.replace(log_path.with_suffix(".old.log"))
         f = open(log_path, "a", encoding="utf-8", errors="replace")
-        shown = subprocess.list2cmdline(launch.cmd) if WINDOWS else shlex.join(launch.cmd)
+        cmd = _redact_command(launch.cmd)
+        shown = subprocess.list2cmdline(cmd) if WINDOWS else shlex.join(cmd)
         f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} start {p.id}\n{shown}\n")
         f.flush()
+        with self.lock:
+            isolated = not self.instances
+            for other in self.instances.values():
+                other.vram_isolated = False
         baseline = resources.vram_used()
         job.write(f"starting {p.id} on port {eng.port}")
         # Python engines block-buffer stdout into a file; unbuffered, their log follows live
         env = {**os.environ, "PYTHONUNBUFFERED": "1", **launch.env}
         common = dict(cwd=launch.cwd, env=env, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT)
-        if not WINDOWS:
-            # own session: the engine outlives a manager restart, as the breakaway flag gives on Windows
-            proc = subprocess.Popen(launch.cmd, start_new_session=True, **common)
-        else:
-            try:
-                proc = subprocess.Popen(launch.cmd, creationflags=CREATE_FLAGS | BREAKAWAY, **common)
-            except OSError:
-                proc = subprocess.Popen(launch.cmd, creationflags=CREATE_FLAGS, **common)
-        f.close()
+        try:
+            if not WINDOWS:
+                # own session: the engine outlives a manager restart, as the breakaway flag gives on Windows
+                proc = subprocess.Popen(launch.cmd, start_new_session=True, **common)
+            else:
+                try:
+                    proc = subprocess.Popen(launch.cmd, creationflags=CREATE_FLAGS | BREAKAWAY, **common)
+                except OSError:
+                    proc = subprocess.Popen(launch.cmd, creationflags=CREATE_FLAGS, **common)
+        finally:
+            f.close()
         sid = self.store.session_start(eng.name, p.id)
         inst = Instance(engine=eng.name, profile=p.id, pid=proc.pid, create_time=psutil.Process(proc.pid).create_time(),
                         session=sid, log_path=str(log_path), ours=True, baseline_vram=baseline, popen=proc,
-                        tracker=CounterTracker(count_first=True))
+                        tracker=CounterTracker(count_first=True), startup_pending=True,
+                        custom_profile=p if p.source == "custom" else None)
         with self.lock:
+            inst.vram_isolated = isolated and not self.instances
+            if p.source == "custom":
+                self.transient[p.id] = self.profiles[p.id] = p
             self.instances[eng.name] = inst
             eng.active_profile = p
         self._save_state()
         self.store.event("start", f"starting {p.id}", eng.name, p.id)
 
-        deadline = time.time() + eng.startup_timeout_s
-        last_detail, last_note = "", 0.0
-        while time.time() < deadline:
-            if proc.poll() is not None:
-                tail = self.tail_log(eng.name, 15)
-                self._forget(eng.name, f"exited during start (code {proc.returncode})")
-                raise RuntimeError(f"{p.id} exited during start (code {proc.returncode}). Log:\n" + "\n".join(tail))
-            ok, detail = eng.health(p)
-            if ok:
-                inst.ready, inst.state = time.time(), "ready"
-                self.store.session_ready(sid)
-                self._save_state()
-                job.write(f"{p.id} is ready after {inst.ready - inst.started:.0f} s")
-                self.store.event("ready", f"{p.id} ready after {inst.ready - inst.started:.0f} s", eng.name, p.id)
-                return
-            if detail != last_detail or time.time() - last_note > 30:
-                job.write(f"  waiting: {detail}")
-                last_detail, last_note = detail, time.time()
-            time.sleep(2)
-        self._stop(job, eng.name, "did not get ready in time")
-        raise RuntimeError(f"{p.id} was not ready after {eng.startup_timeout_s} s; stopped it. Log:\n"
-                           + "\n".join(self.tail_log(eng.name, 15)))
+        try:
+            deadline = time.time() + eng.startup_timeout_s
+            last_detail, last_note = "", 0.0
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    tail = self.tail_log(eng.name, 15)
+                    self._forget(eng.name, f"exited during start (code {proc.returncode})", expected=inst)
+                    raise RuntimeError(f"{p.id} exited during start (code {proc.returncode}). Log:\n" + "\n".join(tail))
+                ok, detail = eng.health(p)
+                if ok:
+                    inst.ready, inst.state, inst.startup_pending = time.time(), "ready", False
+                    self.store.session_ready(sid)
+                    self._save_state()
+                    job.write(f"{p.id} is ready after {inst.ready - inst.started:.0f} s")
+                    self.store.event("ready", f"{p.id} ready after {inst.ready - inst.started:.0f} s", eng.name, p.id)
+                    return
+                if detail != last_detail or time.time() - last_note > 30:
+                    job.write(f"  waiting: {detail}")
+                    last_detail, last_note = detail, time.time()
+                time.sleep(2)
+            self._stop(job, eng.name, "did not get ready in time", expected=inst)
+            raise RuntimeError(f"{p.id} was not ready after {eng.startup_timeout_s} s; stopped it. Log:\n"
+                               + "\n".join(self.tail_log(eng.name, 15)))
+        except Exception:
+            self._stop(job, eng.name, "failed during startup", expected=inst)
+            raise
+        finally:
+            inst.startup_pending = False
 
-    def _stop(self, job: Job | None, engine: str, reason: str):
+    def _stop(self, job: Job | None, engine: str, reason: str, expected: Instance | None = None):
         with self.lock:
             inst = self.instances.get(engine)
+            if expected is not None and inst is not expected:
+                return
+            if inst:
+                inst.state = "stopping"
         if not inst:
             if job:
                 job.write(f"{engine} is not running")
             return
-        inst.state = "stopping"
         if job:
             job.write(f"stopping {inst.profile} ({reason})")
         if inst.alive():
             _kill_tree(inst.pid)
-        self._forget(engine, reason)
+        self._forget(engine, reason, expected=inst)
 
-    def _forget(self, engine: str, reason: str):
+    def _forget(self, engine: str, reason: str, expected: Instance | None = None) -> bool:
         with self.lock:
+            if expected is not None and self.instances.get(engine) is not expected:
+                return False
             inst = self.instances.pop(engine, None)
             if engine in self.engines:
                 self.engines[engine].active_profile = None
@@ -718,6 +771,7 @@ class Manager:
             self.store.session_stop(inst.session, reason)
             self.store.event("stop", f"{inst.profile}: {reason}", engine, inst.profile)
         self._save_state()
+        return inst is not None
 
     def _wait_vram_released(self, job: Job):
         """The driver hands memory back a moment after a process ends: wait until VRAM use stops falling."""
@@ -797,15 +851,21 @@ class Manager:
             except ValueError:
                 saved = {}
             for name, d in saved.items():
-                if name not in self.engines or d["profile"] not in self.profiles:
+                if name not in self.engines:
+                    continue
+                custom = Profile(**d["custom_profile"]) if d.get("custom_profile") else None
+                if d["profile"] not in self.profiles and custom is None:
                     continue
                 inst = Instance(engine=name, profile=d["profile"], pid=d["pid"], create_time=d["create_time"],
                                 session=d["session"], log_path=d.get("log_path"), ours=d.get("ours", True),
                                 baseline_vram=d.get("baseline_vram", 0), started=d.get("started", time.time()),
                                 ready=d.get("ready"), state="ready" if d.get("ready") else "starting",
-                                tracker=CounterTracker(count_first=False))
+                                tracker=CounterTracker(count_first=False), custom_profile=custom,
+                                vram_isolated=d.get("vram_isolated", False))
                 if inst.alive():
                     with self.lock:
+                        if custom:
+                            self.transient[custom.id] = self.profiles[custom.id] = custom
                         self.instances[name] = inst
                         self.engines[name].active_profile = self.profiles[d["profile"]]
                     keep.add(inst.session)
@@ -829,11 +889,15 @@ class Manager:
             pid = eng.match_process(cmd, self.profiles)
             if not pid:
                 continue
-            sid = self.store.session_start(name, pid, adopted=True)
-            inst = Instance(engine=name, profile=pid, pid=owner.pid, create_time=ctime, session=sid, log_path=None,
-                            ours=False, baseline_vram=0.0, started=ctime, state="starting",
-                            tracker=CounterTracker(count_first=False))
             with self.lock:
+                if name in self.instances or self.current_job is not None:
+                    continue
+                sid = self.store.session_start(name, pid, adopted=True)
+                inst = Instance(engine=name, profile=pid, pid=owner.pid, create_time=ctime, session=sid, log_path=None,
+                                ours=False, baseline_vram=0.0, started=ctime, state="starting",
+                                tracker=CounterTracker(count_first=False))
+                for other in self.instances.values():
+                    other.vram_isolated = False
                 self.instances[name] = inst
                 eng.active_profile = self.profiles[pid]
             ok, _ = eng.health(self.profiles[pid])
@@ -870,24 +934,32 @@ class Manager:
                  "prompt_tokens": 0.0}
         with self.lock:
             insts = list(self.instances.values())
+        per_pid = resources.gpu_process_memory() if insts and snap["gpus"] and not any(
+            g.get("unified") for g in snap["gpus"]) else None
         for inst in insts:
-            if inst.state == "stopping":
+            if inst.state == "stopping" or inst.startup_pending:
                 continue
             if not inst.alive():
                 code = inst.popen.poll() if inst.popen else None
-                self._forget(inst.engine, "exited unexpectedly" + (f" (code {code})" if code is not None else ""))
-                self.store.event("crash", f"{inst.profile} exited unexpectedly", inst.engine, inst.profile, level="error")
-                self._maybe_restart(inst)
+                with self.lock:
+                    if self._forget(inst.engine, "exited unexpectedly" + (f" (code {code})" if code is not None else ""),
+                                    expected=inst):
+                        self.store.event("crash", f"{inst.profile} exited unexpectedly", inst.engine, inst.profile, level="error")
+                        self._maybe_restart(inst)
                 continue
             u = resources.tree_usage(inst.pid)
             inst.ram_mib, inst.cpu_percent = u["ram_mib"], u["cpu_percent"]
             inst.peak_ram = max(inst.peak_ram, inst.ram_mib)
-            if inst.ours:
-                inst.peak_vram = max(inst.peak_vram, used - inst.baseline_vram)
-            else:   # adopted: we never saw the GPU before it, so count everything in use as its share
-                inst.peak_vram = max(inst.peak_vram, used)
+            measured = None
+            if per_pid is not None and any(pid in per_pid for pid in u["pids"]):
+                measured = sum(per_pid.get(pid, 0.0) for pid in u["pids"])
+            elif inst.ours and inst.vram_isolated and len(insts) == 1:
+                measured = max(0.0, used - inst.baseline_vram)
+            if measured is not None:
+                inst.peak_vram = max(inst.peak_vram, measured)
+                inst.vram_measured = True
             if inst.ready:
-                self.store.session_peak(inst.session, inst.peak_vram, inst.peak_ram)
+                self.store.session_peak(inst.session, inst.peak_vram if inst.vram_measured else None, inst.peak_ram)
             eng = self.engines.get(inst.engine)
             if eng is None:
                 continue
@@ -909,10 +981,11 @@ class Manager:
                 for k, v in d.items():
                     inst.totals[k] += v
                 inst.window.append((snap["time"], d))
-                key = (int(snap["time"] // 60), inst.engine, inst.profile)
-                acc = self.pending_usage.setdefault(key, collections.defaultdict(float))
-                for k, v in d.items():
-                    acc[k] += v
+                with self.lock:
+                    key = (int(snap["time"] // 60), inst.engine, inst.profile)
+                    acc = self.pending_usage.setdefault(key, collections.defaultdict(float))
+                    for k, v in d.items():
+                        acc[k] += v
                 point["gen_tokens"] += d.get("gen_tokens", 0)
                 point["prompt_tokens"] += d.get("prompt_tokens", 0)
         self.history.append(point)
@@ -928,10 +1001,11 @@ class Manager:
         minutes = float(self._setting(inst, "idle_stop_minutes", 0) or 0)
         if not minutes or not inst.ready or inst.state != "ready" or self.current_job or not self.queue.empty():
             return
-        if time.time() - max(inst.last_activity, inst.ready) > minutes * 60:
-            inst.state = "stopping"
-            self.submit("stop", f"stop {inst.engine} (idle {minutes:g} min)",
-                        lambda job: self._stop(job, inst.engine, f"idle for {minutes:g} min"))
+        with self.lock:
+            if self.instances.get(inst.engine) is inst and time.time() - max(inst.last_activity, inst.ready) > minutes * 60:
+                inst.state = "stopping"
+                self.submit("stop", f"stop {inst.engine} (idle {minutes:g} min)",
+                            lambda job: self._stop(job, inst.engine, f"idle for {minutes:g} min", expected=inst))
 
     def _maybe_restart(self, inst: Instance):
         if not self._setting(inst, "restart_on_crash", False) or inst.profile not in self.profiles:
@@ -944,14 +1018,22 @@ class Manager:
                              inst.engine, inst.profile, level="error")
             return
         p = self.profiles[inst.profile]
-        self.submit("start", f"restart {p.id} after a crash", lambda job: self._start(job, p, False, "skip"))
+
+        def restart_if_down(job):
+            with self.lock:
+                if inst.engine in self.instances:
+                    job.write(f"{inst.engine} is already running again; skipping the crash restart")
+                    return
+            return self._start(job, p, False, "skip")
+        self.submit("start", f"restart {p.id} after a crash", restart_if_down)
 
     def _flush_usage(self, force: bool = False):
-        now_min = int(time.time() // 60)
-        for key in list(self.pending_usage):
-            if force or key[0] < now_min:
-                d = self.pending_usage.pop(key)
-                self.store.add_usage(key[0], key[1], key[2], d)
+        with self.lock:
+            now_min = int(time.time() // 60)
+            for key in list(self.pending_usage):
+                if force or key[0] < now_min:
+                    d = self.pending_usage.pop(key)
+                    self.store.add_usage(key[0], key[1], key[2], d)
 
     def _update_checker(self):
         hours = self.cfg["updates"]["background_check_hours"]
@@ -1045,7 +1127,8 @@ class Manager:
                 e["running"] = {"profile": inst.profile, "pid": inst.pid, "state": inst.state, "managed": inst.ours,
                                 "started": inst.started, "ready": inst.ready,
                                 "uptime_seconds": time.time() - inst.started, "ram_mib": inst.ram_mib,
-                                "cpu_percent": inst.cpu_percent, "vram_mib_est": inst.peak_vram,
+                                "cpu_percent": inst.cpu_percent, "vram_mib_est": self._instance_vram(inst),
+                                "vram_measured": inst.vram_measured,
                                 "stats": self.live(inst),
                                 "vision": self._vision(name, inst.profile),
                                 "reasoning": self._reasoning_now(name) if inst.state == "ready" else None}
@@ -1071,18 +1154,37 @@ class Manager:
 
     def profiles_public(self) -> list[dict]:
         self.refresh_profiles()
-        running = {i.profile for i in self.instances.values()}
+        with self.lock:
+            profiles = sorted(self.profiles.values(), key=lambda x: (x.engine, x.id))
+            running = {i.profile for i in self.instances.values()}
+        measurements = self.store.learned_many([p.id for p in profiles])
         out = []
-        for p in sorted(self.profiles.values(), key=lambda x: (x.engine, x.id)):
+        for p in profiles:
             d = p.public()
             d["running"] = p.id in running
             d["vision"] = self._vision(p.engine, p.id)
             try:
-                d["needs"] = self.needs(p)
+                d["needs"] = self.needs(p, measurements)
             except Exception as e:  # noqa: BLE001
                 d["needs"] = {"error": str(e)}
             out.append(d)
         return out
+
+
+def _redact_command(cmd: list[str]) -> list[str]:
+    sensitive = {"--api-key", "--token", "--hf-token", "--access-token", "--password", "--secret"}
+    out, hide_next = [], False
+    for arg in cmd:
+        option, sep, _ = arg.partition("=")
+        if hide_next:
+            out.append("<redacted>")
+            hide_next = False
+        elif option.lower().replace("_", "-") in sensitive:
+            out.append(option + "=<redacted>" if sep else option)
+            hide_next = not sep
+        else:
+            out.append(arg)
+    return out
 
 
 def _kill_tree(pid: int, timeout: float = 15):

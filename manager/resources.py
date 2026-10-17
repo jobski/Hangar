@@ -45,6 +45,28 @@ def nvidia_gpus() -> list[dict]:
     return res
 
 
+def gpu_process_memory() -> dict[int, float] | None:
+    """NVIDIA compute-process MiB across all GPUs; None when the driver cannot attribute memory."""
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        result = subprocess.run([exe, "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"],
+                                capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW)
+        if result.returncode:
+            return None
+        used = {}
+        for line in result.stdout.splitlines():
+            pid, memory = (v.strip() for v in line.split(","))
+            pid, memory = int(pid), float(memory)
+            if memory < 0:
+                return None
+            used[pid] = used.get(pid, 0.0) + memory
+        return used
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
 _APPLE: dict = {}
 _IOREG_NUM = r'"{key}"\s*=\s*(\d+)'
 

@@ -513,19 +513,38 @@ class Downloader:
         prog = re.compile(r"([\d.]+)([KMG]?i?B)/([\d.]+)([KMG]?i?B).*?DL:([\d.]+)([KMG]?i?B)")
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
                              creationflags=NO_WINDOW)
-        for line in p.stdout:
-            if d.cancel.is_set():
+        finished = threading.Event()
+
+        def watch_cancel():
+            while not finished.wait(0.1):
+                if d.cancel.is_set():
+                    if p.poll() is None:
+                        try:
+                            p.kill()
+                        except OSError:
+                            pass
+                    return
+        watcher = threading.Thread(target=watch_cancel, name="aria2-cancel", daemon=True)
+        watcher.start()
+        try:
+            for line in p.stdout:
+                m = prog.search(line)
+                if m:
+                    d.done_bytes = base_done + _bytes(m.group(1), m.group(2))
+                    d.speed = _bytes(m.group(5), m.group(6))
+                elif line.strip() and "[#" not in line:
+                    d.write("  aria2: " + line.strip()[:200])
+            p.wait()
+        finally:
+            finished.set()
+            watcher.join()
+            if p.poll() is None:
                 p.kill()
-                p.wait()                             # reap it: no zombie aria2c, no open pipe
-                p.stdout.close()
-                raise _Cancelled()
-            m = prog.search(line)
-            if m:
-                d.done_bytes = base_done + _bytes(m.group(1), m.group(2))
-                d.speed = _bytes(m.group(5), m.group(6))
-            elif line.strip() and "[#" not in line:
-                d.write("  aria2: " + line.strip()[:200])
-        if p.wait() != 0:
+            p.wait()
+            p.stdout.close()
+        if d.cancel.is_set():
+            raise _Cancelled()
+        if p.returncode != 0:
             raise _AriaFailed(f"aria2c failed: {ARIA2_EXIT.get(p.returncode, 'error')} (exit {p.returncode})")
 
     @staticmethod

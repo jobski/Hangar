@@ -524,6 +524,7 @@ const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } ca
 let TOKEN = new URLSearchParams(location.search).get("token") || store.get("llmm-token", null);
 if (new URLSearchParams(location.search).get("token")) { store.set("llmm-token", TOKEN); history.replaceState(null, "", location.pathname + location.hash); }
 let reqBy = store.get("llmm-reqby", "target"), period = store.get("llmm-period", "day"), bucket = store.get("llmm-bucket", "day"), uscope = store.get("llmm-uscope", "this"), watchJob = null, lastStatus = null;
+let completedJob = null, jobHideTimer = null, machineEpoch = 0;
 let view = (location.hash.slice(1) || store.get("llmm-view", "overview"));
 
 // the machine being viewed: "" is this one; a peer's calls go through this Hangar at /api/peers/<name>/...
@@ -542,7 +543,10 @@ const post = (path, data) => api(path, { method: "POST", body: JSON.stringify(da
 
 function toast(msg, err) { const t = document.createElement("div"); t.className = "toast" + (err ? " err" : ""); t.textContent = msg; $("#toasts").append(t); setTimeout(() => t.remove(), 4500); }
 const fail = e => toast(e.message, true);
-function showLogin() { $("#app").hidden = true; $("#login").hidden = false; }
+function showLogin() {
+  bootGeneration++; clearTimeout(bootRetry); timers.forEach(clearInterval); timers = [];
+  $("#app").hidden = true; $("#login").hidden = false;
+}
 $("#tokbtn").onclick = () => { TOKEN = $("#tok").value.trim(); store.set("llmm-token", TOKEN); $("#login").hidden = true; boot(); };
 $("#tok").addEventListener("keydown", e => { if (e.key === "Enter") $("#tokbtn").click(); });
 
@@ -675,7 +679,10 @@ function renderStatus(s) {
 async function renderJob() {
   if (!watchJob) { $("#jobsec").hidden = true; $("#jobpill").hidden = true; return; }
   try {
-    const j = await api(`/api/jobs/${watchJob}?lines=400`);
+    const id = watchJob, machine = MACHINE, epoch = machineEpoch;
+    const j = await api(`/api/jobs/${id}?lines=400`);
+    if (watchJob !== id || machineEpoch !== epoch) return;
+    const key = `${epoch}/${id}`;
     const live = ["queued", "running"].includes(j.state);
     $("#jobsec").hidden = false;
     $("#jobsec").className = "panel job " + (live ? "" : j.state === "done" ? "done" : "failed");
@@ -686,9 +693,15 @@ async function renderJob() {
     const pre = $("#joblog"), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
     pre.textContent = j.log.join("\n");
     if (atEnd) pre.scrollTop = pre.scrollHeight;
-    if (!live) {
-      if (!j._seen) refreshSlow();
-      setTimeout(() => { if (watchJob === j.id) { watchJob = null; $("#jobsec").hidden = true; } }, 20000);
+    if (live) {
+      completedJob = null; clearTimeout(jobHideTimer);
+    } else if (completedJob !== key) {
+      completedJob = key; refreshSlow(); clearTimeout(jobHideTimer);
+      jobHideTimer = setTimeout(() => {
+        if (watchJob === id && MACHINE === machine && machineEpoch === epoch) {
+          watchJob = null; $("#jobsec").hidden = true;
+        }
+      }, 20000);
     }
   } catch (e) { }
 }
@@ -1311,6 +1324,7 @@ function renderFleet(f) {
 }
 function switchMachine(name) {
   if (name === MACHINE) { $("#mswmenu").hidden = true; return; }
+  machineEpoch++; completedJob = null; clearTimeout(jobHideTimer); clearTimeout(dlTimer);
   MACHINE = name; store.set("llmm-machine", name);
   $("#mswmenu").hidden = true;
   PROFILES = []; watchJob = null; cnSnip = null; CN_READY = false; lastStatus = null;
@@ -1581,32 +1595,46 @@ $("#autostart").onchange = async () => {
 $("#chk").onclick = async () => { try { const j = await post("/api/check-updates", {}); watchJob = j.id; renderJob(); } catch (e) { fail(e); } };
 
 async function refreshFast() {
-  try { renderStatus(await api("/api/status")); await renderJob(); }
-  catch (e) { if (e.message !== "unauthorized") { $("#conn").className = "pill bad"; $("#conn").innerHTML = `<span class="dot bad"></span>${MACHINE ? esc(MACHINE) + " offline" : "offline"}`; } }
+  const epoch = machineEpoch;
+  try { const status = await api("/api/status"); if (epoch !== machineEpoch) return; renderStatus(status); await renderJob(); }
+  catch (e) { if (epoch === machineEpoch && e.message !== "unauthorized") { $("#conn").className = "pill bad"; $("#conn").innerHTML = `<span class="dot bad"></span>${MACHINE ? esc(MACHINE) + " offline" : "offline"}`; } }
 }
 async function refreshSlow() {
-  try { await Promise.all([renderProfiles(), view === "usage" ? renderStats() : null, renderEvents(), renderLive(), renderLibrary(), pollDownloads()]); } catch (e) { }
+  try { await Promise.all([renderProfiles(), view === "usage" ? renderStats() : null, renderEvents(), renderLive(), renderLibrary(), pollDownloads(false)]); } catch (e) { }
 }
 let dlTimer = null;
-async function pollDownloads() {
+async function pollDownloads(refreshLibrary = true) {
   clearTimeout(dlTimer);
+  const epoch = machineEpoch;
   const active = await renderDownloads().catch(() => false);
+  if (epoch !== machineEpoch) return;
   if (active) dlTimer = setTimeout(pollDownloads, 2500);
-  else renderLibrary().catch(() => { });
+  else if (refreshLibrary) renderLibrary().catch(() => { });
 }
 $("#dlsearch").onclick = () => dlSearch().catch(fail);
 $("#dlopen").onclick = () => { const q = $("#dlq").value.trim(); if (q) dlFiles(q).catch(fail); };
 $("#dlq").addEventListener("keydown", e => { if (e.key === "Enter") dlSearch().catch(fail); });
-let timers = [], resizeT = null;
+let timers = [], resizeT = null, bootRetry = null, bootGeneration = 0;
 window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { renderLive().catch(() => { }); if (view === "usage") renderStats().catch(() => { }); }, 200); });
 async function boot() {
+  const generation = ++bootGeneration;
+  clearTimeout(bootRetry); timers.forEach(clearInterval); timers = [];
   if (!TOKEN) return showLogin();
-  try { await api("/api/status"); } catch (e) { return; }
   $("#app").hidden = false; $("#login").hidden = true;
+  try { await api("/api/status", { local: true }); }
+  catch (e) {
+    if (generation !== bootGeneration || e.message === "unauthorized") return;
+    $("#conn").className = "pill bad";
+    $("#conn").textContent = "Connection failed · retrying";
+    bootRetry = setTimeout(() => { if (generation === bootGeneration) boot(); }, 3000);
+    return;
+  }
+  if (generation !== bootGeneration) return;
   setView(view);
   await renderMachines().catch(() => { });
-  await refreshFast(); refreshSlow(); renderAutostart().catch(() => { });
-  timers.forEach(clearInterval);
+  await refreshFast();
+  if (generation !== bootGeneration) return;
+  refreshSlow(); renderAutostart().catch(() => { });
   timers = [setInterval(refreshFast, 3000), setInterval(refreshSlow, 30000), setInterval(() => { if (view === "overview") renderLive().catch(() => { }); }, 10000),
             setInterval(() => renderMachines().catch(() => { }), 5000)];
 }

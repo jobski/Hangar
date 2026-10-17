@@ -5,6 +5,7 @@ it, and are merged in (config.yaml wins on a name clash).
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -16,7 +17,7 @@ import yaml
 from .config import ROOT
 
 SHARD = re.compile(r"^(?P<stem>.+)-(?P<i>\d{5})-of-(?P<n>\d{5})\.gguf$", re.I)
-_lock = threading.Lock()
+profiles_lock = threading.RLock()
 
 
 def profiles_path() -> Path:
@@ -31,12 +32,21 @@ def load_managed() -> dict:
 
 
 def save_managed(profiles: dict):
-    with _lock:
+    with profiles_lock:
         p = profiles_path()
         tmp = p.with_suffix(".tmp")
         tmp.write_text("# Profiles made from the web UI / API. Edit freely; config.yaml profiles win on a name clash.\n"
                        + yaml.safe_dump({"profiles": profiles}, sort_keys=False, allow_unicode=True), encoding="utf-8")
         tmp.replace(p)
+
+
+@contextlib.contextmanager
+def edit_managed():
+    """Keep a managed-profile read/change/write transaction under one lock."""
+    with profiles_lock:
+        profiles = load_managed()
+        yield profiles
+        save_managed(profiles)
 
 
 def slug(s: str) -> str:
@@ -77,29 +87,47 @@ def _complete(g: dict) -> bool:
 
 class Library:
     def __init__(self, cfg: dict):
+        self.cfg = cfg
         mc = cfg.get("models") or {}
         self.dir = Path(mc.get("dir") or "E:/models")
         self.scan_dirs = [Path(os.path.expandvars(os.path.expanduser(d))) for d in mc.get("scan", [])]
 
+    def _references(self, p) -> list[Path]:
+        ecfg = (self.cfg.get("engines") or {}).get(p.engine, {})
+        plugin = ecfg.get("plugin", p.engine)
+        cwd = ecfg.get("dir") if plugin in ("llamacpp", "strata") else p.cfg.get("cwd")
+        base = Path(cwd) if cwd else Path.cwd()
+        out = []
+        for key in ("model", "mmproj"):
+            if p.cfg.get(key):
+                path = Path(os.path.expanduser(os.path.expandvars(str(p.cfg[key]))))
+                path = path if path.is_absolute() else base / path
+                out.extend((Path(os.path.abspath(path)), path.resolve()))
+        return out
+
     def list(self, profiles: dict | None = None) -> list[dict]:
         used: dict[str, list[str]] = {}
         for p in (profiles or {}).values():
-            for k in ("model", "mmproj"):
-                v = p.cfg.get(k)
-                if v:
-                    used.setdefault(os.path.normcase(os.path.normpath(str(v))), []).append(p.id)
+            for path in self._references(p):
+                used.setdefault(os.path.normcase(str(path)), []).append(p.id)
         out = []
         roots = [(self.dir, "library")] + [(d, "external") for d in self.scan_dirs]
         for root, kind in roots:
             if not root.exists():
                 continue
-            folders = [root] + [p for p in root.rglob("*") if p.is_dir() and len(p.relative_to(root).parts) <= 3]
+            folders = []
+            for folder, dirs, _ in os.walk(root):
+                folder = Path(folder)
+                if len(folder.relative_to(root).parts) >= 3:
+                    dirs[:] = []
+                folders.append(folder)
             for folder in folders:
                 groups = _gguf_groups(folder)
                 if not groups:
                     continue
                 for g in groups:
-                    g["used_by"] = used.get(os.path.normcase(os.path.normpath(g["first"] or "")), [])
+                    g["used_by"] = sorted({pid for name in g["files"]
+                                           for pid in used.get(os.path.normcase(str((folder / name).resolve())), [])})
                 notes = folder / "notes.md"
                 out.append({"folder": str(folder), "name": folder.name if folder != root else root.name, "kind": kind,
                             "models": [g for g in groups if not g["mmproj"]],
@@ -113,10 +141,10 @@ class Library:
         f = Path(folder).resolve()
         if self.dir.resolve() not in f.parents:
             raise ValueError("only folders inside the model library can be deleted from here")
-        users = [g["used_by"] for m in self.list(profiles) if Path(m["folder"]).resolve() == f
-                 for g in m["models"] + m["mmproj"] if g["used_by"]]
+        users = sorted({p.id for p in profiles.values()
+                        if any(path == f or f in path.parents for path in self._references(p))})
         if users:
-            raise ValueError(f"profiles still use this model: {', '.join(sum(users, []))}; delete them first")
+            raise ValueError(f"profiles still use this model: {', '.join(users)}; delete them first")
         shutil.rmtree(f)
 
 
