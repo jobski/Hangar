@@ -372,6 +372,14 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     def roles_list():
         return roles.public()
 
+    @app.get("/api/roles/main/follow-running")
+    def main_follow_running():
+        return {"enabled": roles.follows_running()}
+
+    @app.post("/api/roles/main/follow-running")
+    def main_follow_running_set(enabled: bool = Body(..., embed=True)):
+        return roles.set_follows_running(enabled)
+
     @app.post("/api/roles")
     def roles_save(name: str = Body(..., embed=True), targets: list[dict] = Body(..., embed=True),
                    spill: bool | None = Body(None, embed=True)):

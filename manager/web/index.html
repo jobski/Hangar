@@ -432,7 +432,7 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
   <section class="view" id="v-overview">
     <div class="vh"><div><h1>Overview</h1><p>Engines, the machine, and what is happening right now.</p></div><span class="sp"></span><label class="switch" id="autostartsw" title="Start Hangar when you sign in"><input type="checkbox" id="autostart" disabled><span class="track"></span><span id="autostartlbl">Start with Windows</span></label><button class="btn" id="chk"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Check updates</button></div>
     <div class="panel" id="fleetsec" hidden><div class="ph"><h3>Machines</h3><span class="sp"></span><span class="meta" id="fleetmeta"></span><button class="btn ghost sm" data-act="mshare" id="mshareb">Share this machine</button><button class="btn ghost sm" data-act="maddshow" id="maddb">+ Add machine</button></div><div class="fsum" id="fsum" hidden></div><div class="fleet" id="fleet"></div></div>
-    <div class="panel roles" id="rolesec" hidden><div class="ph"><h3>Roles</h3><span class="sp"></span><span class="meta" id="rolemeta"></span><button class="btn ghost sm" data-act="gwinfo" id="gwbtn">Use it (endpoint)</button><button class="btn ghost sm" data-act="roleedit" data-role="" id="roleadd">+ Role</button></div><div id="roles"></div></div>
+    <div class="panel roles" id="rolesec" hidden><div class="ph"><h3>Roles</h3><span class="sp"></span><span class="meta" id="rolemeta"></span><button class="btn ghost sm" data-act="gwinfo" id="gwbtn">Use it (endpoint)</button><button class="btn ghost sm" data-act="roleedit" data-role="" id="roleadd">+ Role</button></div><div class="row" style="padding:12px 16px;border-top:1px solid var(--line)"><label class="switch" title="When several models are ready, use the most recently started one"><input type="checkbox" id="followmain" checked><span class="track"></span><span>Use running model as main</span></label><span class="small muted">Follows model changes here or on main’s target machines. Turn off to use saved targets.</span></div><div id="roles"></div></div>
     <div class="panel job" id="jobsec" hidden>
       <div class="ph"><span id="jobspin"></span><h3 style="color:var(--ink)" id="jobtitle"></h3><span class="sp"></span><span id="jobstate" class="tag"></span></div>
       <div class="pb"><pre class="term" id="joblog"></pre></div>
@@ -1437,6 +1437,9 @@ function renderRoles(rs) {
   $("#rolemeta").innerHTML = MACHINE ? `${esc(MACHINE)}'s own roles: what its gateway serves` : `OpenAI-compatible: <span class="mono">http://${esc(location.hostname)}:${port}/v1</span> · model = role name`;
   $("#gwbtn").hidden = !!MACHINE;
   const main = rs.find(r => r.name === "main");
+  $("#followmain").checked = main?.follow_running !== false;
+  $("#followmain").disabled = typeof main?.follow_running !== "boolean";
+  $("#followmain").closest("label").title = $("#followmain").disabled ? "Update Hangar on this machine to change this option" : "When several models are ready, use the most recently started one";
   const mainT = main && (main.targets[0] || main.serving);
   const stc = st => ({ ready: "ok", starting: "warn", offline: "bad", unknown: "bad" }[st] || "");
   const chip = (t, extra) => `<span class="tchip ${t.serving ? "serving" : ""}" title="${esc(t.state || "")}${t.busy ? " · busy with a request" : ""}${t.started_by_hangar ? " · started by Hangar as a backup" : ""}"><span class="dot ${stc(t.state)}"></span><span class="m">${esc(t.machine || MACHINE || "this")}</span><span class="p">${esc(t.profile)}</span>${extra || ""}</span>`;
@@ -1452,8 +1455,20 @@ function renderRoles(rs) {
       <button class="btn sm ghost" data-act="roleedit" data-role="${esc(r.name)}">Edit</button></div>`;
   }).join("");
 }
+$("#followmain").onchange = async () => {
+  const epoch = machineEpoch, enabled = $("#followmain").checked;
+  $("#followmain").disabled = true;
+  try {
+    await post("/api/roles/main/follow-running", { enabled });
+    if (epoch !== machineEpoch) return;
+    toast(enabled ? "Main follows the running model" : "Main uses saved profile targets");
+    await refreshFast();
+  } catch (e) { if (epoch === machineEpoch) $("#followmain").checked = !enabled; fail(e); }
+  finally { if (epoch === machineEpoch) $("#followmain").disabled = false; }
+};
 // the roles a profile on this machine has: [{name, backup}]
 const rolesOf = pid => (ROLES || []).flatMap(r => r.targets.map((t, i) => ({ t, i })).filter(x => !x.t.machine && x.t.profile === pid).map(x => ({ name: r.name, backup: x.i > 0 })));
+const savedTargets = r => r?.saved_targets ?? r?.targets ?? [];
 // one click from a profile: make it a role's primary (its backups stay) or add it as a backup
 function profileRoleDialog(pid) {
   const names = [...new Set(["main", "helper", ...ROLES.map(r => r.name)])];
@@ -1461,10 +1476,10 @@ function profileRoleDialog(pid) {
   dialog(`Role for ${pid}`, `
     <p class="small muted" style="margin:0 0 12px">Tools ask Hangar's gateway for <b>main</b> or <b>helper</b> and get whichever profile has that role. ${has.length ? `Now: <b>${has.map(r => r.backup ? r.name + " (backup)" : r.name).map(esc).join(", ")}</b>.` : "It has no role now."}</p>
     <div style="display:grid;gap:8px">${names.map(n => {
-      const r = ROLES.find(x => x.name === n), cur = r && r.targets[0];
+      const r = ROLES.find(x => x.name === n), cur = savedTargets(r)[0];
       const isPrimary = cur && !cur.machine && cur.profile === pid;
       return `<div class="row" style="border:1px solid var(--line);border-radius:8px;padding:8px 10px">
-        <b class="mono" style="min-width:70px">${esc(n)}</b><span class="small muted" style="flex:1;min-width:0;overflow-wrap:anywhere">${cur ? `now ${esc(cur.machine || "this")}/${esc(cur.profile)}` : "not set"}</span>
+        <b class="mono" style="min-width:70px">${esc(n)}</b><span class="small muted" style="flex:1;min-width:0;overflow-wrap:anywhere">${cur ? `saved ${esc(cur.machine || "this")}/${esc(cur.profile)}` : "not set"}</span>
         ${isPrimary ? `<span class="tag ok">this one</span><button class="btn sm ghost danger" data-rp="clear" data-rn="${esc(n)}">Remove</button>`
           : `<button class="btn sm primary" data-rp="primary" data-rn="${esc(n)}">Make ${esc(n)}</button>${cur ? `<button class="btn sm ghost" data-rp="backup" data-rn="${esc(n)}" title="used when the profiles before it are down; started when needed">Backup</button>` : ""}`}</div>`;
     }).join("")}</div>
@@ -1473,13 +1488,13 @@ function profileRoleDialog(pid) {
     const name = btn.dataset.rn || ($("#prnew").value || "").trim().toLowerCase();
     if (!name) return toast("Type the role's name first", true);
     const r = ROLES.find(x => x.name === name);
-    let targets = (r ? r.targets : []).map(t => ({ machine: t.machine, profile: t.profile, auto_start: t.auto_start }))
+    let targets = savedTargets(r).map(t => ({ machine: t.machine, profile: t.profile, auto_start: t.auto_start }))
       .filter(t => t.machine || t.profile !== pid);
     if (btn.dataset.rp === "primary") targets = [{ machine: "", profile: pid, auto_start: false }, ...targets];
     else if (btn.dataset.rp === "backup") targets = [...targets, { machine: "", profile: pid, auto_start: true }];
     if (targets[0]) targets[0].auto_start = false;
     try {
-      if (!targets.length) await api(`/api/roles/${encodeURIComponent(name)}`, { method: "DELETE" });
+      if (!targets.length) { if (!r?.implicit) await api(`/api/roles/${encodeURIComponent(name)}`, { method: "DELETE" }); }
       else await post("/api/roles", { name, targets });
       $("#dlg").close();
       toast(btn.dataset.rp === "clear" ? `${pid} is no longer ${name}` : btn.dataset.rp === "backup" ? `${pid} is now a backup for ${name}` : `${pid} is now ${name}`);
@@ -1499,10 +1514,11 @@ async function roleDialog(name) {
     : PEERS.some(p => p.name === m) ? `/api/peers/${encodeURIComponent(m)}/profiles` : null;  // reached from here by the same name
   const profCache = {};
   const profilesOf = async m => profCache[m] ??= via(m) ? ((await get(via(m))) || []).map(p => p.id) : [];
-  let rows = r.targets.map(t => ({ machine: t.machine, profile: t.profile, auto_start: t.auto_start }));
+  let rows = savedTargets(r).map(t => ({ machine: t.machine, profile: t.profile, auto_start: t.auto_start }));
   if (!rows.length) rows = [{ machine: "", profile: "", auto_start: false }];
   dialog(name ? `Role · ${name}` : "New role", `
     <p class="small muted" style="margin:0 0 12px">Clients ask the gateway for the role by name. The first target that is up answers; when none is, <b>main</b> does, then anything running. A backup with <i>start when needed</i> is started once the targets before it have been down 30 s, only if it fits next to what runs; Hangar stops it again after 10 idle minutes once the primary is back.</p>
+    ${name === "main" && r.follow_running ? `<p class="small muted">These are saved targets. Main follows the running model on each target machine; turn off automatic following in Roles to pin a profile.</p>` : ""}
     ${name ? "" : `<label class="fld" style="margin-bottom:12px">Name<input id="rlname" class="input mono" placeholder="helper" autocomplete="off" autocapitalize="off" spellcheck="false"></label>`}
     <div id="rltargets"></div>
     <button class="btn sm ghost" id="rladd" style="margin-top:6px">+ Add a backup</button>

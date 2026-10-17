@@ -41,8 +41,52 @@ class Roles:
     def _settings(self) -> dict:
         return self.mgr._settings()
 
+    def follows_running(self) -> bool:
+        return self._settings().get("main_follows_running", True) is not False
+
+    def set_follows_running(self, enabled: bool) -> dict:
+        with self.mgr.settings_lock:
+            settings = self._settings()
+            settings["main_follows_running"] = enabled
+            self._write(settings)
+        self.mgr.store.event("roles", "main follows the running model" if enabled else "main uses saved profile targets")
+        return {"enabled": enabled}
+
+    def _current_target(self, machine: str = "") -> dict | None:
+        if not machine:
+            with getattr(self.mgr, "lock", self.lock):
+                running = [{"profile": inst.profile, "state": inst.state, "started": getattr(inst, "started", 0)}
+                           for inst in self.mgr.instances.values() if inst.state in ("ready", "starting")]
+        else:
+            peer = self.peers.state.get(machine) or {}
+            status = peer.get("status") or {}
+            if not peer.get("online") or status.get("main_follows_running") is False:
+                return None
+            running = [engine["running"] for engine in status.get("engines") or []
+                       if (engine.get("running") or {}).get("state") in ("ready", "starting")]
+        if not running:
+            return None
+        current = max(running, key=lambda inst: (inst.get("state") == "ready", inst.get("started") or 0))
+        return {"machine": machine, "profile": current["profile"], "auto_start": False}
+
     def all(self) -> dict[str, dict]:
-        return self._settings().get("roles") or {}
+        settings = self._settings()
+        roles = settings.get("roles") or {}
+        if settings.get("main_follows_running", True) is False:
+            return roles
+        main = roles.get("main") or {"targets": [], "implicit": True}
+        targets = []
+        saved = main.get("targets", [])
+        if not saved:
+            current = self._current_target()
+            if current:
+                targets.append(current)
+        for target in saved:
+            resolved = self._current_target(target.get("machine", ""))
+            target = {**target, "profile": resolved["profile"]} if resolved else dict(target)
+            if not any((t["machine"], t["profile"]) == (target["machine"], target["profile"]) for t in targets):
+                targets.append(target)
+        return {**roles, "main": {**main, "targets": targets}}
 
     def save(self, name: str, targets: list[dict], spill: bool | None = None) -> dict:
         name = (name or "").strip().lower()
@@ -376,6 +420,8 @@ class Roles:
                     self._stop_target(name, target)
 
     def _role_needs(self, role: dict, key: tuple) -> bool:
+        if role.get("implicit"):
+            return False
         for target in role.get("targets", []):
             if (target["machine"], target["profile"]) == key:
                 return True
@@ -491,6 +537,7 @@ class Roles:
     def public(self) -> list[dict]:
         out = []
         roles = self.all()
+        saved_roles = self._settings().get("roles") or {}
         if "main" not in roles:
             roles = {"main": {"targets": [], "implicit": True}, **roles}
         for name, role in roles.items():
@@ -502,7 +549,8 @@ class Roles:
                              "busy": self.busy(t),
                              "serving": bool(serving) and (serving["machine"], serving["profile"]) == k})
             fallback = serving and not any(r["serving"] for r in rows)
-            out.append({"name": name, "targets": rows, "implicit": bool(role.get("implicit")), "spill": bool(role.get("spill")),
+            out.append({"name": name, "targets": rows, "saved_targets": (saved_roles.get(name) or {}).get("targets", []), "implicit": bool(role.get("implicit")), "spill": bool(role.get("spill")),
+                        **({"follow_running": self.follows_running()} if name == "main" else {}),
                         "serving": serving, "fallback": bool(fallback),
                         "down_for": round(time.time() - self.down_since[name]) if name in self.down_since else None})
         return out
