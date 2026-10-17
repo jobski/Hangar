@@ -1478,10 +1478,10 @@ async function roleDialog(name) {
       return `<div class="trow" data-i="${i}">
         <select class="input rlm">${machines.map(m => `<option value="${esc(m.name)}" ${m.name === t.machine ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select>
         <select class="input rlp"><option value="">${ps.length || !t.machine ? "choose a profile…" : "not reachable from here"}</option>${[...new Set([...ps, ...(t.profile ? [t.profile] : [])])].map(p => `<option ${p === t.profile ? "selected" : ""}>${esc(p)}</option>`).join("")}</select>
-        <div class="row" style="gap:4px;flex-wrap:nowrap">${i ? `<label class="chk small" title="start it when the targets before it are down"><input type="checkbox" class="rla" ${t.auto_start ? "checked" : ""}> start when needed</label>` : `<span class="tag">primary</span>`}
+        <div class="row" style="gap:4px;flex-wrap:nowrap">${i ? `<label class="chk small" title="start it when the targets before it are down"><input type="checkbox" class="rla" ${t.auto_start ? "checked" : ""}> start when needed</label>` : `<span class="tag" title="tried first; it is never started for the role (start it yourself, or give it a backup that is)">primary</span>`}
           ${i ? `<button class="btn sm ghost rlup" title="move up">↑</button>` : ""}${rows.length > 1 ? `<button class="btn sm ghost danger rlrm" title="remove">✕</button>` : ""}</div></div>`;
     }));
-    $("#rltargets").innerHTML = html.join("");
+    $("#rltargets").innerHTML = html.join("") + (rows.length === 1 ? `<div class="small muted" style="margin:8px 2px 0">This is the role's only target. Add a backup to have one to fall back to: backups can be started when needed, moved up, or removed (and the primary removed once a backup can take its place).</div>` : "");
     document.querySelectorAll("#rltargets .trow").forEach(el => {
       const i = +el.dataset.i;
       el.querySelector(".rlm").onchange = e => { rows[i].machine = e.target.value; rows[i].profile = ""; draw(); };
