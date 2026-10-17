@@ -172,6 +172,8 @@ class Peers:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.file: Path = cfg["manager"]["data_dir"] / "peers.json"
+        from .config import private_file
+        private_file(self.file)
         self.interval = max(3, int(cfg["resources"].get("sample_interval_s", 5)))
         self.lock = threading.Lock()
         self.file_lock = threading.Lock()                # peers.json is read-modified-written from several threads
@@ -189,9 +191,10 @@ class Peers:
             return {}
 
     def all(self) -> dict[str, dict]:
-        out = {n: {**p, "source": "managed"} for n, p in self._saved().items()}
+        saved = self._saved()
+        out = {n: {**p, "source": "managed"} for n, p in saved.items()}
         for n, p in (self.cfg.get("peers") or {}).items():
-            learned = self._saved().get(f"~{str(n).lower()}") or {}      # what was learned about a config peer
+            learned = saved.get(f"~{str(n).lower()}") or {}      # what was learned about a config peer
             out[str(n).lower()] = {"url": p["url"], "token": p.get("token", ""), "source": "config",
                                    "lan": learned.get("lan") or [],
                                    "wake": bool(learned["wake"] if "wake" in learned else p.get("wake"))}

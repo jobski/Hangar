@@ -97,8 +97,9 @@ class Store:
         self.x("UPDATE sessions SET ready=?, load_seconds=?-started WHERE id=?", (time.time(), time.time(), sid))
 
     def session_peak(self, sid, vram, ram):
-        self.x("UPDATE sessions SET peak_vram_mib=MAX(COALESCE(peak_vram_mib,0),?), "
-               "peak_ram_mib=MAX(COALESCE(peak_ram_mib,0),?) WHERE id=?", (vram, ram, sid))
+        self.x("UPDATE sessions SET peak_vram_mib=CASE WHEN ? IS NULL THEN peak_vram_mib "
+               "ELSE MAX(COALESCE(peak_vram_mib,0),?) END, "
+               "peak_ram_mib=MAX(COALESCE(peak_ram_mib,0),?) WHERE id=?", (vram, vram, ram, sid))
 
     def session_stop(self, sid, reason):
         self.x("UPDATE sessions SET stopped=?, stop_reason=? WHERE id=? AND stopped IS NULL", (time.time(), reason, sid))
@@ -116,12 +117,22 @@ class Store:
 
     def learned(self, profile) -> dict | None:
         """Measured peak use over the last 5 runs that got ready."""
-        rows = self.q("SELECT peak_vram_mib v, peak_ram_mib r, load_seconds l FROM sessions WHERE profile=? AND "
-                      "ready IS NOT NULL AND peak_vram_mib IS NOT NULL ORDER BY id DESC LIMIT 5", (profile,))
-        if not rows:
-            return None
-        return {"vram_mib": max(r["v"] or 0 for r in rows), "ram_mib": max(r["r"] or 0 for r in rows),
-                "load_seconds": sum(r["l"] or 0 for r in rows) / len(rows), "runs": len(rows)}
+        return self.learned_many([profile]).get(profile)
+
+    def learned_many(self, profiles: list[str]) -> dict[str, dict]:
+        groups = {}
+        for offset in range(0, len(profiles), 900):
+            batch = profiles[offset:offset + 900]
+            marks = ",".join("?" for _ in batch)
+            rows = self.q("SELECT * FROM (SELECT profile, peak_vram_mib v, peak_ram_mib r, load_seconds l, "
+                          "ROW_NUMBER() OVER (PARTITION BY profile ORDER BY id DESC) n FROM sessions "
+                          f"WHERE profile IN ({marks}) AND ready IS NOT NULL AND peak_vram_mib IS NOT NULL) WHERE n<=5",
+                          tuple(batch))
+            for row in rows:
+                groups.setdefault(row["profile"], []).append(row)
+        return {pid: {"vram_mib": max(r["v"] or 0 for r in rows), "ram_mib": max(r["r"] or 0 for r in rows),
+                      "load_seconds": sum(r["l"] or 0 for r in rows) / len(rows), "runs": len(rows)}
+                for pid, rows in groups.items()}
 
     # ---- usage
     def add_usage(self, minute: int, engine: str, profile: str, d: dict):

@@ -91,6 +91,18 @@ def token(cfg: dict) -> str:
     if os.environ.get("LLM_MANAGER_TOKEN"):
         return os.environ["LLM_MANAGER_TOKEN"]
     f = cfg["manager"]["data_dir"] / "token.txt"
-    if not f.exists():
-        f.write_text(secrets.token_urlsafe(32), encoding="utf-8")
+    try:
+        fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(secrets.token_urlsafe(32))
+    private_file(f)
     return f.read_text(encoding="utf-8").strip()
+
+
+def private_file(path: Path):
+    """Credential files are owner-only on POSIX; Windows access is controlled by the directory ACL."""
+    if os.name != "nt" and path.exists():
+        path.chmod(0o600)
