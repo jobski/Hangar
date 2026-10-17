@@ -58,25 +58,27 @@ class Roles:
             clean.append({"machine": machine, "profile": prof, "auto_start": bool(t.get("auto_start")) and i > 0})
         if not clean:
             raise ValueError("a role needs at least one target")
-        s = self._settings()
-        if spill is None:                                       # not given: keep what the role had
-            spill = bool((s.get("roles") or {}).get(name, {}).get("spill"))
-        s.setdefault("roles", {})[name] = {"targets": clean, **({"spill": True} if spill else {})}
-        self._write(s)
+        with self.mgr.settings_lock:
+            s = self._settings()
+            if spill is None:                                   # not given: keep what the role had
+                spill = bool((s.get("roles") or {}).get(name, {}).get("spill"))
+            s.setdefault("roles", {})[name] = {"targets": clean, **({"spill": True} if spill else {})}
+            self._write(s)
         self.mgr.store.event("roles", f"role {name}: " + " > ".join(_label(t) for t in clean)
                              + ("; a busy target's requests go to a free one" if spill else ""))
         return self.public()
 
     def delete(self, name: str):
-        s = self._settings()
-        if name not in (s.get("roles") or {}):
-            raise KeyError(f"no role called {name}")
-        del s["roles"][name]
-        self._write(s)
+        with self.mgr.settings_lock:
+            s = self._settings()
+            if name not in (s.get("roles") or {}):
+                raise KeyError(f"no role called {name}")
+            del s["roles"][name]
+            self._write(s)
         self.mgr.store.event("roles", f"removed role {name}")
 
     def _write(self, s: dict):
-        (self.mgr.data_dir / "settings.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
+        self.mgr.write_settings(s)
 
     # ---- what is up
     def target_state(self, t: dict) -> str:

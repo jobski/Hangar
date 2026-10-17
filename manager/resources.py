@@ -144,7 +144,7 @@ def port_owner(port: int) -> psutil.Process | None:
     try:
         conns = psutil.net_connections(kind="tcp")
     except (psutil.AccessDenied, OSError):
-        return None
+        return _port_owner_lsof(port)        # macOS: the system-wide list needs root; lsof shows our own processes
     for c in conns:
         if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port and c.pid:
             try:
@@ -154,13 +154,37 @@ def port_owner(port: int) -> psutil.Process | None:
     return None
 
 
+def _port_owner_lsof(port: int) -> psutil.Process | None:
+    exe = shutil.which("lsof")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"], capture_output=True, text=True,
+                             timeout=5).stdout.split()
+        return psutil.Process(int(out[0])) if out else None
+    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error):
+        return None
+
+
+_procs: dict[int, psutil.Process] = {}       # kept between samples: CPU% is measured since the previous call
+
+
+def _proc(proc: psutil.Process) -> psutil.Process:
+    p = _procs.get(proc.pid)
+    if p is None or not p.is_running():      # is_running also catches a reused pid
+        p = _procs[proc.pid] = proc
+    return p
+
+
 def tree_usage(pid: int) -> dict:
     """RAM (RSS, MiB) and CPU% of a process and all its children."""
     try:
-        p = psutil.Process(pid)
-        procs = [p] + p.children(recursive=True)
+        p = _proc(psutil.Process(pid))
+        procs = [p] + [_proc(c) for c in p.children(recursive=True)]   # a child that has just exited is skipped below
     except psutil.NoSuchProcess:
         return {"ram_mib": 0.0, "cpu_percent": 0.0, "pids": []}
+    for gone in [k for k, v in _procs.items() if not v.is_running()]:
+        _procs.pop(gone, None)
     rss, cpu, pids = 0, 0.0, []
     for q in procs:
         try:

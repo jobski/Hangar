@@ -617,7 +617,9 @@ function renderStatus(s) {
   $("#machine").innerHTML = m;
 
   let h = "", out = 0, nrun = 0;
-  for (const e of s.engines) {
+  // running engines first (ready, then starting), then stopped ones; otherwise as configured
+  const rank = e => !e.running ? 2 : e.running.state === "ready" ? 0 : 1;
+  for (const e of s.engines.map((e, i) => [e, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0])) {
     const run = e.running, up = e.update || {};
     const ver = up.current ? `<span class="tag">${esc(up.current)}</span>` : "";
     const upd = up.available ? `<span class="tag warn" title="${esc(up.latest)}">↑ ${esc(up.latest)}</span>` : up.error ? `<span class="tag bad" title="${esc(up.error)}">update check failed</span>` : "";

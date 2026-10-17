@@ -2,14 +2,28 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 import secrets
+import tempfile
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def write_json(path: Path, data, indent: int = 1):
+    """Write JSON so a crash or a reader at the wrong moment never sees half a file: a temp file, then a rename."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")   # one per writer
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=indent))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 DEFAULTS = {
     "manager": {"host": "0.0.0.0", "port": 9000, "data_dir": "data", "logs_dir": "logs"},

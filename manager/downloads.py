@@ -23,6 +23,7 @@ from urllib.parse import quote, unquote, urlparse
 
 import httpx
 
+from .config import write_json
 from .models import SHARD, folder_name_for
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -226,9 +227,14 @@ class Downloader:
         self.aria2 = dc.get("aria2", "auto")             # auto | on | off
         self.aria2_connections = int(dc.get("aria2_connections", 16))
         self.items: dict[str, Download] = {}
+        self.items_lock = threading.Lock()               # API threads and download threads both use items
         self.on_done = on_done
         # folders downloaded into outside the library (e.g. a Strata model folder), so leftovers() finds them too
         self.known_file = Path(cfg["manager"]["data_dir"]) / "download-folders.json" if cfg.get("manager") else None
+
+    def _items(self) -> list[Download]:
+        with self.items_lock:
+            return list(self.items.values())
 
     def _known_folders(self) -> list[Path]:
         try:
@@ -241,7 +247,7 @@ class Downloader:
             return
         known = {str(x) for x in self._known_folders()} | {str(folder)}
         try:
-            self.known_file.write_text(json.dumps(sorted(known), indent=1), encoding="utf-8")
+            write_json(self.known_file, sorted(known))
         except OSError:
             pass
 
@@ -299,15 +305,22 @@ class Downloader:
             raise ValueError("no files match")
         dest = Path(folder) if folder and Path(folder).is_absolute() else self.library_dir / (folder or folder_name_for(
             repo.split(":")[0] if source == "ollama" else Path(urlparse(repo).path).stem if source == "url" else repo))
-        if any(x.folder == str(dest) and x.state in ("queued", "running") for x in self.items.values()):
-            raise ValueError(f"{dest.name} is already downloading")
         d = Download(source=source, repo=repo, files=files, folder=str(dest), revision=revision, make_profile=make_profile)
         d.total_bytes = sum(f.get("size") or 0 for f in files)
-        dest.mkdir(parents=True, exist_ok=True)
-        self._remember_folder(dest)
-        (dest / RECORD).write_text(json.dumps({"source": source, "repo": repo, "revision": revision, "make_profile": make_profile,
-                                               "files": files, "started": time.time()}, indent=1), encoding="utf-8")
-        self.items[d.id] = d
+        with self.items_lock:                      # the check and the claim together: two clicks start it once
+            if any(x.folder == str(dest) and x.state in ("queued", "running") for x in self.items.values()):
+                raise ValueError(f"{dest.name} is already downloading")
+            self.items[d.id] = d
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            self._remember_folder(dest)
+            (dest / RECORD).write_text(json.dumps({"source": source, "repo": repo, "revision": revision, "make_profile":
+                                                   make_profile, "files": files, "started": time.time()}, indent=1),
+                                       encoding="utf-8")
+        except OSError:
+            with self.items_lock:                  # not started after all: free the folder for another try
+                self.items.pop(d.id, None)
+            raise
         threading.Thread(target=self._run, args=(d,), daemon=True, name=f"dl-{d.id}").start()
         return d
 
@@ -317,7 +330,7 @@ class Downloader:
         return d
 
     def list(self):
-        return [d.public() for d in sorted(self.items.values(), key=lambda x: -x.created)][:50]
+        return [d.public() for d in sorted(self._items(), key=lambda x: -x.created)][:50]
 
     def _run(self, d: Download):
         with self.parallel:
@@ -382,7 +395,7 @@ class Downloader:
     def leftovers(self) -> list[dict]:
         """Unfinished downloads in the library: folders with a download record, .part files, aria2 control files.
         resumable when Hangar knows what was being downloaded (the record)."""
-        busy = {x.folder for x in self.items.values() if x.state in ("queued", "running")}
+        busy = {x.folder for x in self._items() if x.state in ("queued", "running")}
         out = []
         folders = sorted(p for p in self.library_dir.iterdir() if p.is_dir()) if self.library_dir.is_dir() else []
         folders += [p for p in self._known_folders() if p.is_dir() and p not in folders]
@@ -503,6 +516,8 @@ class Downloader:
         for line in p.stdout:
             if d.cancel.is_set():
                 p.kill()
+                p.wait()                             # reap it: no zombie aria2c, no open pipe
+                p.stdout.close()
                 raise _Cancelled()
             m = prog.search(line)
             if m:

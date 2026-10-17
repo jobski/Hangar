@@ -117,6 +117,7 @@ class Manager:
         self.store = Store(self.data_dir / "stats.db")
         self._reasoning_cache: dict = {}
         self.lock = threading.RLock()            # guards instances / profiles
+        self.settings_lock = threading.RLock()   # data/settings.json is read, changed and written back under it
         self.instances: dict[str, Instance] = {}
         self.engines: dict[str, Engine] = {}
         self.profiles: dict[str, Profile] = {}
@@ -407,13 +408,14 @@ class Manager:
             self.store.event("reasoning", f"{p.id}: reasoning effort {level} (live)", engine, p.id)
             self._reasoning_cache.pop(engine, None)
             return {**self.reasoning(engine, p.id), "applied": "now"}
-        s = self._settings()
-        r = s.setdefault("reasoning", {})
-        if level == "default":
-            r.pop(p.id, None)
-        else:
-            r[p.id] = level
-        (self.data_dir / "settings.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
+        with self.settings_lock:
+            s = self._settings()
+            r = s.setdefault("reasoning", {})
+            if level == "default":
+                r.pop(p.id, None)
+            else:
+                r[p.id] = level
+            self.write_settings(s)
         self.store.event("reasoning", f"{p.id}: reasoning effort {level}" + (" (restarting)" if restart and info["running"] else ""),
                          engine, p.id)
         out = {**self.reasoning(engine, p.id), "applied": "next start"}
@@ -456,6 +458,9 @@ class Manager:
         return val
 
     # ---- the memory budget: how much of this machine Hangar's engines may use (VRAM + RAM together)
+    def write_settings(self, s: dict):
+        config_mod.write_json(self.data_dir / "settings.json", s)
+
     def _settings(self) -> dict:
         try:
             return json.loads((self.data_dir / "settings.json").read_text(encoding="utf-8"))
@@ -472,15 +477,21 @@ class Manager:
     def set_budget(self, gb: float | None) -> dict:
         if gb is not None and not 1 <= gb <= 4096:
             raise ValueError("a memory budget is between 1 and 4096 GB (or none)")
-        s = self._settings()
-        s["memory_budget_mib"] = gb * 1024 if gb else None
-        (self.data_dir / "settings.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
+        with self.settings_lock:
+            s = self._settings()
+            s["memory_budget_mib"] = gb * 1024 if gb else None
+            self.write_settings(s)
         self.store.event("budget", f"memory budget {gb:g} GB" if gb else "no memory budget")
         return self.budget_public()
 
+    def footprint(self, vram: float, ram: float) -> float:
+        """What a model takes from the machine: VRAM + RAM, or on Apple Silicon (unified memory, where its GPU memory
+        is also in its RAM) the larger of the two."""
+        return max(vram, ram) if any(g.get("unified") for g in self.snap.get("gpus", [])) else vram + ram
+
     def budget_public(self) -> dict:
         b = self.budget_mib()
-        used = sum((i.peak_vram or 0) + (i.ram_mib or 0) for i in self.instances.values())
+        used = sum(self.footprint(i.peak_vram or 0, i.ram_mib or 0) for i in self.instances.values())
         return {"budget_mib": b, "used_mib": used, "unified": any(g.get("unified") for g in self.snap.get("gpus", [])),
                 "limit_mib": self.profile_limit_mib()}
 
@@ -545,10 +556,11 @@ class Manager:
         # the memory budget counts what keeps running next to it
         budget = self.budget_mib()
         if ok and budget:
-            staying = sum((i.peak_vram or 0) + (i.ram_mib or 0) for n, i in others.items() if n not in stop)
-            total = need["vram_mib"] + need["ram_mib"] + staying
+            staying = sum(self.footprint(i.peak_vram or 0, i.ram_mib or 0) for n, i in others.items() if n not in stop)
+            own = self.footprint(need["vram_mib"], need["ram_mib"])
+            total = own + staying
             if total > budget:
-                msg = (f"{p.id} needs ~{(need['vram_mib'] + need['ram_mib']) / 1024:.1f} GB"
+                msg = (f"{p.id} needs ~{own / 1024:.1f} GB"
                        + (f" (+{staying / 1024:.1f} GB already running)" if staying else "")
                        + f": over the {budget / 1024:.1f} GB memory budget")
                 if force:
@@ -772,9 +784,9 @@ class Manager:
 
     # ---- adoption: engines that were running before the manager (re)started
     def _save_state(self):
-        with self.lock:
+        with self.lock:                          # held while writing: the newest snapshot is the one that lands
             data = {n: i.persist() for n, i in self.instances.items()}
-        (self.data_dir / "state.json").write_text(json.dumps(data, indent=1), encoding="utf-8")
+            config_mod.write_json(self.data_dir / "state.json", data)
 
     def adopt_saved(self):
         f = self.data_dir / "state.json"
