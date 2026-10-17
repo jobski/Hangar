@@ -1271,6 +1271,7 @@ class Manager:
                 "engines": engines, "resources": snap, "warnings": warn,
                 "job": self.current_job.public(10) if self.current_job else None,
                 "queued": self.queue.qsize(),
+                "main_follows_running": self.roles.follows_running() if getattr(self, "roles", None) else True,
                 "roles": self.roles.public() if getattr(self, "roles", None) else []}
 
     def _context(self, profile: str):

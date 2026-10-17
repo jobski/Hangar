@@ -133,6 +133,12 @@ as `Authorization: Bearer` or `x-api-key`); the model name is the role.
 - A peer's target goes through that peer's own gateway with its token (its engine keys stay there); a peer on an
   older Hangar is reached on its engine's port directly.
 
+**Use running model as main** is enabled by default in each machine's **Roles** panel. `main` follows the most
+recently started ready model on each configured target machine, retaining primary and backup order. Without saved
+targets it follows the local running model. A hub follows its configured machines, so changing a Strata model does
+not leave it pinned to the previous profile. Turn the option off to use saved profile targets; those targets are retained while automatic following is on. Other roles keep their
+configured profiles. Clients should use the Hangar gateway with `model: "main"` to follow these changes.
+
 Set roles on the Overview's **Roles** panel (badges on the engine cards show which roles a model serves), or
 `hangar role set helper macbook/qwen3-coder-30b-a3b-instruct-ud-q4_k_xl this/gemma-3-4b --auto`, `hangar roles`,
 `hangar role rm <name>`; over MCP, `roles` and `set_role`. The **Connect** page includes a `hangar` provider whose
