@@ -1403,9 +1403,9 @@ function renderRoles(rs) {
   const main = rs.find(r => r.name === "main");
   const mainT = main && (main.targets[0] || main.serving);
   const stc = st => ({ ready: "ok", starting: "warn", offline: "bad", unknown: "bad" }[st] || "");
-  const chip = (t, extra) => `<span class="tchip ${t.serving ? "serving" : ""}" title="${esc(t.state || "")}${t.started_by_hangar ? " · started by Hangar as a backup" : ""}"><span class="dot ${stc(t.state)}"></span><span class="m">${esc(t.machine || MACHINE || "this")}</span><span class="p">${esc(t.profile)}</span>${extra || ""}</span>`;
+  const chip = (t, extra) => `<span class="tchip ${t.serving ? "serving" : ""}" title="${esc(t.state || "")}${t.busy ? " · busy with a request" : ""}${t.started_by_hangar ? " · started by Hangar as a backup" : ""}"><span class="dot ${stc(t.state)}"></span><span class="m">${esc(t.machine || MACHINE || "this")}</span><span class="p">${esc(t.profile)}</span>${extra || ""}</span>`;
   $("#roles").innerHTML = rs.map(r => {
-    const ts = r.targets.map((t, i) => chip(t, i ? `<span class="k">${t.auto_start ? "backup · auto" : "backup"}</span>` : "")).join(`<span class="arr">→</span>`);
+    const ts = r.targets.map((t, i) => chip(t, (t.busy && t.state === "ready" ? `<span class="k" style="color:var(--warn)">busy</span>` : "") + (i ? `<span class="k">${t.auto_start ? "backup · auto" : "backup"}</span>` : ""))).join(r.spill ? `<span class="arr" title="while one is busy, requests go to a free one">⇄</span>` : `<span class="arr">→</span>`);
     // what happens when every target is down: main answers (shown always, lit when it is answering)
     let fb = "";
     if (r.fallback && r.serving) fb = `<span class="arr">→</span>${chip({ ...r.serving, state: "ready", serving: true }, `<span class="k">${r.name === "main" ? "running" : "fallback · answering"}</span>`)}`;
@@ -1469,6 +1469,8 @@ async function roleDialog(name) {
     ${name ? "" : `<label class="fld" style="margin-bottom:12px">Name<input id="rlname" class="input mono" placeholder="helper" autocomplete="off" autocapitalize="off" spellcheck="false"></label>`}
     <div id="rltargets"></div>
     <button class="btn sm ghost" id="rladd" style="margin-top:6px">+ Add a backup</button>
+    <label class="chk small" style="display:flex;margin-top:12px;gap:8px;align-items:flex-start"><input type="checkbox" id="rlspill" ${r.spill ? "checked" : ""}>
+      <span>Use a free target while one is busy<br><span class="muted">A request goes to the first target in this role that is not working on another one, instead of queueing. Only this role's targets that are up; nothing is started for it.</span></span></label>
     <div class="row" style="margin-top:16px">${name && name !== "main" ? `<button class="btn ghost danger" id="rldel">Delete role</button>` : ""}<span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="rlsave">Save</button></div>`);
   const draw = async () => {
     const html = await Promise.all(rows.map(async (t, i) => {
@@ -1493,7 +1495,7 @@ async function roleDialog(name) {
   $("#rladd").onclick = () => { rows.push({ machine: "", profile: "", auto_start: true }); draw(); };
   $("#rlsave").onclick = async () => {
     const nm = name || ($("#rlname").value || "").trim().toLowerCase();
-    try { await post("/api/roles", { name: nm, targets: rows.filter(t => t.profile) }); $("#dlg").close(); toast(`Role ${nm} saved`); refreshFast(); }
+    try { await post("/api/roles", { name: nm, targets: rows.filter(t => t.profile), spill: $("#rlspill").checked }); $("#dlg").close(); toast(`Role ${nm} saved`); refreshFast(); }
     catch (e) { fail(e); }
   };
   if ($("#rldel")) $("#rldel").onclick = async () => {

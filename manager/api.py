@@ -351,8 +351,9 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         return roles.public()
 
     @app.post("/api/roles")
-    def roles_save(name: str = Body(..., embed=True), targets: list[dict] = Body(..., embed=True)):
-        return guard(roles.save, name, targets)
+    def roles_save(name: str = Body(..., embed=True), targets: list[dict] = Body(..., embed=True),
+                   spill: bool | None = Body(None, embed=True)):
+        return guard(roles.save, name, targets, spill)
 
     @app.delete("/api/roles/{name}")
     def roles_delete(name: str):
@@ -458,6 +459,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                 await r.aclose()
                 continue
             roles.note_used(t)
+            roles.opened(t)
             meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
 
             async def relay(r=r, t=t, meter=meter):
@@ -468,6 +470,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                         yield chunk
                     done = True
                 finally:
+                    roles.closed(t)
                     await r.aclose()
                     log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code,
                         error=("closed before the end" if not done else f"HTTP {r.status_code}" if r.status_code >= 400 else None),

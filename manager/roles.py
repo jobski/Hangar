@@ -29,6 +29,7 @@ class Roles:
         self.down_since: dict[str, float] = {}        # role -> when its primary went down
         self.started: dict[tuple, float] = {}         # (machine, profile) -> when Hangar started it as a backup
         self.last_used: dict[tuple, float] = {}       # (machine, profile) -> last request routed to it
+        self.inflight: dict[tuple, int] = {}          # (machine, profile) -> requests this gateway has open there
         self.stop_flag = threading.Event()
 
     # ---- the definitions
@@ -38,7 +39,7 @@ class Roles:
     def all(self) -> dict[str, dict]:
         return self._settings().get("roles") or {}
 
-    def save(self, name: str, targets: list[dict]) -> dict:
+    def save(self, name: str, targets: list[dict], spill: bool | None = None) -> dict:
         name = (name or "").strip().lower()
         if not ROLE_NAME.match(name):
             raise ValueError("a role name is a lowercase word, e.g. main or helper")
@@ -56,9 +57,12 @@ class Roles:
         if not clean:
             raise ValueError("a role needs at least one target")
         s = self._settings()
-        s.setdefault("roles", {})[name] = {"targets": clean}
+        if spill is None:                                       # not given: keep what the role had
+            spill = bool((s.get("roles") or {}).get(name, {}).get("spill"))
+        s.setdefault("roles", {})[name] = {"targets": clean, **({"spill": True} if spill else {})}
         self._write(s)
-        self.mgr.store.event("roles", f"role {name}: " + " > ".join(_label(t) for t in clean))
+        self.mgr.store.event("roles", f"role {name}: " + " > ".join(_label(t) for t in clean)
+                             + ("; a busy target's requests go to a free one" if spill else ""))
         return self.public()
 
     def delete(self, name: str):
@@ -106,7 +110,10 @@ class Roles:
             if k not in seen and self.target_state(t) == "ready":
                 seen.add(k)
                 out.append({"machine": t["machine"], "profile": t["profile"]})
-        for t in (roles.get(model) or {}).get("targets", []):
+        own = (roles.get(model) or {}).get("targets", [])
+        if (roles.get(model) or {}).get("spill"):       # the role's free targets first (in order), then its busy ones
+            own = [t for t in own if not self.busy(t)] + [t for t in own if self.busy(t)]
+        for t in own:
             add(t)
         for t in (roles.get("main") or {}).get("targets", []):
             add(t)
@@ -190,6 +197,28 @@ class Roles:
                     break
             self.stop_flag.wait(2)
         return []
+
+    def busy(self, t: dict) -> bool:
+        """Working on a request now: one this gateway sent there, or the engine says so (other clients, last poll)."""
+        if self.inflight.get((t["machine"], t["profile"])):
+            return True
+        if not t["machine"]:
+            return any(i.profile == t["profile"] and (i.gauges or {}).get("requests_processing")
+                       for i in list(self.mgr.instances.values()))
+        st = (self.peers.state.get(t["machine"]) or {}).get("status") or {}
+        return any(((e.get("running") or {}).get("profile") == t["profile"]
+                    and (((e["running"].get("stats") or {}).get("gauges") or {}).get("requests_processing")))
+                   for e in st.get("engines") or [])
+
+    def opened(self, t: dict):
+        k = (t["machine"], t["profile"])
+        with self.lock:
+            self.inflight[k] = self.inflight.get(k, 0) + 1
+
+    def closed(self, t: dict):
+        k = (t["machine"], t["profile"])
+        with self.lock:
+            self.inflight[k] = max(0, self.inflight.get(k, 0) - 1)
 
     def note_used(self, t: dict):
         self.last_used[(t["machine"], t["profile"])] = time.time()
@@ -313,9 +342,10 @@ class Roles:
             for i, t in enumerate(role.get("targets", [])):
                 k = (t["machine"], t["profile"])
                 rows.append({**t, "state": self.target_state(t), "backup": i > 0, "started_by_hangar": k in self.started,
+                             "busy": self.busy(t),
                              "serving": bool(serving) and (serving["machine"], serving["profile"]) == k})
             fallback = serving and not any(r["serving"] for r in rows)
-            out.append({"name": name, "targets": rows, "implicit": bool(role.get("implicit")),
+            out.append({"name": name, "targets": rows, "implicit": bool(role.get("implicit")), "spill": bool(role.get("spill")),
                         "serving": serving, "fallback": bool(fallback),
                         "down_for": round(time.time() - self.down_since[name]) if name in self.down_since else None})
         return out
