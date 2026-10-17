@@ -10,6 +10,7 @@ manager:
   # name: hub             # how this machine is called in the dashboard and by peers (default: the host name)
   data_dir: data         # token.txt, stats.db, state.json, downloads
   logs_dir: logs         # one log per engine
+  # request_log_days: 365  # how long the gateway's request log is kept (0 = forever)
 
 resources:
   vram_reserve_mib: 0            # nothing runs here, so no GPU to keep spare

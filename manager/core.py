@@ -834,10 +834,13 @@ class Manager:
     # ---- collector: resources, crashes, token counters
     def _collector(self):
         interval = self.cfg["resources"]["sample_interval_s"]
-        last_discover = 0.0
+        last_discover = last_prune = 0.0
         while not self.stop_flag.wait(interval):
             try:
                 self._sample()
+                if time.time() - last_prune > 6 * 3600:      # the request log keeps manager.request_log_days
+                    self.store.prune_requests(float(self.cfg["manager"].get("request_log_days", 365)))
+                    last_prune = time.time()
                 if time.time() - last_discover > 30 and (self.current_job is None):
                     self._discover_external()
                     last_discover = time.time()

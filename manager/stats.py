@@ -136,6 +136,13 @@ class Store:
         cols = [f for f in REQ_FIELDS if f in kw]
         self.x(f"INSERT INTO requests(ts,{','.join(cols)}) VALUES(?{',?' * len(cols)})", (ts, *[kw[c] for c in cols]))
 
+    def prune_requests(self, keep_days: float) -> int:
+        """Drop gateway requests older than keep_days (0 keeps everything); how many went."""
+        if not keep_days or keep_days <= 0:
+            return 0
+        with self.lock:
+            return self.db.execute("DELETE FROM requests WHERE ts < ?", (time.time() - keep_days * 86400,)).rowcount
+
     def requests(self, limit: int = 50, before: float | None = None) -> list[dict]:
         """The latest gateway requests, newest first (before: only older than this time, for paging)."""
         return self.q("SELECT * FROM requests WHERE ts < ? ORDER BY ts DESC LIMIT ?", (before or time.time() + 1, limit))

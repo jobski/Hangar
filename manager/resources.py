@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import platform
 import re
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -85,6 +86,29 @@ def _sysctl_int(name: str) -> int | None:
     return int(v) if v and v.isdigit() else None
 
 
+# in a container /proc/stat is the host's: its own CPU time is in its cgroup (an LXC or Docker hub, say)
+_CGROUP_CPU = Path("/sys/fs/cgroup/cpu.stat")
+_IN_CONTAINER = sys.platform.startswith("linux") and any(
+    Path(p).exists() for p in ("/run/systemd/container", "/.dockerenv", "/run/.containerenv"))
+_cg_last: tuple[float, int] | None = None
+
+
+def cpu_percent() -> float:
+    """CPU use since the last call, as a share of this machine's cores (a container's own, not its host's)."""
+    global _cg_last
+    if _IN_CONTAINER:
+        try:
+            usage = int(re.search(r"usage_usec (\d+)", _CGROUP_CPU.read_text()).group(1))
+            now, prev = time.monotonic(), _cg_last
+            _cg_last = (now, usage)
+            if not prev or now <= prev[0]:
+                return 0.0
+            return max(0.0, min(100.0, (usage - prev[1]) / 1e6 / ((now - prev[0]) * (psutil.cpu_count() or 1)) * 100))
+        except (OSError, AttributeError, ValueError):
+            pass
+    return psutil.cpu_percent(interval=None)
+
+
 def snapshot() -> dict:
     vm = psutil.virtual_memory()
     sw = psutil.swap_memory()
@@ -95,7 +119,7 @@ def snapshot() -> dict:
         "ram_available_mib": vm.available / 2**20,
         "ram_percent": vm.percent,
         "swap_used_mib": sw.used / 2**20,
-        "cpu_percent": psutil.cpu_percent(interval=None),
+        "cpu_percent": cpu_percent(),
         "cpu_count": psutil.cpu_count(),
     }
 
