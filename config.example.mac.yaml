@@ -10,6 +10,7 @@ manager:
   name: macbook                # how this machine is called in the dashboard and by peers (default: the host name)
   data_dir: data
   logs_dir: logs
+  # request_log_days: 365  # how long the gateway's request log is kept (0 = forever)
 
 resources:
   vram_reserve_mib: 2048       # leave room for macOS and apps sharing the same memory

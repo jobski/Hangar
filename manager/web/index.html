@@ -992,6 +992,7 @@ async function renderRequests() {
   }
   $("#reqby").innerHTML = REQBY.map(([k, l]) => `<button class="${k === reqBy ? "on" : ""}" data-reqby="${k}">${l}</button>`).join("");
   const ms = v => v == null ? "–" : v < 1 ? Math.round(v * 1000) + " ms" : v.toFixed(1) + " s";
+  const waited = r => r.ttft_s != null && r.prompt_s != null ? Math.max(0, r.ttft_s - r.prompt_s) : 0;   // queued behind others
   const label = r => reqBy === "target" ? (r.machine ? `<span class="tag">${esc(r.machine)}</span> ${esc(r.profile)}` : `<span class="muted">not served</span>`) : esc(r[reqBy] || "–");
   const top = Math.max(1, ...s.rows.map(r => r.requests));
   $("#reqtable").innerHTML = s.rows.length ? `<tr><th>${REQBY.find(x => x[0] === reqBy)[1]}</th><th>Requests</th><th>Failed</th><th>Out</th><th>In</th><th>Cached</th><th>tok/s out</th><th>tok/s in</th><th>First token</th><th>Last</th></tr>` +
@@ -1000,7 +1001,7 @@ async function renderRequests() {
   $("#reqlatest").innerHTML = latest.length ? `<tr><th>When</th><th>Asked for</th><th>Served by</th><th>Client</th><th>Out</th><th>In</th><th>tok/s</th><th>First token</th><th>Took</th></tr>` +
     latest.map(r => `<tr title="${esc(r.error || "")}"><td>${ago(r.ts)}</td><td>${esc(r.model)}</td><td>${r.machine ? `<span class="tag">${esc(r.machine)}</span> ${esc(r.profile)}` : `<span class="tag bad">${r.status}</span> ${esc(r.error || "")}`}</td>` +
       `<td>${esc(r.client)}${r.caller ? ` <span class="muted small">on ${esc(r.caller)}</span>` : ""}${r.via ? ` <span class="muted small">via ${esc(r.via)}</span>` : ""}${r.error && r.machine ? ` <span class="tag warn">${esc(r.error)}</span>` : ""}</td><td>${num(r.gen_tokens)}</td><td>${num(r.prompt_tokens)}</td>` +
-      `<td>${tps(r.gen_s ? r.gen_tokens / r.gen_s : null)}</td><td>${ms(r.ttft_s)}</td><td>${ms(r.duration_s)}</td></tr>`).join("")
+      `<td>${tps(r.gen_s ? r.gen_tokens / r.gen_s : null)}</td><td>${ms(r.ttft_s)}${waited(r) >= 1 ? ` <span class="small warn-t" title="waited for the engine (busy with other requests) before reading the prompt">· waited ${ms(waited(r))}</span>` : ""}</td><td>${ms(r.duration_s)}</td></tr>`).join("")
     : `<tr><td class="empty">No requests yet.</td></tr>`;
 }
 
