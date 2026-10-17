@@ -33,6 +33,7 @@
     hangar roles                                    roles (main, helper, ...) and which model serves each now
     hangar role set <name> <machine/profile> [<machine/profile> ...] [--auto]   first = primary, then backups;
           --auto starts backups when needed (machine "this" = here). e.g. hangar role set helper macbook/qwen3-coder this/gemma-3-4b --auto
+          --spill: while a target is busy, the role's requests go to a free target of the same role (--no-spill: off)
     hangar role rm <name>
     hangar reasoning <engine> [level] [--restart]  a thinking model's effort: none/low/medium/high/...; show without level
     hangar budget [GB|off]                          memory Hangar's engines may use here (no argument: show)
@@ -432,7 +433,8 @@ def cmd_roles(_):
                            + (" *" if t["serving"] else "") for t in r["targets"]) or ("(whatever runs here)" if r["name"] == "main" else "(none)")
         s = r["serving"]
         now = f"{s['machine'] or 'this'}/{s['profile']}" + (" (fallback)" if r["fallback"] else "") if s else "NOTHING UP"
-        print(f"{r['name']:10s} {chain}\n{'':10s} serving now: {now}")
+        print(f"{r['name']:10s} {chain}\n{'':10s} serving now: {now}"
+              + ("  (a busy target's requests go to a free one in this role)" if r.get("spill") else ""))
 
 
 def cmd_role(a):
@@ -442,13 +444,15 @@ def cmd_role(a):
         for i, spec in enumerate(pl[2:]):
             machine, _, prof = spec.rpartition("/")
             targets.append({"machine": "" if machine in ("", "this") else machine, "profile": prof, "auto_start": i > 0 and "--auto" in a})
-        _call("POST", "/api/roles", json={"name": pl[1], "targets": targets})
+        spill = True if "--spill" in a else False if "--no-spill" in a else None
+        _call("POST", "/api/roles", json={"name": pl[1], "targets": targets, "spill": spill})
         cmd_roles([])
     elif pl[:1] in (["rm"], ["remove"]) and len(pl) >= 2:
         _call("DELETE", f"/api/roles/{pl[1]}")
         print(f"removed role {pl[1]}")
     else:
-        sys.exit("usage: hangar role set <name> <machine/profile> [...] [--auto] | hangar role rm <name>")
+        sys.exit("usage: hangar role set <name> <machine/profile> [...] [--auto] [--spill|--no-spill] | hangar role rm <name>\n"
+                 "  --spill: while a target is busy, its requests go to a free one in the same role")
 
 
 def cmd_budget(a):
