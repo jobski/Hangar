@@ -265,7 +265,7 @@ def cmd_requests(a):
         for r in reversed(_call("GET", "/api/requests", params={"limit": 30})):
             who = (f"{r['machine']}/{r['profile']}" + (f" [{r['error']}]" if r["error"] else "")) if r["machine"] \
                 else f"HTTP {r['status']} {r['error'] or ''}"
-            tps = f"{r['gen_tokens'] / r['gen_s']:.1f} tok/s" if r.get("gen_s") else "-"
+            tps = f"{r['gen_tokens'] / r['gen_s']:.1f} tok/s" if (r.get("gen_s") or 0) >= 0.05 and (r.get("gen_tokens") or 0) >= 4 else "-"
             src = f"{r['client'] or '-'}@{r.get('caller') or '?'}"
             print(f"{time.strftime('%m-%d %H:%M:%S', time.localtime(r['ts']))} {r['model']:10s} {who:44s} {src:24s}"
                   f" out {_num(r['gen_tokens'] or 0):>6s}  {tps:>11s}  {r['duration_s'] or 0:6.1f} s")

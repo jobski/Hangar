@@ -5,6 +5,7 @@ import codecs
 import contextlib
 import hmac
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -24,6 +25,7 @@ from .roles import WAKE_WAIT_S, Roles
 from .stats import RequestMeter, client_name, merge_series, merge_summaries
 
 WEB = Path(__file__).parent / "web"
+TOO_LONG = re.compile(r"context|too long|too many tokens|exceed|n_ctx|maximum", re.I)
 OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
 
 
@@ -407,7 +409,9 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
             except Exception:  # noqa: BLE001 - the log never fails a request
                 pass
         woken = await anyio.to_thread.run_sync(roles.wake_for, model)
-        cands = await anyio.to_thread.run_sync(roles.candidates, model)
+        # rough size of the request in tokens (~4 bytes each) plus what it may generate: a spill target must fit it
+        need = len(raw) // 4 + int(data.get("max_tokens") or data.get("max_completion_tokens") or 0)
+        cands = await anyio.to_thread.run_sync(roles.candidates, model, need, (client, caller))
         if not cands and (woken or await anyio.to_thread.run_sync(roles.starting, model)):
             cands = await anyio.to_thread.run_sync(roles.wait_for, model, woken)
         if not cands:
@@ -420,7 +424,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                                            "profile's id)"}}, status_code=503)
         passthrough = {k: v for k, v in request.headers.items() if k.lower() in ("accept", "anthropic-version", "anthropic-beta")}
         errors = []
-        for t in cands:
+        for n, t in enumerate(cands):
             if t["machine"]:
                 p = peers.get(t["machine"])
                 url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
@@ -458,7 +462,16 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                 errors.append(f"{t['machine'] or 'here'}/{t['profile']}: HTTP {r.status_code}")
                 await r.aclose()
                 continue
-            roles.note_used(t)
+            if r.status_code in (400, 413) and n + 1 < len(cands):
+                # too long for this target's context: the next one may take it; any other 400 is the client's
+                body = await r.aread()
+                await r.aclose()
+                if TOO_LONG.search(body[:4096].decode("utf-8", "replace")):
+                    errors.append(f"{t['machine'] or 'here'}/{t['profile']}: too long for its context")
+                    continue
+                log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code, error=f"HTTP {r.status_code}")
+                return Response(body, status_code=r.status_code, media_type=r.headers.get("content-type"))
+            roles.note_used(t, model, (client, caller))
             roles.opened(t)
             meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
 
