@@ -10,9 +10,11 @@ import json
 import os
 import re
 import subprocess
+import threading
 from pathlib import Path
 
 import httpx
+import psutil
 
 from .base import Engine, Estimate, Launch, Profile, arg_value, file_mib
 
@@ -27,6 +29,19 @@ def _norm(p: str) -> str:
 GEN = re.compile(r"\[strata\] (?P<phase>.+?): (?P<n>[\d,]+) of max [\d,]+ tokens, (?P<tps>[\d.]+) tok/s")
 # "[strata] reading the prompt: 22,982 of 39,584 tokens, 19 s so far"
 READ = re.compile(r"\[strata\] reading the prompt: (?P<n>[\d,]+) of (?P<total>[\d,]+) tokens, (?P<s>\d+) s so far")
+
+
+def _kill_tree(pid: int):
+    """Stop a process and everything it started (a child holding our output pipe would keep the update stuck)."""
+    try:
+        proc = psutil.Process(pid)
+        for c in proc.children(recursive=True) + [proc]:
+            try:
+                c.kill()
+            except psutil.Error:
+                pass
+    except psutil.Error:
+        pass
 
 
 class StrataEngine(Engine):
@@ -215,14 +230,28 @@ class StrataEngine(Engine):
         p = subprocess.Popen(["cmd", "/c", "UPDATE.bat", "--yes"], cwd=self.dir, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                              errors="replace", creationflags=NO_WINDOW)
+        timed_out = threading.Event()
+
+        def stop():
+            timed_out.set()
+            _kill_tree(p.pid)
+        watchdog = threading.Timer(self.update_timeout_s, stop)    # the time limit holds while it is still printing
+        watchdog.start()
         try:
             for line in p.stdout:
                 line = line.rstrip()
                 if line:
                     log("  " + line)
-            p.wait(timeout=self.update_timeout_s)
+            p.wait(timeout=60)
         except subprocess.TimeoutExpired:
-            p.kill()
+            timed_out.set()
+            _kill_tree(p.pid)
+        finally:
+            watchdog.cancel()
+            p.stdout.close()
+            if p.poll() is None:
+                p.wait()
+        if timed_out.is_set():
             raise RuntimeError("UPDATE.bat took too long and was stopped")
         if p.returncode != 0:
             raise RuntimeError(f"UPDATE.bat failed (exit code {p.returncode}); see the update log")

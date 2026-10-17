@@ -244,7 +244,9 @@ class LlamaCppEngine(Engine):
                 name = info.filename.split("/", 1)[1] if strip else info.filename
                 if not name or name.endswith("/"):
                     continue
-                target = into / name
+                target = (into / name).resolve()
+                if not target.is_relative_to(into.resolve()):        # an entry like ../x or /x: not ours to write
+                    raise RuntimeError(f"unsafe path in the archive: {info.filename}")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with z.open(info) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)

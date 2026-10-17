@@ -250,7 +250,8 @@ class Peers:
             self.state.pop(name, None)
 
     def _write(self, saved: dict):
-        self.file.write_text(json.dumps(saved, indent=1), encoding="utf-8")
+        from .config import write_json
+        write_json(self.file, saved)
 
     def _remember(self, name: str, **kw):
         """Keep something learned about a peer (its LAN interfaces, wake setting) in peers.json; a config.yaml peer's
@@ -368,10 +369,25 @@ class Peers:
         self.stop_flag.set()
 
     def _loop(self):
-        while not self.stop_flag.is_set():
-            for name in list(self.all()):
-                self.poll_one(name)
-            self.stop_flag.wait(self.interval)
+        # each machine on its own clock: one that is asleep (a 4 s timeout) does not hold up the others' status
+        started: dict[str, float] = {}
+        running: set[str] = set()
+        with ThreadPoolExecutor(max_workers=8, thread_name_prefix="peer-poll") as ex:
+            while not self.stop_flag.is_set():
+                for name in list(self.all()):
+                    if name not in running and time.time() - started.get(name, 0) >= self.interval:
+                        started[name] = time.time()
+                        running.add(name)
+                        ex.submit(self._poll_safe, name, running)
+                self.stop_flag.wait(0.5)
+
+    def _poll_safe(self, name: str, running: set):
+        try:
+            self.poll_one(name)
+        except Exception:  # noqa: BLE001 - one bad answer must not stop the watching
+            pass
+        finally:
+            running.discard(name)
 
     def poll_one(self, name: str):
         p = self.all().get(name)
