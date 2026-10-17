@@ -436,7 +436,9 @@ def summary(st: dict) -> dict:
             "ram_used_mib": (r.get("ram_total_mib") or 0) - (r.get("ram_available_mib") or 0),
             "ram_total_mib": r.get("ram_total_mib") or 0,
             "cpu_percent": r.get("cpu_percent"), "cpu_count": r.get("cpu_count"),
-            "gpu": gpus[0]["name"] if gpus else None, "job": (st.get("job") or {}).get("title")}
+            "gpu": gpus[0]["name"] if gpus else None, "gpu_count": len(gpus), "job": (st.get("job") or {}).get("title"),
+            "gpu_list": [{"name": g.get("name"), "vram_used_mib": g.get("vram_used_mib") or 0, "vram_total_mib":
+                          g.get("vram_total_mib") or 0, "util_percent": g.get("util_percent")} for g in gpus]}
 
 
 def fleet(summaries: list[dict]) -> dict:
@@ -451,6 +453,6 @@ def fleet(summaries: list[dict]) -> dict:
     avg = lambda xs: sum(v * w for v, w in xs) / sum(w for _, w in xs) if xs else None  # noqa: E731
     return {"machines": len(s), "running": sum(len(x.get("running") or []) for x in s), "gen_tps": add("gen_tps"),
             "vram_used_mib": add("vram_used_mib"), "vram_total_mib": add("vram_total_mib"),
-            "unified": any(x.get("unified") for x in s), "gpus": sum(1 for x in s if x.get("gpu")),
+            "unified": any(x.get("unified") for x in s), "gpus": sum(x.get("gpu_count", 1 if x.get("gpu") else 0) for x in s),
             "gpu_util_percent": avg(loads), "ram_used_mib": add("ram_used_mib"), "ram_total_mib": add("ram_total_mib"),
             "cpu_percent": avg(cpus), "cpu_count": add("cpu_count")}

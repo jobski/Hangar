@@ -30,6 +30,8 @@ class Roles:
         self.started: dict[tuple, float] = {}         # (machine, profile) -> when Hangar started it as a backup
         self.last_used: dict[tuple, float] = {}       # (machine, profile) -> last request routed to it
         self.inflight: dict[tuple, int] = {}          # (machine, profile) -> requests this gateway has open there
+        self.affinity: dict[tuple, tuple] = {}        # (role, client, caller) -> the target that served it last
+        self.ctx_cache: dict[tuple, tuple] = {}       # (machine, profile) -> (when, context size or None)
         self.stop_flag = threading.Event()
 
     # ---- the definitions
@@ -93,9 +95,10 @@ class Roles:
                 return "ready" if run.get("state") == "ready" else "starting"
         return "stopped"
 
-    def candidates(self, model: str) -> list[dict]:
+    def candidates(self, model: str, need: int = 0, who: tuple | None = None) -> list[dict]:
         """Who should answer a request for this model name, best first. A role gives its targets that are ready, then
-        the main role's, then anything running here, then on peers. A profile id (or profile:<id>) gives just it."""
+        the main role's, then anything running here, then on peers. A profile id (or profile:<id>) gives just it.
+        need: the request's rough size in tokens; who: (client, caller), to keep a conversation where it is cached."""
         roles = self.all()
         if model.startswith("profile:") or (model not in roles and model in self.mgr.profiles):
             pid = model.split(":", 1)[1] if model.startswith("profile:") else model
@@ -111,8 +114,8 @@ class Roles:
                 seen.add(k)
                 out.append({"machine": t["machine"], "profile": t["profile"]})
         own = (roles.get(model) or {}).get("targets", [])
-        if (roles.get(model) or {}).get("spill"):       # the role's free targets first (in order), then its busy ones
-            own = [t for t in own if not self.busy(t)] + [t for t in own if self.busy(t)]
+        if (roles.get(model) or {}).get("spill"):
+            own = self._spill_order(model, own, need, who)
         for t in own:
             add(t)
         for t in (roles.get("main") or {}).get("targets", []):
@@ -198,6 +201,42 @@ class Roles:
             self.stop_flag.wait(2)
         return []
 
+    def _spill_order(self, role: str, own: list[dict], need: int, who: tuple | None) -> list[dict]:
+        """While the first ready target is busy: a free one that can take the request goes first - the one this
+        client used last if it is free (its prompt is cached there), else the first in order. A free target whose
+        context is too small for the request is not used for it."""
+        ready = [t for t in own if self.target_state(t) == "ready"]
+        if not ready or not self.busy(ready[0]):
+            return own                                  # the first choice is free: the usual order
+        free = [t for t in ready[1:] if not self.busy(t) and self.fits(t, need)]
+        last = self.affinity.get((role, *who)) if who else None
+        free.sort(key=lambda t: (t["machine"], t["profile"]) != last)       # stable: the client's last one first
+        return free + [t for t in own if t not in free]
+
+    def fits(self, t: dict, need: int) -> bool:
+        ctx = self.context_of(t)
+        return not need or not ctx or need <= ctx
+
+    def context_of(self, t: dict) -> int | None:
+        """A target's context size (cached 5 min); None when its profile does not say (the engine's own default)."""
+        k = (t["machine"], t["profile"])
+        hit = self.ctx_cache.get(k)
+        if hit and time.time() - hit[0] < 300:
+            return hit[1]
+        ctx = None
+        try:
+            if t["machine"]:
+                ps = self._peer(t["machine"], "GET", "profiles").json()
+                ctx = ((next((p for p in ps if p["id"] == t["profile"]), None) or {}).get("settings") or {}).get("ctx")
+            else:
+                from . import clients
+                ents = clients.model_entries(self.mgr, [t["profile"]], "127.0.0.1")
+                ctx = ents[0]["context"] if ents else None
+        except Exception:  # noqa: BLE001 - unknown is fine: the engine says so if the request is too long
+            ctx = None
+        self.ctx_cache[k] = (time.time(), int(ctx) if ctx else None)
+        return self.ctx_cache[k][1]
+
     def busy(self, t: dict) -> bool:
         """Working on a request now: one this gateway sent there, or the engine says so (other clients, last poll)."""
         if self.inflight.get((t["machine"], t["profile"])):
@@ -220,8 +259,10 @@ class Roles:
         with self.lock:
             self.inflight[k] = max(0, self.inflight.get(k, 0) - 1)
 
-    def note_used(self, t: dict):
+    def note_used(self, t: dict, role: str | None = None, who: tuple | None = None):
         self.last_used[(t["machine"], t["profile"])] = time.time()
+        if role and who:
+            self.affinity[(role, *who)] = (t["machine"], t["profile"])
 
     # ---- backups: start when the primary has been down a while, stop when it is back and the backup is idle
     def start(self):
