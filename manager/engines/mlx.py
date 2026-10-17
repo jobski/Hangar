@@ -52,6 +52,7 @@ class MlxEngine(Engine):
     # ---- profiles
     def discover_profiles(self):
         out = {}
+        found = []
         if not self.cache.is_dir():
             return out
         for d in sorted(self.cache.glob("models--*--*")):
@@ -59,7 +60,10 @@ class MlxEngine(Engine):
             snap = _latest_snapshot(d)
             if not snap or not _is_mlx(org, snap):
                 continue
-            pid = "mlx-" + repo.lower()
+            found.append((org, repo))
+        for org, repo in found:
+            duplicate = sum(other.lower() == repo.lower() for _, other in found) > 1
+            pid = "mlx-" + ((org.lower() + "-") if duplicate else "") + repo.lower()
             out[pid] = Profile(id=pid, engine=self.name, description=f"{org}/{repo} (MLX)", discovered=True,
                                cfg={"model": f"{org}/{repo}", **(self.cfg.get("profile_defaults") or {})},
                                policy=(self.cfg.get("profile_defaults") or {}).get("policy", "exclusive"))

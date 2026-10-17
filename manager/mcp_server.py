@@ -27,6 +27,7 @@ def _j(x) -> str:
 
 def build(mgr: Manager) -> MCPServer:
     mcp = MCPServer("hangar", instructions=INSTRUCTIONS)
+    mgr.mcp_client = httpx.AsyncClient()
 
     async def run(fn, *a):
         return await anyio.to_thread.run_sync(lambda: fn(*a))
@@ -40,9 +41,8 @@ def build(mgr: Manager) -> MCPServer:
             names = ", ".join(x["name"] for x in mgr.peers.public()) or "none"
             return f"no machine called {machine}; peers: {names} (omit machine for this one)"
         try:
-            async with httpx.AsyncClient(timeout=timeout + 30) as c:
-                r = await c.request(method, f"{p['url']}/api/{path}", params=params, json=body,
-                                    headers={"Authorization": f"Bearer {p['token']}"})
+            r = await mgr.mcp_client.request(method, f"{p['url']}/api/{path}", params=params, json=body,
+                                             timeout=timeout + 30, headers={"Authorization": f"Bearer {p['token']}"})
         except httpx.HTTPError as e:
             return f"{machine} is unreachable ({type(e).__name__})"
         try:
@@ -51,7 +51,10 @@ def build(mgr: Manager) -> MCPServer:
             return r.text
 
     async def wait_job(job, wait_seconds: int):
-        await anyio.to_thread.run_sync(lambda: job.wait(max(0, min(wait_seconds, 600))))
+        import time
+        deadline = time.monotonic() + max(0, min(wait_seconds, 600))
+        while not job.done_event.is_set() and time.monotonic() < deadline:
+            await anyio.sleep(0.1)
         d = job.public(log_lines=40)
         if d["state"] in ("queued", "running"):
             d["note"] = f"still {d['state']}: call job_status('{job.id}') to follow it"
@@ -137,7 +140,8 @@ def build(mgr: Manager) -> MCPServer:
     async def job_status(job_id: str | None = None, wait_seconds: int = 0, machine: str | None = None) -> str:
         if machine:
             return await peer(machine, "GET", f"jobs/{job_id}" if job_id else "jobs",
-                              {"wait": wait_seconds, "lines": 40} if job_id else None, wait_seconds)
+                              {"wait": wait_seconds, "lines": 40} if job_id else None,
+                              timeout=max(30, min(wait_seconds, 600) + 10))
         if not job_id:
             return _j(mgr.list_jobs())
         job = mgr.jobs.get(job_id)

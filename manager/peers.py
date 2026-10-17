@@ -50,7 +50,7 @@ def normalize_url(raw: str) -> tuple[str, str | None]:
     host = re.split(r"[/?#]", rest, maxsplit=1)[0]                 # drop any path, query or fragment
     if not host:
         raise ValueError("give the machine's address, e.g. macbook:9000 or http://100.101.102.103:9000")
-    if not re.search(r":\d+$", host) and not host.endswith("]"):
+    if host.endswith("]") or not re.search(r":\d+$", host):
         host += ":9000"
     return f"{scheme.lower()}://{host}", token
 
@@ -175,18 +175,20 @@ class Peers:
         from .config import private_file
         private_file(self.file)
         self.interval = max(3, int(cfg["resources"].get("sample_interval_s", 5)))
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.file_lock = threading.Lock()                # peers.json is read-modified-written from several threads
         self.state: dict[str, dict] = {}
         self.woken: dict[str, float] = {}                # name -> when a magic packet last went to it
         self.callers: dict[str, tuple[float, str]] = {}  # address -> (when, device name)
         self.arp_tried: dict[str, float] = {}            # name -> when its MAC was last looked for in the ARP table
+        self.client = httpx.Client(timeout=4)
         self.stop_flag = threading.Event()
 
     # ---- the list
     def _saved(self) -> dict:
         try:
-            return json.loads(self.file.read_text(encoding="utf-8"))
+            from .config import read_json
+            return read_json(self.file)
         except (OSError, ValueError):
             return {}
 
@@ -200,7 +202,7 @@ class Peers:
                                    "wake": bool(learned["wake"] if "wake" in learned else p.get("wake"))}
         out = {n: p for n, p in out.items() if not n.startswith("~")}
         for p in out.values():
-            p["url"] = p["url"].rstrip("/")
+            p["url"] = normalize_url(p["url"])[0]
         return out
 
     def get(self, name: str) -> dict:
@@ -261,6 +263,8 @@ class Peers:
         goes under ~name."""
         with self.file_lock:
             saved = self._saved()
+            if name not in saved and name not in (self.cfg.get("peers") or {}):
+                return
             key = name if name in saved else f"~{name}"
             cur = saved.get(key) or {}
             if all(cur.get(k) == v for k, v in kw.items()):
@@ -292,11 +296,15 @@ class Peers:
                 name = "" if host == ip else host.split(".")[0]
         if not name:
             for n, p in self.all().items():
-                if p["url"].split("://", 1)[1].rsplit(":", 1)[0].strip("[]") == ip or ip in [e.get("ip") for e in p.get("lan") or []]:
+                if httpx.URL(p["url"]).host == ip or ip in [e.get("ip") for e in p.get("lan") or []]:
                     name = n
                     break
         name = (name or ip).lower()[:40]
-        self.callers[ip] = (time.time(), name)
+        with self.lock:
+            self.callers.pop(ip, None)
+            self.callers[ip] = (time.time(), name)
+            while len(self.callers) > 512:
+                self.callers.pop(next(iter(self.callers)))
         return name
 
     # ---- wake-on-LAN
@@ -315,7 +323,7 @@ class Peers:
             raise ValueError(f"{name}'s network card is not known yet (it is learned while {name} is online)")
         if not force and time.time() - self.woken.get(name, 0) < 30:
             return {"machine": name, "sent": [], "skipped": "sent in the last 30 s"}
-        host = p["url"].split("://", 1)[1].rsplit(":", 1)[0].strip("[]")
+        host = httpx.URL(p["url"]).host
         sent = send_wake(p["lan"], host)
         self.woken[name] = time.time()
         return {"machine": name, "sent": sent}
@@ -372,6 +380,12 @@ class Peers:
         self.stop_flag.set()
 
     def _loop(self):
+        try:
+            self._poll_loop()
+        finally:
+            self.client.close()
+
+    def _poll_loop(self):
         # each machine on its own clock: one that is asleep (a 4 s timeout) does not hold up the others' status
         started: dict[str, float] = {}
         running: set[str] = set()
@@ -398,7 +412,7 @@ class Peers:
             return
         t0 = time.time()
         try:
-            r = httpx.get(p["url"] + "/api/status", headers={"Authorization": f"Bearer {p['token']}"}, timeout=4)
+            r = self.client.get(p["url"] + "/api/status", headers={"Authorization": f"Bearer {p['token']}"})
             if r.status_code == 401:
                 raise ValueError("the peer refused our token")
             r.raise_for_status()
@@ -410,12 +424,15 @@ class Peers:
         if (st and "lan" not in (st.get("machine") or {}) and not p.get("lan")
                 and time.time() - self.arp_tried.get(name, 0) > 300):
             self.arp_tried[name] = time.time()
-            host = p["url"].split("://", 1)[1].rsplit(":", 1)[0].strip("[]")
+            host = httpx.URL(p["url"]).host
             found = arp_mac(host)
             lan = [{"ip": found[0], "netmask": None, "mac": found[1], "from": "arp"}] if found else None
         if lan and lan != p.get("lan"):
             self._remember(name, lan=lan)
         with self.lock:
+            current = self.all().get(name)
+            if current is None or (current["url"], current.get("token")) != (p["url"], p.get("token")):
+                return
             old = self.state.get(name, {})
             self.state[name] = {"online": st is not None, "error": err, "status": st or old.get("status"),
                                 "seen": time.time() if st else old.get("seen"), "latency_ms": round((time.time() - t0) * 1000)}

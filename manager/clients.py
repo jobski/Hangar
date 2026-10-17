@@ -23,15 +23,24 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 # ------------------------------------------------------------------------------------------------ addresses
+_tailnet_cache = (0.0, {})
+
+
 def tailscale_status() -> dict:
     """`tailscale status --json`, or {} when Tailscale is not installed or not running."""
+    global _tailnet_cache
+    if time.monotonic() - _tailnet_cache[0] < 60:
+        return _tailnet_cache[1]
     ts = shutil.which("tailscale") or next((p for p in (r"C:\Program Files\Tailscale\tailscale.exe",
                                                         "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
                                               if Path(p).exists()), "tailscale")
     try:
-        return json.loads(subprocess.run([ts, "status", "--json"], capture_output=True, text=True, timeout=5,
-                                         creationflags=NO_WINDOW).stdout or "{}")
+        result = json.loads(subprocess.run([ts, "status", "--json"], capture_output=True, text=True, timeout=5,
+                                          creationflags=NO_WINDOW).stdout or "{}")
+        _tailnet_cache = (time.monotonic(), result)
+        return result
     except (OSError, ValueError, subprocess.SubprocessError):
+        _tailnet_cache = (time.monotonic(), {})
         return {}
 
 
@@ -289,7 +298,8 @@ def _write_json(path: Path, data: dict) -> str:
     if path.exists():
         backup = path.with_name(path.name + f".bak-{time.strftime('%Y%m%d-%H%M%S')}")
         shutil.copy2(path, backup)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    from .config import write_text
+    write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return str(backup) if backup else ""
 
 

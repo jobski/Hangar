@@ -40,6 +40,12 @@ class _Reader:
         if t in _SCALAR:
             return self.take(_SCALAR[t])
         if t == STRING:
+            if not keep:
+                n = self.take("<Q")
+                if n > 1 << 24:
+                    raise ValueError("implausible string length")
+                self.f.seek(n, 1)
+                return None
             return self.string()
         if t == ARRAY:
             et, n = self.take("<I"), self.take("<Q")

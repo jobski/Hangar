@@ -7,6 +7,7 @@ then setup --update), which never starts the model.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -51,6 +52,7 @@ class StrataEngine(Engine):
 
     def __init__(self, name, cfg):
         super().__init__(name, cfg)
+        self.can_update = os.name == "nt"
         self.dir = Path(cfg["dir"])
         self.python = Path(cfg.get("python") or self.dir / ".venv" / "Scripts" / "python.exe")
         self.startup_timeout_s = int(cfg.get("startup_timeout_s", 1200))   # big models stream in from disk
@@ -89,14 +91,40 @@ class StrataEngine(Engine):
         if not profile:
             return {}
         try:
-            return json.loads(Path(profile.cfg["config"]).read_text(encoding="utf-8"))
+            from ..config import read_json
+            value = read_json(Path(profile.cfg["config"]))
+            if not isinstance(value, dict):
+                return {}
+            if "args" in profile.cfg:
+                value["args"] = list(profile.cfg["args"])
+            if profile.cfg.get("ctx"):
+                args, result = list(value.get("args") or []), []
+                skip = False
+                for arg in args:
+                    if skip:
+                        skip = False
+                    elif arg == "--max-context":
+                        skip = True
+                    elif not str(arg).startswith("--max-context="):
+                        result.append(arg)
+                value["args"] = result + ["--max-context", str(profile.cfg["ctx"])]
+            if profile.cfg.get("reasoning_effort"):
+                value["reasoning_effort"] = profile.cfg["reasoning_effort"]
+            return value
         except (OSError, ValueError, KeyError):
             return {}
 
     # ---- running
     def launch(self, profile):
+        config = profile.cfg["config"]
+        if any(key in profile.cfg for key in ("args", "ctx", "reasoning_effort")):
+            from ..config import write_json
+            folder = Path(self.cfg.get("_data_dir") or self.dir) / "custom-configs"
+            folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+            config = folder / (hashlib.sha256(profile.id.encode()).hexdigest()[:24] + ".json")
+            write_json(config, self._run_config(profile))
         cmd = [str(self.python), str(self.dir / "serve" / "server.py"), "--engine", "strata",
-               "--config", str(profile.cfg["config"]), "--port", str(self.port)]
+               "--config", str(config), "--port", str(self.port)]
         if self.cfg.get("host"):
             cmd += ["--host", self.host]
         cmd += [str(a) for a in profile.cfg.get("server_args", [])]
@@ -127,7 +155,11 @@ class StrataEngine(Engine):
         if not cfg:
             return None
         for p in profiles.values():
-            if p.engine == self.name and p.cfg.get("config") and _norm(p.cfg["config"]) == _norm(cfg):
+            if p.engine != self.name or not p.cfg.get("config"):
+                continue
+            generated = (Path(self.cfg.get("_data_dir") or self.dir) / "custom-configs"
+                         / (hashlib.sha256(p.id.encode()).hexdigest()[:24] + ".json"))
+            if _norm(p.cfg["config"]) == _norm(cfg) or _norm(str(generated)) == _norm(cfg):
                 return p.id
         return None
 
@@ -139,7 +171,7 @@ class StrataEngine(Engine):
         native = arg_value(args, "--native")
         shards = []
         if native:
-            p = Path(native)
+            p = self.dir / native
             stem = p.name.split("-00001-of-")[0] if "-00001-of-" in p.name else None
             shards = list(p.parent.glob(stem + "-*-of-*.gguf")) if stem else [p]
         files = file_mib(*shards)
@@ -165,7 +197,8 @@ class StrataEngine(Engine):
 
     def reasoning_get(self, profile):
         try:
-            lvl = self._shared().get("reasoning_effort")
+            active = self.active_profile
+            lvl = self._shared().get("reasoning_effort") if active and active.id == profile.id else None
         except (httpx.HTTPError, ValueError):
             lvl = None
         return lvl or self._run_config(profile).get("reasoning_effort") or "default"

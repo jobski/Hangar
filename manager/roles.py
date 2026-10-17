@@ -25,13 +25,16 @@ ROLE_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 class Roles:
     def __init__(self, mgr, peers):
         self.mgr, self.peers = mgr, peers
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.down_since: dict[str, float] = {}        # role -> when its primary went down
         self.started: dict[tuple, float] = {}         # (machine, profile) -> when Hangar started it as a backup
         self.last_used: dict[tuple, float] = {}       # (machine, profile) -> last request routed to it
         self.inflight: dict[tuple, int] = {}          # (machine, profile) -> requests this gateway has open there
         self.affinity: dict[tuple, tuple] = {}        # (role, client, caller) -> the target that served it last
         self.ctx_cache: dict[tuple, tuple] = {}       # (machine, profile) -> (when, context size or None)
+        self.pending: dict[tuple, dict] = {}
+        self.warnings: dict[str, float] = {}
+        self.client = httpx.Client(timeout=5)
         self.stop_flag = threading.Event()
 
     # ---- the definitions
@@ -81,10 +84,10 @@ class Roles:
         self.mgr.write_settings(s)
 
     # ---- what is up
-    def target_state(self, t: dict) -> str:
+    def _target_state(self, t: dict) -> str:
         """ready | starting | stopped (the machine is up, the profile is not running) | offline | unknown"""
         if not t["machine"]:
-            for name, inst in self.mgr.instances.items():
+            for name, inst in list(self.mgr.instances.items()):
                 if inst.profile == t["profile"]:
                     return "ready" if inst.state == "ready" else "starting"
             return "stopped" if t["profile"] in self.mgr.profiles else "unknown"
@@ -96,6 +99,16 @@ class Roles:
             if run and run.get("profile") == t["profile"]:
                 return "ready" if run.get("state") == "ready" else "starting"
         return "stopped"
+
+    def target_state(self, t: dict) -> str:
+        state = self._target_state(t)
+        key = (t["machine"], t["profile"])
+        with self.lock:
+            if state == "ready":
+                self.pending.pop(key, None)
+            elif key in self.pending and state in ("stopped", "unknown"):
+                return "starting"
+        return state
 
     def candidates(self, model: str, need: int = 0, who: tuple | None = None) -> list[dict]:
         """Who should answer a request for this model name, best first. A role gives its targets that are ready, then
@@ -124,11 +137,11 @@ class Roles:
             add(t)
         for name, inst in list(self.mgr.instances.items()):        # anything running here
             add({"machine": "", "profile": inst.profile})
-        for name, st in self.peers.state.items():                  # then on the peers
+        for name, st in list(self.peers.state.items()):                  # then on the peers
             for e in ((st.get("status") or {}).get("engines") or []) if st.get("online") else []:
                 if e.get("running"):
                     add({"machine": name, "profile": e["running"]["profile"]})
-        return out
+        return sorted(out, key=lambda t: not self.fits(t, need)) if need else out
 
     def wake_for(self, model: str) -> list[str]:
         """Wake the asleep machines a request for this role could use (those set to wake on request); their names.
@@ -220,24 +233,42 @@ class Roles:
         return not need or not ctx or need <= ctx
 
     def context_of(self, t: dict) -> int | None:
-        """A target's context size (cached 5 min); None when its profile does not say (the engine's own default)."""
-        k = (t["machine"], t["profile"])
-        hit = self.ctx_cache.get(k)
-        if hit and time.time() - hit[0] < 300:
-            return hit[1]
-        ctx = None
-        try:
-            if t["machine"]:
-                ps = self._peer(t["machine"], "GET", "profiles").json()
-                ctx = ((next((p for p in ps if p["id"] == t["profile"]), None) or {}).get("settings") or {}).get("ctx")
-            else:
-                from . import clients
-                ents = clients.model_entries(self.mgr, [t["profile"]], "127.0.0.1", include_custom=True)
-                ctx = ents[0]["context"] if ents else None
-        except Exception:  # noqa: BLE001 - unknown is fine: the engine says so if the request is too long
-            ctx = None
-        self.ctx_cache[k] = (time.time(), int(ctx) if ctx else None)
-        return self.ctx_cache[k][1]
+        """Routing reads cached peer context; background supervision refreshes older peers."""
+        key = (t["machine"], t["profile"])
+        if not t["machine"]:
+            from . import clients
+            try:
+                entries = clients.model_entries(self.mgr, [t["profile"]], "127.0.0.1", include_custom=True)
+                return entries[0]["context"] if entries else None
+            except (KeyError, ValueError):
+                return None
+        st = (self.peers.state.get(t["machine"]) or {}).get("status") or {}
+        for engine in st.get("engines") or []:
+            running = engine.get("running") or {}
+            if running.get("profile") == t["profile"] and running.get("context"):
+                return int(running["context"])
+        with self.lock:
+            cached = self.ctx_cache.get(key)
+        return cached[1] if cached and time.time() - cached[0] < 300 else None
+
+    def _refresh_contexts(self):
+        for machine, entry in list(self.peers.state.items()):
+            if not entry.get("online"):
+                continue
+            with self.lock:
+                fresh = any(k[0] == machine and time.time() - v[0] < 240 for k, v in self.ctx_cache.items())
+            if fresh:
+                continue
+            try:
+                profiles = self._peer(machine, "GET", "profiles").json()
+                with self.lock:
+                    for profile in profiles:
+                        ctx = (profile.get("settings") or {}).get("ctx")
+                        self.ctx_cache[(machine, profile["id"])] = (time.time(), int(ctx) if ctx else None)
+                    while len(self.ctx_cache) > 512:
+                        self.ctx_cache.pop(next(iter(self.ctx_cache)))
+            except (httpx.HTTPError, KeyError, ValueError, TypeError):
+                continue
 
     def busy(self, t: dict) -> bool:
         """Working on a request now: one this gateway sent there, or the engine says so (other clients, last poll)."""
@@ -254,7 +285,10 @@ class Roles:
     def opened(self, t: dict):
         k = (t["machine"], t["profile"])
         with self.lock:
+            if self._target_state(t) != "ready":
+                return False
             self.inflight[k] = self.inflight.get(k, 0) + 1
+            return True
 
     def closed(self, t: dict):
         k = (t["machine"], t["profile"])
@@ -264,57 +298,127 @@ class Roles:
                 self.inflight[k] = count
             else:
                 self.inflight.pop(k, None)
+            self.last_used[k] = time.time()
 
     def note_used(self, t: dict, role: str | None = None, who: tuple | None = None):
-        self.last_used[(t["machine"], t["profile"])] = time.time()
-        if role and who:
-            self.affinity[(role, *who)] = (t["machine"], t["profile"])
+        with self.lock:
+            self.last_used[(t["machine"], t["profile"])] = time.time()
+            if role and who:
+                key = (role, *who)
+                self.affinity.pop(key, None)
+                self.affinity[key] = (t["machine"], t["profile"])
+                while len(self.affinity) > 512:
+                    self.affinity.pop(next(iter(self.affinity)))
 
     # ---- backups: start when the primary has been down a while, stop when it is back and the backup is idle
     def start(self):
-        threading.Thread(target=self._loop, name="roles", daemon=True).start()
+        self.thread = threading.Thread(target=self._loop, name="roles", daemon=True)
+        self.thread.start()
 
     def shutdown(self):
         self.stop_flag.set()
 
     def _loop(self):
+        try:
+            self._supervise()
+        finally:
+            self.client.close()
+
+    def _supervise(self):
         while not self.stop_flag.wait(5):
             try:
+                self._refresh_contexts()
+                self._refresh_pending()
                 self.tick()
             except Exception as e:  # noqa: BLE001 - keep supervising
                 self.mgr.store.event("roles", f"backup check failed: {e}", level="warn")
 
     def tick(self):
+        roles = self.all()
+        for name, role in roles.items():
+            try:
+                self._tick_role(name, role, roles)
+            except Exception as exc:
+                with self.lock:
+                    last = self.warnings.get(name, 0)
+                    self.warnings[name] = time.time() if time.time() - last >= 300 else last
+                if time.time() - last >= 300:
+                    self.mgr.store.event("roles", f"{name}: backup check failed: {exc}", level="warn")
+
+    def _tick_role(self, name: str, role: dict, roles: dict):
         now = time.time()
-        for name, role in self.all().items():
-            targets = role.get("targets", [])
-            if not targets:
-                continue
-            primary_up = self.target_state(targets[0]) == "ready"
+        targets = role.get("targets", [])
+        if not targets:
+            return
+        primary_up = self.target_state(targets[0]) == "ready"
+        with self.lock:
             if primary_up:
                 self.down_since.pop(name, None)
             else:
                 self.down_since.setdefault(name, now)
-            # start a backup: the primary has been down long enough and nothing earlier in the list is up
-            if not primary_up and now - self.down_since[name] >= DOWN_GRACE_S:
-                for t in targets[1:]:
-                    state = self.target_state(t)
-                    if state in ("ready", "starting"):
-                        break
-                    if t.get("auto_start") and state == "stopped" and self._fits(t):
-                        self._start_target(name, t)
-                        break
-            # stop backups Hangar started, once the primary is back and they sat unused
-            if primary_up:
-                for t in targets[1:]:
-                    k = (t["machine"], t["profile"])
-                    if k in self.started and now - max(self.started[k], self.last_used.get(k, 0)) >= IDLE_STOP_S:
-                        self._stop_target(name, t)
+            down_since = self.down_since.get(name, now)
+        if not primary_up and now - down_since >= DOWN_GRACE_S:
+            for target in targets[1:]:
+                state = self.target_state(target)
+                if state in ("ready", "starting"):
+                    break
+                if target.get("auto_start") and state == "stopped" and self._fits(target):
+                    self._start_target(name, target)
+                    break
+        if primary_up:
+            for target in targets[1:]:
+                key = (target["machine"], target["profile"])
+                with self.lock:
+                    idle = key in self.started and now - max(self.started[key], self.last_used.get(key, 0)) >= IDLE_STOP_S
+                needed_elsewhere = any(other != name and self._role_needs(other_role, key)
+                                       for other, other_role in roles.items())
+                if idle and not needed_elsewhere and not self.busy(target):
+                    self._stop_target(name, target)
+
+    def _role_needs(self, role: dict, key: tuple) -> bool:
+        for target in role.get("targets", []):
+            if (target["machine"], target["profile"]) == key:
+                return True
+            if self.target_state(target) == "ready":
+                return False
+        return False
 
     def _peer(self, machine: str, method: str, path: str, **kw) -> httpx.Response:
-        p = self.peers.get(machine)
-        return httpx.request(method, f"{p['url']}/api/{path}", headers={"Authorization": f"Bearer {p['token']}"},
-                             timeout=30, **kw)
+        peer = self.peers.get(machine)
+        response = self.client.request(method, f"{peer['url']}/api/{path}",
+                                       headers={"Authorization": f"Bearer {peer['token']}"}, **kw)
+        response.raise_for_status()
+        return response
+
+    def _refresh_pending(self):
+        with self.lock:
+            pending = list(self.pending.items())
+        for key, entry in pending:
+            if not entry.get("job"):
+                if time.time() - entry["since"] < 60:
+                    continue
+                state = "unknown"
+            else:
+                try:
+                    if key[0]:
+                        job = self._peer(key[0], "GET", f"jobs/{entry['job']}").json()
+                        state = job.get("state")
+                    else:
+                        with self.mgr.lock:
+                            job = self.mgr.jobs.get(entry["job"])
+                            state = job.state if job else "unknown"
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 404:
+                        continue
+                    state = "unknown"
+                except KeyError:
+                    state = "unknown"
+                except (httpx.HTTPError, ValueError):
+                    continue
+            if state not in ("queued", "running"):
+                with self.lock:
+                    if self.pending.get(key) is entry:
+                        self.pending.pop(key, None)
 
     def _fits(self, t: dict) -> bool:
         """Only when nothing has to stop for it and it fits the memory there (budget included)."""
@@ -328,30 +432,50 @@ class Roles:
         return bool(plan.get("ok")) and not plan.get("will_stop")
 
     def _start_target(self, role: str, t: dict, why: str | None = None, backup: bool = True):
-        k = (t["machine"], t["profile"])
-        if t["machine"]:
-            self._peer(t["machine"], "POST", "start", json={"profile": t["profile"], "update": "skip"})
-        else:
-            self.mgr.start(t["profile"], False, "skip")
-        if backup:                                  # only backups are stopped again when idle
-            self.started[k] = time.time()
-        self.mgr.store.event("roles", f"{role}: {why or f'its primary has been down {DOWN_GRACE_S}+ s; starting the backup'} {_label(t)}")
+        key = (t["machine"], t["profile"])
+        with self.lock:
+            if key in self.pending or self._target_state(t) in ("ready", "starting"):
+                return False
+            entry = {"since": time.time(), "job": None}
+            self.pending[key] = entry
+        try:
+            if t["machine"]:
+                job = self._peer(t["machine"], "POST", "start", json={"profile": t["profile"], "update": "skip"}).json()
+                entry["job"] = job.get("id")
+            else:
+                entry["job"] = self.mgr.start(t["profile"], False, "skip").id
+        except Exception:
+            with self.lock:
+                self.pending.pop(key, None)
+            raise
+        with self.lock:
+            if backup:
+                self.started[key] = time.time()
+        self.mgr.store.event("roles", f"{role}: {why or 'starting backup'} {_label(t)}")
+        return True
 
     def _stop_target(self, role: str, t: dict):
-        k = (t["machine"], t["profile"])
+        key = (t["machine"], t["profile"])
+        state = self.target_state(t)
+        if state == "stopped":
+            with self.lock:
+                self.started.pop(key, None)
+            return
+        if state != "ready" or self.busy(t):
+            return
         engine = None
         if t["machine"]:
             st = (self.peers.state.get(t["machine"]) or {}).get("status") or {}
-            engine = next((e["name"] for e in st.get("engines") or [] if (e.get("running") or {}).get("profile") == t["profile"]), None)
+            engine = next((e["name"] for e in st.get("engines") or []
+                           if (e.get("running") or {}).get("profile") == t["profile"]), None)
             if engine:
-                self._peer(t["machine"], "POST", "stop", json={"engine": engine})
+                self._peer(t["machine"], "POST", "stop", json={"engine": engine, "idle_profile": t["profile"]})
         else:
-            engine = next((n for n, i in self.mgr.instances.items() if i.profile == t["profile"]), None)
+            engine = next((n for n, i in list(self.mgr.instances.items()) if i.profile == t["profile"]), None)
             if engine:
-                self.mgr.stop(engine)
-        self.started.pop(k, None)
+                self.mgr.stop_idle(engine, t["profile"])
         if engine:
-            self.mgr.store.event("roles", f"{role}: the primary is back and the backup {_label(t)} sat idle; stopped it")
+            self.mgr.store.event("roles", f"{role}: requested stop of idle backup {_label(t)}")
 
     def context(self, name: str) -> int:
         """The smallest context among a role's targets (and main's, its fallback), for the settings clients get."""
@@ -360,21 +484,7 @@ class Roles:
             targets += (self.all().get("main") or {}).get("targets", [])
         if not targets:
             targets = [{"machine": "", "profile": i.profile} for i in self.mgr.instances.values()]
-        sizes = []
-        for t in targets:
-            try:
-                if t["machine"]:
-                    ps = self._peer(t["machine"], "GET", "profiles").json()
-                    p = next((x for x in ps if x["id"] == t["profile"]), None)
-                    ctx = (p or {}).get("settings", {}).get("ctx")
-                else:
-                    from . import clients
-                    ents = clients.model_entries(self.mgr, [t["profile"]], "127.0.0.1", include_custom=True)
-                    ctx = ents[0]["context"] if ents else None
-                if ctx:
-                    sizes.append(int(ctx))
-            except Exception:  # noqa: BLE001 - an unreachable peer just does not count
-                pass
+        sizes = [ctx for target in targets if (ctx := self.context_of(target))]
         return min(sizes) if sizes else 32768
 
     # ---- for the dashboard, the status and the Connect page

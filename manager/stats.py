@@ -58,10 +58,15 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(requests)")}
         if "caller" not in cols:                    # a request log made before callers were recorded
             self.db.execute("ALTER TABLE requests ADD COLUMN caller TEXT")
+        if "config_key" not in {r[1] for r in self.db.execute("PRAGMA table_info(sessions)")}:
+            self.db.execute("ALTER TABLE sessions ADD COLUMN config_key TEXT")
+        self.db.execute("CREATE INDEX IF NOT EXISTS sessions_config ON sessions(profile,config_key,id DESC)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS sessions_engine ON sessions(engine,id DESC)")
 
     def q(self, sql, args=()):
         with self.lock:
@@ -89,9 +94,9 @@ class Store:
         return self.q("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
 
     # ---- sessions
-    def session_start(self, engine, profile, adopted=False) -> int:
-        return self.x("INSERT INTO sessions(engine,profile,started,adopted) VALUES(?,?,?,?)",
-                      (engine, profile, time.time(), int(adopted)))
+    def session_start(self, engine, profile, adopted=False, config_key=None) -> int:
+        return self.x("INSERT INTO sessions(engine,profile,started,adopted,config_key) VALUES(?,?,?,?,?)",
+                      (engine, profile, time.time(), int(adopted), config_key))
 
     def session_ready(self, sid):
         self.x("UPDATE sessions SET ready=?, load_seconds=?-started WHERE id=?", (time.time(), time.time(), sid))
@@ -115,19 +120,22 @@ class Store:
         return self.q("SELECT profile, started, ready, stopped, stop_reason FROM sessions WHERE engine=? "
                       "ORDER BY id DESC LIMIT ?", (engine, limit))
 
-    def learned(self, profile) -> dict | None:
-        """Measured peak use over the last 5 runs that got ready."""
-        return self.learned_many([profile]).get(profile)
+    def learned(self, profile, config_key=None) -> dict | None:
+        """Measured peak use over the last five matching runs that got ready."""
+        return self.learned_many([profile], {profile: config_key} if config_key else None).get(profile)
 
-    def learned_many(self, profiles: list[str]) -> dict[str, dict]:
+    def learned_many(self, profiles: list[str], config_keys: dict | None = None) -> dict[str, dict]:
         groups = {}
-        for offset in range(0, len(profiles), 900):
-            batch = profiles[offset:offset + 900]
+        for offset in range(0, len(profiles), 400):
+            batch = profiles[offset:offset + 400]
             marks = ",".join("?" for _ in batch)
+            where, args = f"profile IN ({marks})", tuple(batch)
+            if config_keys is not None:
+                where = " OR ".join("(profile=? AND config_key=?)" for _ in batch)
+                args = tuple(v for pid in batch for v in (pid, config_keys[pid]))
             rows = self.q("SELECT * FROM (SELECT profile, peak_vram_mib v, peak_ram_mib r, load_seconds l, "
                           "ROW_NUMBER() OVER (PARTITION BY profile ORDER BY id DESC) n FROM sessions "
-                          f"WHERE profile IN ({marks}) AND ready IS NOT NULL AND peak_vram_mib IS NOT NULL) WHERE n<=5",
-                          tuple(batch))
+                          f"WHERE ({where}) AND ready IS NOT NULL AND peak_vram_mib IS NOT NULL) WHERE n<=5", args)
             for row in rows:
                 groups.setdefault(row["profile"], []).append(row)
         return {pid: {"vram_mib": max(r["v"] or 0 for r in rows), "ram_mib": max(r["r"] or 0 for r in rows),
@@ -152,7 +160,9 @@ class Store:
         if not keep_days or keep_days <= 0:
             return 0
         with self.lock:
-            return self.db.execute("DELETE FROM requests WHERE ts < ?", (time.time() - keep_days * 86400,)).rowcount
+            cutoff = time.time() - keep_days * 86400
+            self.db.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+            return self.db.execute("DELETE FROM requests WHERE ts < ?", (cutoff,)).rowcount
 
     def requests(self, limit: int = 50, before: float | None = None) -> list[dict]:
         """The latest gateway requests, newest first (before: only older than this time, for paging)."""
@@ -202,8 +212,8 @@ class Store:
         since = self.period_start(period)
         now = time.time()
         sums = ",".join(f"SUM({f}) {f}" for f in FIELDS)
-        by = self.q(f"SELECT engine, profile, {sums} FROM usage WHERE minute*60 >= ? GROUP BY engine, profile",
-                    (since,))
+        by = self.q(f"SELECT engine, profile, {sums} FROM usage WHERE minute >= ? GROUP BY engine, profile",
+                    (int(-(-since // 60)),))
         sess = self.q("SELECT engine, profile, started, ready, stopped FROM sessions WHERE COALESCE(stopped, ?) >= ?",
                       (now, since))
         up: dict[str, float] = {}
@@ -253,7 +263,7 @@ class Store:
             raise ValueError("bucket: hour, day, week, month or year")
         starts = sorted(starts)
         edges = [s.timestamp() for s in starts] + [time.time() + 1]
-        rows = self.q(f"SELECT minute, {','.join(FIELDS)} FROM usage WHERE minute*60 >= ?", (edges[0],))
+        rows = self.q(f"SELECT minute, {','.join(FIELDS)} FROM usage WHERE minute >= ?", (int(-(-edges[0] // 60)),))
         out = [{"start": edges[i], **{f: 0.0 for f in FIELDS}} for i in range(len(starts))]
         import bisect
         for r in rows:
@@ -331,7 +341,9 @@ class RequestMeter:
                 self.body += chunk
             return
         lines = (self.rest + chunk).split(b"\n")
-        self.rest = lines.pop()[-65536:]
+        self.rest = lines.pop()
+        if len(self.rest) > self.MAX_BODY:
+            self.rest = b""
         for line in lines:
             if not line.startswith(b"data:"):
                 continue
@@ -349,11 +361,15 @@ class RequestMeter:
             return
         if isinstance(o.get("timings"), dict):
             self.timings.update(o["timings"])
-        u = o.get("usage") or (o.get("message") or {}).get("usage")
+        message = o.get("message")
+        u = o.get("usage") or (message.get("usage") if isinstance(message, dict) else None)
         if isinstance(u, dict):
             self.usage.update({k: v for k, v in u.items() if v is not None})
 
     def result(self) -> dict:
+        if self.sse and self.rest.startswith(b"data:"):
+            self._take(self.rest[5:])
+            self.rest = b""
         if self.body:
             self._take(bytes(self.body))
         # time to the first text or reasoning token (a stream's opening chunks carry none)

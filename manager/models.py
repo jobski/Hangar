@@ -92,15 +92,30 @@ class Library:
         self.dir = Path(mc.get("dir") or "E:/models")
         self.scan_dirs = [Path(os.path.expandvars(os.path.expanduser(d))) for d in mc.get("scan", [])]
 
-    def _references(self, p) -> list[Path]:
+    def _references(self, p, strict: bool = False) -> list[Path]:
         ecfg = (self.cfg.get("engines") or {}).get(p.engine, {})
         plugin = ecfg.get("plugin", p.engine)
         cwd = ecfg.get("dir") if plugin in ("llamacpp", "strata") else p.cfg.get("cwd")
         base = Path(cwd) if cwd else Path.cwd()
         out = []
-        for key in ("model", "mmproj"):
-            if p.cfg.get(key):
-                path = Path(os.path.expanduser(os.path.expandvars(str(p.cfg[key]))))
+        values = [p.cfg.get(key) for key in ("model", "mmproj")]
+        args = list(p.cfg.get("args") or [])
+        if plugin == "strata" and p.cfg.get("config"):
+            from .config import read_json
+            try:
+                rc = read_json(Path(p.cfg["config"]))
+                if not isinstance(rc, dict):
+                    raise ValueError("run config must be an object")
+                args += rc.get("args") or []
+            except (OSError, ValueError, TypeError):
+                if strict:
+                    raise ValueError(f"cannot verify model references for {p.id}; repair its run config first")
+        from .engines.base import arg_value
+        for names in (("-m", "--model"), ("--mmproj",), ("-md", "--model-draft"), ("--native",), ("--pack",)):
+            values.append(arg_value([str(a) for a in args], *names))
+        for value in values:
+            if value:
+                path = Path(os.path.expanduser(os.path.expandvars(str(value).strip('"'))))
                 path = path if path.is_absolute() else base / path
                 out.extend((Path(os.path.abspath(path)), path.resolve()))
         return out
@@ -142,7 +157,7 @@ class Library:
         if self.dir.resolve() not in f.parents:
             raise ValueError("only folders inside the model library can be deleted from here")
         users = sorted({p.id for p in profiles.values()
-                        if any(path == f or f in path.parents for path in self._references(p))})
+                        if any(path == f or f in path.parents for path in self._references(p, strict=True))})
         if users:
             raise ValueError(f"profiles still use this model: {', '.join(users)}; delete them first")
         shutil.rmtree(f)
@@ -177,6 +192,12 @@ def profile_from_model(model_path: str, cfg: dict, name: str | None = None, engi
     mp = Path(model_path)
     if not mp.exists():
         raise ValueError(f"{mp} does not exist")
+    shard = SHARD.match(mp.name)
+    if shard:
+        expected = {f"{shard.group('stem')}-{i:05d}-of-{int(shard.group('n')):05d}.gguf"
+                    for i in range(1, int(shard.group("n")) + 1)}
+        if not expected.issubset({p.name for p in mp.parent.iterdir()}):
+            raise ValueError("all model shards must finish downloading before creating a profile")
     tmpl = dict((cfg.get("templates") or {}).get(engine) or {})
     if mmproj is None:
         cands = [g for g in _gguf_groups(mp.parent) if g["mmproj"]]
