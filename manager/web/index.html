@@ -582,6 +582,7 @@ const contextBadge = run => {
 };
 const dur = s => { s = Math.floor(s || 0); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; };
 const tps = v => v ? v.toFixed(1) : "–";
+const watts = v => v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : v.toFixed(0);
 // one request's speed out; none for a handful of tokens, whose time is too short to measure
 const reqTps = r => r.gen_s >= 0.05 && r.gen_tokens >= 4 ? r.gen_tokens / r.gen_s : null;
 const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? "now" : s < 3600 ? Math.floor(s / 60) + "m ago" : s < 86400 ? Math.floor(s / 3600) + "h ago" : new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" }); };
@@ -623,10 +624,10 @@ function renderStatus(s) {
   for (const g of r.gpus) {
     const p = g.vram_used_mib / g.vram_total_mib * 100;
     v += `<div class="vital"><span class="k">VRAM</span><span class="mini ${p > 95 ? "hot" : ""}"><i style="width:${p}%"></i></span><span class="v">${gb(g.vram_used_mib)}/${gb(g.vram_total_mib)}G</span></div>
-          <div class="vital opt"><span class="k">GPU</span><span class="v">${g.util_percent == null ? "–" : g.util_percent.toFixed(0) + "%"}${g.temp_c == null ? "" : ` · ${g.temp_c.toFixed(0)}°`}${g.power_w == null ? "" : ` · ${g.power_w.toFixed(0)} W`}</span></div>`;
+          <div class="vital opt"><span class="k">GPU</span><span class="v">${g.util_percent == null ? "–" : g.util_percent.toFixed(0) + "%"}${g.temp_c == null ? "" : ` · ${g.temp_c.toFixed(0)}°`}${g.power_w == null ? "" : ` · ${watts(g.power_w)} W`}</span></div>`;
     m += `<div class="gauge"><div class="gh"><span class="gl">${g.unified ? "GPU MEM" : "VRAM"}</span><span class="gn">${esc(g.name)}</span><span class="gv">${gb(g.vram_used_mib)}<small> / ${gb(g.vram_total_mib)} GB</small></span></div>
       <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>
-      <div class="gs">${g.util_percent == null ? "" : `<span>load <b>${g.util_percent.toFixed(0)}%</b></span>`}${g.temp_c == null ? "" : `<span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</b></span>`}${g.power_w == null ? "" : `<span>power <b>${g.power_w.toFixed(0)} W</b></span>`}<span>free <b>${mib(g.vram_total_mib - g.vram_used_mib)}</b></span>${g.unified ? `<span class="tag" title="shares the machine's RAM; the limit is what Metal may use">unified</span>` : ""}</div></div>`;
+      <div class="gs">${g.util_percent == null ? "" : `<span>load <b>${g.util_percent.toFixed(0)}%</b></span>`}${g.temp_c == null ? "" : `<span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</b></span>`}${g.power_w == null ? "" : `<span>power <b>${watts(g.power_w)} W</b></span>`}<span>free <b>${mib(g.vram_free_mib ?? Math.max(0, g.vram_total_mib - g.vram_used_mib))}</b></span>${g.unified ? `<span class="tag" title="shares the machine's RAM; the limit is what Metal may use">unified</span>` : ""}</div></div>`;
   }
   if (!r.gpus.length) m += `<div class="gauge"><div class="small muted">${s.engines.length ? "No NVIDIA GPU found (nvidia-smi)." : "No GPU here, and no engines: this machine passes requests on to the others."}</div></div>`;
   const rp = ramUsed / r.ram_total_mib * 100;
@@ -1375,10 +1376,14 @@ async function renderMachines() {
         `<span class="small muted">Wake-on-LAN</span><span class="tag ${w.auto ? "ok" : ""}" data-act="mwakeauto" data-name="${esc(p.name)}" data-on="${w.auto ? 0 : 1}" role="button" style="cursor:pointer"
           title="${w.auto ? "woken when a role request needs it; click to turn off" : "click to wake it when a role request needs it"}">${w.auto ? "on request" : "off"}</span>`;
     };
-    // a machine with several GPUs: each one's name, memory and load (the line below adds them up)
     const gpuBars = gl => gl.map(g => { const p = g.vram_total_mib ? g.vram_used_mib / g.vram_total_mib * 100 : 0;
-      return `<div class="small muted num" style="display:flex;gap:8px;margin-top:5px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((g.name || "GPU").replace(/^NVIDIA (GeForce )?/, ""))}</span><span>${mib(g.vram_used_mib)} / ${mib(g.vram_total_mib)}${g.util_percent != null ? ` · ${pc(g.util_percent)}` : ""}</span></div>
-        <div class="bar thin ${pctCls(p)}" style="margin-top:3px"><i style="width:${p}%"></i></div>`; }).join("");
+      const free = g.vram_free_mib ?? Math.max(0, (g.vram_total_mib || 0) - (g.vram_used_mib || 0));
+      const metrics = [g.util_percent == null ? "" : `load ${pc(g.util_percent)}`,
+        g.temp_c == null ? "" : `temp ${g.temp_c.toFixed(0)}°C`, `free ${mib(free)}`,
+        g.power_w == null ? "" : `power ${watts(g.power_w)} W`].filter(Boolean).join(" · ");
+      return `<div class="small muted num" style="display:flex;gap:8px;margin-top:5px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((g.name || "GPU").replace(/^NVIDIA (GeForce )?/, ""))}</span><span>${mib(g.vram_used_mib)} / ${mib(g.vram_total_mib)}</span></div>
+        <div class="bar thin ${pctCls(p)}" style="margin-top:3px"><i style="width:${p}%"></i></div>
+        <div class="small muted num" style="margin-top:4px" title="${g.unified ? "Shared memory: free is the remaining Metal memory budget" : "GPU readings"}">${metrics}</div>`; }).join("");
     const card = (name, os, online, sm, err, isSelf, src, peer) => {
       const vp = sm && sm.vram_total_mib ? sm.vram_used_mib / sm.vram_total_mib * 100 : 0;
       if (online && sm && sm.engines === 0)        // a hub: no models of its own, left out of the totals above
@@ -1390,8 +1395,8 @@ async function renderMachines() {
       return `<button class="mcd ${online ? "" : "off"} ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
         <div class="mh2"><span class="dot ${online ? "ok" : "bad"}"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="sp"></span>
           ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
-        ${online && sm ? `<div class="run"><span>${runline(sm)}</span>${(sm.gpu_list || []).length > 1 ? "" : sm.gpu ? `<span class="small muted">${esc(sm.gpu)}</span>` : ""}</div>
-          ${(sm.gpu_list || []).length > 1 ? gpuBars(sm.gpu_list) : `<div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div>`}<div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""}${sm.gpu_util_percent != null ? ` · load ${pc(sm.gpu_util_percent)}` : ""}</div>`
+        ${online && sm ? `<div class="run"><span>${runline(sm)}</span>${(sm.gpu_list || []).length ? "" : sm.gpu ? `<span class="small muted">${esc(sm.gpu)}</span>` : ""}</div>
+          ${(sm.gpu_list || []).length ? gpuBars(sm.gpu_list) : `<div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div>`}<div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""}${!(sm.gpu_list || []).length && sm.gpu_util_percent != null ? ` · load ${pc(sm.gpu_util_percent)}` : ""}</div>`
           : `<div class="run bad-t">${esc(err || "offline")}</div>`}${peer && (peer.wake || {}).known ? `<div class="row small" style="margin-top:6px;gap:6px">${wakeCtl(peer)}</div>` : ""}</button>`;
     };
     $("#fleet").innerHTML = card(SELF.name, SELF.os, true, SELF.summary, null, true) + PEERS.map(p => card(p.name, (p.machine || {}).os, p.online, p.summary, p.error, false, p.source, p)).join("");

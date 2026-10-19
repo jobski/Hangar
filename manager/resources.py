@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import platform
+import json
 import math
 import re
 from pathlib import Path
@@ -71,12 +72,45 @@ def gpu_process_memory() -> dict[int, float] | None:
 
 _APPLE: dict = {}
 _IOREG_NUM = r'"{key}"\s*=\s*(\d+)'
+_apple_metrics_cache: tuple[float, dict] = (0.0, {})
+_apple_metrics_lock = threading.Lock()
+
+
+def apple_gpu_metrics() -> dict:
+    """Optional macmon readings; a missing helper or sensor never requires elevated privileges."""
+    global _apple_metrics_cache
+    with _apple_metrics_lock:
+        if time.monotonic() - _apple_metrics_cache[0] < 5:
+            return dict(_apple_metrics_cache[1])
+        result = {}
+        exe = shutil.which("macmon") or next((str(p) for p in (
+            Path("/opt/homebrew/bin/macmon"), Path("/usr/local/bin/macmon")) if p.is_file()), None)
+        if exe:
+            try:
+                sample = subprocess.run([exe, "pipe", "-s", "1", "-i", "500"], capture_output=True,
+                                        text=True, timeout=3)
+                data = json.loads(sample.stdout) if sample.returncode == 0 else {}
+                if not isinstance(data, dict):
+                    data = {}
+                temp = data.get("temp") or {}
+                values = {"temp_c": temp.get("gpu_temp_avg") if isinstance(temp, dict) else None,
+                          "power_w": data.get("gpu_power"), "active_ratio": data.get("gpu_active_ratio")}
+                for key, value in values.items():
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                        continue
+                    if (key == "temp_c" and 0 < value < 150 or key == "power_w" and value >= 0
+                            or key == "active_ratio" and 0 <= value <= 1):
+                        result[key] = float(value)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
+        _apple_metrics_cache = (time.monotonic(), result)
+        return dict(result)
 
 
 def apple_gpu() -> list[dict]:
     """Apple Silicon: the GPU shares the machine's memory. "VRAM" here is what Metal lets the GPU wire, which macOS caps
     below total RAM (iogpu.wired_limit_mb when set, else ~75% of RAM on 32 GB+ Macs, ~2/3 on smaller ones); use and
-    load come from the IOAccelerator statistics, which need no admin rights. No temperature without sudo."""
+    load come from IOAccelerator; optional macmon supplies temperature and GPU power without sudo."""
     if not _APPLE:
         ram = psutil.virtual_memory().total / 2**20
         limit = _sysctl_int("iogpu.wired_limit_mb") or 0
@@ -92,9 +126,13 @@ def apple_gpu() -> list[dict]:
         util = float(m.group(1)) if m else None
     except (OSError, subprocess.SubprocessError):
         pass
+    extra = apple_gpu_metrics()
+    if util is None and "active_ratio" in extra:
+        util = extra["active_ratio"] * 100
     total = _APPLE["total"]
     return [{"index": 0, "name": f"{_APPLE['name']} (unified memory)", "vram_total_mib": total, "vram_used_mib": used,
-             "vram_free_mib": max(0.0, total - used), "util_percent": util, "temp_c": None, "power_w": None,
+             "vram_free_mib": max(0.0, total - used), "util_percent": util,
+             "temp_c": extra.get("temp_c"), "power_w": extra.get("power_w"),
              "unified": True}]
 
 

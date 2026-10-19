@@ -23,7 +23,7 @@ command line.
 - **Stats.** Live tok/s, tokens, requests, VRAM/RAM/CPU and context limits for running engines, plus totals for today,
   this week, this month, this year and all time. Gateway usage can be filtered by client, device, engine, role/model,
   machine, profile and result. Engine runtime remains available separately, including traffic sent directly to engines.
-  GPU temperatures come from NVIDIA's driver. CPU and RAM temperatures appear when identified sensors are available
+  GPU temperatures come from NVIDIA's driver or optional macmon on Apple Silicon. CPU and RAM temperatures appear when identified sensors are available
   through psutil on Linux/FreeBSD, or a running [Libre Hardware Monitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
   or Open Hardware Monitor WMI provider on Windows. Each shows the hottest available sensor in °C; missing readings
   are hidden. Hangar does not install monitoring software, and not every RAM module exposes a temperature sensor.
@@ -95,7 +95,12 @@ also signs a device in.
 
 Hangar runs on a Mac too. On Apple Silicon the GPU shares the machine's memory, so Hangar shows what Metal may use
 (about 75% of RAM on 32 GB+ Macs, or `iogpu.wired_limit_mb` if you have raised it) as GPU memory, with the GPU load
-from macOS's own statistics (no sudo; there is no temperature reading).
+from macOS's own statistics. GPU load, free memory, temperature and power appear on the local dashboard and hub
+machine cards when available. For temperature and GPU power, install the optional
+[macmon](https://github.com/vladkens/macmon) helper with `brew install macmon`; Hangar discovers it automatically,
+including `/opt/homebrew/bin` when the manager has a restricted PATH. Sampling is bounded and cached, needs no sudo,
+and leaves unavailable sensor values hidden. Power readings cover the GPU. Free GPU memory on Apple Silicon is the
+remaining Metal memory budget shared with the system, rather than dedicated VRAM.
 
 ```sh
 git clone https://github.com/jobski/Hangar.git ~/hangar && cd ~/hangar
