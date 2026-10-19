@@ -20,8 +20,9 @@ command line.
   Strata updates through its own `UPDATE.bat`. By default each engine checks for updates before it starts, at most
   every 6 hours; an update the background check already found is installed on the next start, and a failed update
   never stops the model from starting.
-- **Stats.** Live tok/s, tokens, requests, VRAM/RAM/CPU for whatever is running, plus totals for today, this week,
-  this month, this year and all time. Both engines report the same `llamacpp:*` counters.
+- **Stats.** Live tok/s, tokens, requests, VRAM/RAM/CPU and context limits for running engines, plus totals for today,
+  this week, this month, this year and all time. Gateway usage can be filtered by client, device, engine, role/model,
+  machine, profile and result. Engine runtime remains available separately, including traffic sent directly to engines.
 - **Models.** A library folder (`E:\models`, one folder per model) and a downloader for **Hugging Face** (search, pick
   a quant), **ModelScope**, the **Ollama library** (its model files are plain GGUFs) and **any URL**. Interrupted
   downloads resume, and aria2c is used for parallel connections when it is installed. A finished download can become
@@ -156,10 +157,17 @@ marked "via hub".
 
 Where to see it:
 
-- **Usage page** > **Requests through the gateway** — grouped by machine/profile, client or role, plus the latest
-  requests; on a machine with no engines (a hub) those numbers lead the page.
+- **Usage page** > **Gateway requests** — combine client, device, engine, role/model, machine, profile and result
+  filters. The chosen period and filters apply to totals, the chart, grouping and paginated history. Grouping is
+  separate from filtering; use **Errors only** to investigate failures and expand a result to read its error details.
+  Engine names are recorded for new requests; older records without an engine show **Unknown**.
 - CLI: `hangar requests [period] [--by target|client|model|machine]` and `hangar requests --latest`.
-- API: `GET /api/requests?limit=&before=`, `GET /api/requests/summary?period=&by=`.
+- API: `GET /api/requests?period=&limit=&before_id=`, `GET /api/requests/summary?period=&by=`,
+  `GET /api/requests/series?period=&bucket=`, and `GET /api/requests/options?period=`. List, summary and series accept
+  `client`, `caller` (device), `engine`, `model` (role/model requested), `machine`, `profile` and
+  `result=all|success|error`. Use `__unknown__` to select a missing field. Group by `target`, `client`, `caller`,
+  `engine`, `model`, `machine` or `profile`. Page with the last row's `id` as `before_id`; timestamp `before` remains
+  supported. Error details are bounded upstream messages, rather than raw response bodies.
 
 Handy for comparing two quantisations of the same model on real work: same role, look at tok/s and time to first
 token per profile.
@@ -235,7 +243,12 @@ showing the fleet's tok/s (hover for the rest, click to jump to the panel) next 
 On Apple Silicon the GPU memory is part of the RAM, so it is counted in both totals. `hangar machines` prints the
 same totals as a last line, MCP `machines` returns them as `fleet`, and `/api/peers` carries them under `fleet`.
 
-The **Usage** page has the same switch: **All machines** adds up every online machine's tokens in and out, cache
+Engine and machine cards show the running context limit, with the exact token count on hover. A changed profile
+setting is shown separately when a restart is needed; a server-adjusted limit does not trigger a restart warning.
+Strata launch limits can be recovered on adoption only when the config file has not changed since process start.
+If the running limit cannot be established, the card says **Unknown**; live llama.cpp limits come from `/props`, with explicit launch settings available as a fallback.
+
+The **Usage** page's **Engine runtime** view has the same switch: **All machines** adds up every online machine's tokens in and out, cache
 reuse, requests and run time for the chosen period, draws one chart for all of them, and lists each profile with its
 machine. This Hangar asks each machine for its own numbers (`/api/stats/fleet/summary?period=…` and
 `/api/stats/fleet/series?bucket=…&count=…`); a machine that does not answer is named under the switch and left out.

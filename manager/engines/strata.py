@@ -130,6 +130,35 @@ class StrataEngine(Engine):
         cmd += [str(a) for a in profile.cfg.get("server_args", [])]
         return Launch(cmd=cmd, cwd=str(self.dir), env={k: str(v) for k, v in (profile.cfg.get("env") or {}).items()})
 
+    def _context_config(self, cmdline, cwd=None):
+        config = arg_value(cmdline, "--config")
+        if not config:
+            return None
+        path = Path(config)
+        return path if path.is_absolute() else Path(cwd or self.dir) / path
+
+    def launch_context(self, cmdline):
+        try:
+            from ..config import read_json
+            path = self._context_config(cmdline)
+            args = read_json(path).get("args", []) if path else []
+            ctx = int(arg_value(args, "--max-context") or 0)
+            return ctx if ctx > 0 else None
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+
+    def process_context(self, cmdline, created, cwd=None):
+        try:
+            config = arg_value(cmdline, "--config")
+            if not config or not Path(config).is_absolute() and not cwd:
+                return None
+            path = self._context_config(cmdline, cwd)
+            if path.stat().st_mtime > created:
+                return None
+            return self.launch_context(["--config", str(path)])
+        except OSError:
+            return None
+
     def auth_headers(self):
         key = self.api_key or self._run_config(self.active_profile).get("api_key") or ""
         if isinstance(key, list):

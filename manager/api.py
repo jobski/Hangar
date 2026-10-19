@@ -12,7 +12,7 @@ from pathlib import Path
 
 import anyio
 import httpx
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -22,7 +22,7 @@ from .core import Manager
 from .mcp_server import build as build_mcp
 from .peers import Peers, fleet, machine_info, make_code, normalize_url, summary
 from .roles import WAKE_WAIT_S, Roles
-from .stats import RequestMeter, client_name, merge_series, merge_summaries
+from .stats import RequestMeter, client_name, merge_series, merge_summaries, request_error
 
 WEB = Path(__file__).parent / "web"
 TOO_LONG = re.compile(r"context|too long|too many tokens|exceed|n_ctx|maximum", re.I)
@@ -416,6 +416,15 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
             return None
         return (url, ids[0]) if ids else None
 
+    def target_engine(target):
+        if target["machine"]:
+            status = (peers.state.get(target["machine"]) or {}).get("status") or {}
+            return next((e.get("plugin") or e["name"] for e in status.get("engines", [])
+                         if (e.get("running") or {}).get("profile") == target["profile"]), None)
+        profile = mgr.profiles.get(target["profile"])
+        engine = mgr.engines.get(profile.engine) if profile else None
+        return engine.plugin if engine else None
+
     @app.post("/v1/{path:path}")
     async def gateway_call(path: str, request: Request):
         """OpenAI / Anthropic API calls for a role (or a profile): sent to the first target that is up, the next one
@@ -473,6 +482,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                 if not roles.opened(t):
                     continue
             r, relaying = None, False
+            served_engine = target_engine(t)
             try:
                 if t["machine"]:
                     p = peers.get(t["machine"])
@@ -500,22 +510,30 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                         req = gateway.build_request("POST", url.replace("/v1/models", f"/v1/{path}"), content=json.dumps(
                             {**data, "model": mid}).encode(), headers={**passthrough, "Content-Type": "application/json"})
                         r = await gateway.send(req, stream=True)
+                if t["machine"]:
+                    served_engine = r.headers.get("x-hangar-engine") or served_engine
                 if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 404)):
-                    errors.append(f"{t['machine'] or 'here'}/{t['profile']}: HTTP {r.status_code}")
+                    body = bytearray()
+                    async for chunk in r.aiter_bytes():
+                        body.extend(chunk[:8192 - len(body)])
+                        if len(body) >= 8192:
+                            break
+                    errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {request_error(bytes(body), r.status_code)}")
                     continue
                 if r.status_code in (400, 413) and len(cands) > 1:
                     body = await r.aread()
                     if TOO_LONG.search(body[:4096].decode("utf-8", "replace")):
-                        errors.append(f"{t['machine'] or 'here'}/{t['profile']}: too long for its context")
+                        errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {request_error(body, r.status_code)}")
                         continue
-                    await log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code, error=f"HTTP {r.status_code}")
+                    await log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code, engine=served_engine, error=request_error(body, r.status_code))
                     return Response(body, status_code=r.status_code, media_type=r.headers.get("content-type"),
-                                    headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}"})
+                                    headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}",
+                                             "X-Hangar-Engine": served_engine or ""})
                 roles.note_used(t, model, (client, caller))
                 meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
                 done, finished = False, False
 
-                async def finish(r=r, t=t, meter=meter):
+                async def finish(r=r, t=t, meter=meter, served_engine=served_engine):
                     nonlocal finished
                     if finished:
                         return
@@ -523,9 +541,12 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                     roles.closed(t)
                     with anyio.CancelScope(shield=True):
                         await r.aclose()
-                    await log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code,
-                        error=("closed before the end" if not done else f"HTTP {r.status_code}" if r.status_code >= 400 else None),
-                        **meter.result())
+                    measurements = meter.result()
+                    error = ("closed before the end" if not done else
+                             f"HTTP {r.status_code}: {meter.error}" if r.status_code >= 400 and meter.error else
+                             request_error(bytes(meter.body), r.status_code) if r.status_code >= 400 else meter.error)
+                    await log(machine=t["machine"] or me, profile=t["profile"], engine=served_engine,
+                              status=r.status_code, error=error, **measurements)
 
                 async def relay(r=r, t=t, meter=meter):
                     nonlocal done
@@ -538,6 +559,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                         await finish()
                 response = UpstreamResponse(relay(), on_close=finish, status_code=r.status_code, media_type=r.headers.get("content-type"),
                                              headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}",
+                                                      "X-Hangar-Engine": served_engine or "",
                                                       "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
                 relaying = True
                 return response
@@ -553,13 +575,27 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         return JSONResponse({"error": {"type": "unavailable", "message": f"every target for {model!r} failed: "
                                        + "; ".join(errors)}}, status_code=502)
 
+    def request_filters(client: str | None = None, caller: str | None = None, engine: str | None = None,
+                        model: str | None = None, machine: str | None = None, profile: str | None = None,
+                        result: str = "all"):
+        return dict(client=client, caller=caller, engine=engine, model=model, machine=machine, profile=profile, result=result)
+
     @app.get("/api/requests")
-    def requests_list(limit: int = 50, before: float | None = None):
-        return mgr.store.requests(min(500, max(1, limit)), before)
+    def requests_list(limit: int = 50, before: float | None = None, before_id: int | None = None,
+                      period: str = "all", filters: dict = Depends(request_filters)):
+        return guard(mgr.store.requests, min(500, max(1, limit)), before, period, filters, before_id)
 
     @app.get("/api/requests/summary")
-    def requests_summary(period: str = "day", by: str = "target"):
-        return guard(mgr.store.request_summary, period, by)
+    def requests_summary(period: str = "day", by: str = "target", filters: dict = Depends(request_filters)):
+        return guard(mgr.store.request_summary, period, by, filters)
+
+    @app.get("/api/requests/options")
+    def requests_options(period: str = "day"):
+        return guard(mgr.store.request_options, period)
+
+    @app.get("/api/requests/series")
+    def requests_series(period: str = "day", bucket: str = "hour", filters: dict = Depends(request_filters)):
+        return guard(mgr.store.request_series, period, bucket, filters)
 
     # ---- reasoning effort of a thinking model (live on Strata; a restart on llama.cpp)
     @app.get("/api/reasoning")

@@ -30,14 +30,14 @@ CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, model TEXT, machine TEXT, profile TEXT, client TEXT,
   via TEXT, path TEXT, status INTEGER, stream INTEGER, ttft_s REAL, duration_s REAL, prompt_tokens REAL,
-  cached_tokens REAL, gen_tokens REAL, prompt_s REAL, gen_s REAL, error TEXT, caller TEXT);
+  cached_tokens REAL, gen_tokens REAL, prompt_s REAL, gen_s REAL, error TEXT, caller TEXT, engine TEXT);
 CREATE INDEX IF NOT EXISTS requests_ts ON requests(ts);
 """
 
 REQ_FIELDS = ("model", "machine", "profile", "client", "caller", "via", "path", "status", "stream", "ttft_s", "duration_s",
-              "prompt_tokens", "cached_tokens", "gen_tokens", "prompt_s", "gen_s", "error")
+              "prompt_tokens", "cached_tokens", "gen_tokens", "prompt_s", "gen_s", "error", "engine")
 REQ_GROUPS = {"target": ("machine", "profile"), "client": ("client",), "caller": ("caller",), "model": ("model",),
-              "machine": ("machine",)}
+              "machine": ("machine",), "engine": ("engine",), "profile": ("profile",)}
 
 FIELDS = ("prompt_tokens", "cached_tokens", "gen_tokens", "prompt_seconds", "gen_seconds", "requests")
 # counter name -> usage field
@@ -63,6 +63,8 @@ class Store:
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(requests)")}
         if "caller" not in cols:                    # a request log made before callers were recorded
             self.db.execute("ALTER TABLE requests ADD COLUMN caller TEXT")
+        if "engine" not in cols:
+            self.db.execute("ALTER TABLE requests ADD COLUMN engine TEXT")
         if "config_key" not in {r[1] for r in self.db.execute("PRAGMA table_info(sessions)")}:
             self.db.execute("ALTER TABLE sessions ADD COLUMN config_key TEXT")
         self.db.execute("CREATE INDEX IF NOT EXISTS sessions_config ON sessions(profile,config_key,id DESC)")
@@ -164,27 +166,108 @@ class Store:
             self.db.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
             return self.db.execute("DELETE FROM requests WHERE ts < ?", (cutoff,)).rowcount
 
-    def requests(self, limit: int = 50, before: float | None = None) -> list[dict]:
-        """The latest gateway requests, newest first (before: only older than this time, for paging)."""
-        return self.q("SELECT * FROM requests WHERE ts < ? ORDER BY ts DESC LIMIT ?", (before or time.time() + 1, limit))
+    @staticmethod
+    def request_where(period="all", filters=None):
+        clauses, args = ["ts >= ?"], [Store.period_start(period)]
+        for key, value in (filters or {}).items():
+            if key not in {"client", "caller", "engine", "model", "machine", "profile", "result"}:
+                raise ValueError(f"unknown request filter: {key}")
+            if not value or value == "all" and key == "result":
+                continue
+            if key == "result":
+                if value not in {"success", "error"}:
+                    raise ValueError("result: all, success or error")
+                failed = "(COALESCE(status,0) >= 400 OR NULLIF(error,'') IS NOT NULL)"
+                clauses.append(failed if value == "error" else f"NOT {failed}")
+            elif value == "__unknown__":
+                clauses.append(f"COALESCE({key},'') = ''")
+            else:
+                clauses.append(f"{key} = ?")
+                args.append(value)
+        return " AND ".join(clauses), args
 
-    def request_summary(self, period: str = "day", by: str = "target") -> dict:
-        """Gateway requests in a period, grouped by target (machine + profile), client, model asked for or machine.
-        Speeds only count requests whose engine reported its timing."""
+    def requests(self, limit: int = 50, before: float | None = None, period="all", filters=None,
+                 before_id: int | None = None) -> list[dict]:
+        """Newest first; the timestamp/id cursor preserves ties and out-of-order request completions."""
+        where, args = self.request_where(period, filters)
+        if before is not None:
+            where += " AND ts < ?"
+            args.append(before)
+        if before_id is not None:
+            cursor = self.q("SELECT ts FROM requests WHERE id=?", (before_id,))
+            if not cursor:
+                return []
+            where += " AND (ts < ? OR (ts = ? AND id < ?))"
+            args.extend((cursor[0]["ts"], cursor[0]["ts"], before_id))
+        return self.q(f"SELECT * FROM requests WHERE {where} ORDER BY ts DESC,id DESC LIMIT ?", (*args, limit))
+
+    def request_summary(self, period: str = "day", by: str = "target", filters=None) -> dict:
         if by not in REQ_GROUPS:
             raise ValueError(f"by: {', '.join(REQ_GROUPS)}")
-        since, keys = self.period_start(period), REQ_GROUPS[by]
-        agg = ("COUNT(*) requests, SUM(status >= 400 OR error IS NOT NULL) errors, SUM(prompt_tokens) prompt_tokens, "
-               "SUM(cached_tokens) cached_tokens, SUM(gen_tokens) gen_tokens, "
+        where, args = self.request_where(period, filters)
+        keys = REQ_GROUPS[by]
+        agg = ("COUNT(*) requests, SUM(COALESCE(status,0) >= 400 OR NULLIF(error,'') IS NOT NULL) errors, "
+               "SUM(prompt_tokens) prompt_tokens, SUM(cached_tokens) cached_tokens, SUM(gen_tokens) gen_tokens, "
                "SUM(CASE WHEN gen_s > 0 THEN gen_tokens END) timed_gen_tokens, SUM(CASE WHEN gen_s > 0 THEN gen_s END) gen_s, "
                "SUM(CASE WHEN prompt_s > 0 THEN prompt_tokens - COALESCE(cached_tokens, 0) END) timed_prompt_tokens, "
                "SUM(CASE WHEN prompt_s > 0 THEN prompt_s END) prompt_s, AVG(ttft_s) ttft_s, SUM(duration_s) busy_s, MAX(ts) last")
-        rows = self.q(f"SELECT {','.join(keys)}, {agg} FROM requests WHERE ts >= ? GROUP BY {','.join(keys)} "
-                      "ORDER BY requests DESC", (since,))
-        total = self.q(f"SELECT {agg} FROM requests WHERE ts >= ?", (since,))[0]
+        rows = self.q(f"SELECT {','.join(keys)}, {agg} FROM requests WHERE {where} GROUP BY {','.join(keys)} "
+                      "ORDER BY requests DESC", args)
+        total = self.q(f"SELECT {agg} FROM requests WHERE {where}", args)[0]
         for r in rows + [total]:
             _req_rates(r)
-        return {"period": period, "since": since, "by": by, "total": total, "rows": rows}
+        return {"period": period, "since": args[0], "by": by, "total": total, "rows": rows}
+
+    def request_options(self, period="day") -> dict:
+        # Period-wide options stay available when another filter leaves no matches.
+        since = self.period_start(period)
+        return {key: [r["value"] or "__unknown__" for r in self.q(
+            f"SELECT DISTINCT COALESCE({key},'') value FROM requests WHERE ts >= ? ORDER BY value",
+            (since,))] for key in ("client", "caller", "engine", "model", "machine", "profile")}
+
+    def request_series(self, period="day", bucket="hour", filters=None) -> list[dict]:
+        if bucket not in {"hour", "day", "week", "month", "year"}:
+            raise ValueError("bucket: hour, day, week, month or year")
+        where, args = self.request_where(period, filters)
+        # SQLite groups locally, using the same timezone as period_start.
+        day = "datetime(ts,'unixepoch','localtime','start of day')"
+        stamp = {"hour": "strftime('%Y-%m-%d %H:00:00',ts,'unixepoch','localtime')", "day": day,
+                 "week": f"datetime({day},'-' || ((strftime('%w',{day})+6)%7) || ' days')",
+                 "month": "datetime(ts,'unixepoch','localtime','start of month')",
+                 "year": "datetime(ts,'unixepoch','localtime','start of year')"}[bucket]
+        rows = self.q(f"SELECT {stamp} stamp, SUM(COALESCE(gen_tokens,0)) gen_tokens, "
+                      f"SUM(COALESCE(prompt_tokens,0)) prompt_tokens, COUNT(*) requests FROM requests "
+                      f"WHERE {where} GROUP BY stamp ORDER BY stamp", args)
+        if not rows:
+            return []
+        since = args[0]
+        first = dt.datetime.fromtimestamp(since) if since else dt.datetime.fromisoformat(rows[0]["stamp"])
+        now = dt.datetime.now()
+        def align(value):
+            if bucket == "hour":
+                return value.replace(minute=0, second=0, microsecond=0)
+            value = value.replace(hour=0, minute=0, second=0, microsecond=0)
+            if bucket == "week":
+                return value - dt.timedelta(days=value.weekday())
+            if bucket == "month":
+                return value.replace(day=1)
+            if bucket == "year":
+                return value.replace(month=1, day=1)
+            return value
+        found = {r["stamp"]: r for r in rows}
+        current, out = align(first), []
+        while current <= now:
+            if len(out) >= 10000:
+                raise ValueError("too many chart buckets; choose a larger bucket")
+            values = found.get(current.strftime("%Y-%m-%d %H:%M:%S"), {})
+            out.append({"start": current.timestamp(), **{k: values.get(k, 0) for k in ("gen_tokens", "prompt_tokens", "requests")}})
+            if bucket == "year":
+                current = current.replace(year=current.year + 1)
+            elif bucket == "month":
+                current = current.replace(year=current.year + (current.month == 12), month=current.month % 12 + 1)
+            else:
+                current += dt.timedelta(**{"hours": 1} if bucket == "hour" else {"days": 7 if bucket == "week" else 1})
+        return out
 
     # ---- reports
     @staticmethod
@@ -318,6 +401,26 @@ def _req_rates(r: dict):
 _TOKEN = re.compile(rb'"(?:content|reasoning_content|reasoning)":\s*"[^"]|"type":\s*"content_block_delta"')
 
 
+def request_error(raw: bytes, status: int | None = None) -> str | None:
+    """Keep a bounded upstream message, never the raw response or request body."""
+    prefix = f"HTTP {status}" if status is not None else ""
+    try:
+        value = json.loads(raw[:8192])
+        error = value.get("error") if isinstance(value, dict) else None
+        message = error.get("message") if isinstance(error, dict) else error
+        if not message and isinstance(value, dict):
+            message = value.get("message") or value.get("detail")
+        if not isinstance(message, str):
+            return prefix or None
+        message = re.sub(r"[\x00-\x1f\x7f]", " ", message)
+        message = re.sub(r"(?i)Bearer\s+[^\s,;]+", "Bearer <redacted>", message)
+        message = re.sub(r"(?i)((?:api[_-]?key|token|password|secret)\s*[=:]\s*)[^\s,;]+", r"\1<redacted>", message)
+        message = message[:1000]
+        return f"{prefix}: {message}" if prefix else message
+    except (ValueError, TypeError):
+        return prefix or None
+
+
 class RequestMeter:
     """Token counts and speeds read from a gateway response as it streams past (nothing is held back or buffered,
     except a non-streamed body, which is small). Understands llama.cpp/Strata `timings`, OpenAI `usage` and the
@@ -330,6 +433,7 @@ class RequestMeter:
         self.sse, self.body, self.rest = sse, bytearray(), b""
         self.timings: dict = {}
         self.usage: dict = {}
+        self.error: str | None = None
 
     def feed(self, chunk: bytes, now: float):
         if not chunk:
@@ -338,7 +442,7 @@ class RequestMeter:
         self.last = now
         if not self.sse:
             if len(self.body) < self.MAX_BODY:
-                self.body += chunk
+                self.body += chunk[:self.MAX_BODY - len(self.body)]
             return
         lines = (self.rest + chunk).split(b"\n")
         self.rest = lines.pop()
@@ -349,7 +453,7 @@ class RequestMeter:
                 continue
             if self.token_at is None and _TOKEN.search(line):
                 self.token_at = now
-            if b'"usage"' in line or b'"timings"' in line:
+            if b'"usage"' in line or b'"timings"' in line or b'"error"' in line:
                 self._take(line[5:])
 
     def _take(self, raw: bytes):
@@ -359,6 +463,8 @@ class RequestMeter:
             return
         if not isinstance(o, dict):
             return
+        if o.get("error"):
+            self.error = request_error(raw)
         if isinstance(o.get("timings"), dict):
             self.timings.update(o["timings"])
         message = o.get("message")

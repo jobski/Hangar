@@ -89,6 +89,18 @@ class Engine:
             return False, f"not answering ({type(e).__name__})"
         return r.status_code == 200, f"HTTP {r.status_code}"
 
+    def launch_context(self, cmdline: list[str]) -> int | None:
+        """An explicit context from the launched command; None when it cannot be established."""
+        return None
+
+    def process_context(self, cmdline: list[str], created: float, cwd: str | None = None) -> int | None:
+        """Recover a launch limit from an existing process without trusting subsequently edited files."""
+        return self.launch_context(cmdline)
+
+    def runtime_context(self) -> int | None:
+        """The live per-request token limit, when the engine exposes it."""
+        return None
+
     def match_process(self, cmdline: list[str], profiles: dict[str, Profile]) -> str | None:
         """Which profile a running process (not started by us) is, from its command line; None if unknown."""
         return None
