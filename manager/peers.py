@@ -181,7 +181,7 @@ class Peers:
         self.woken: dict[str, float] = {}                # name -> when a magic packet last went to it
         self.callers: dict[str, tuple[float, str]] = {}  # address -> (when, device name)
         self.arp_tried: dict[str, float] = {}            # name -> when its MAC was last looked for in the ARP table
-        self.client = httpx.Client(timeout=4)
+        self.client = httpx.Client(timeout=4, limits=httpx.Limits(keepalive_expiry=2))
         self.stop_flag = threading.Event()
 
     # ---- the list
@@ -412,7 +412,14 @@ class Peers:
             return
         t0 = time.time()
         try:
-            r = self.client.get(p["url"] + "/api/status", headers={"Authorization": f"Bearer {p['token']}"})
+            for attempt in range(2):
+                try:
+                    r = self.client.get(p["url"] + "/api/status", headers={"Authorization": f"Bearer {p['token']}"})
+                    break
+                except httpx.RemoteProtocolError:
+                    if attempt:
+                        raise
+                    # Retry this read once if the server closed an idle connection during reuse.
             if r.status_code == 401:
                 raise ValueError("the peer refused our token")
             r.raise_for_status()
