@@ -96,6 +96,10 @@ def model_entries(mgr, profile_ids: list[str] | None, host: str, *, include_cust
                      context=int(p.cfg.get("ctx") or 32768))
         else:
             e.update(api_key=eng.api_key)
+        with mgr.lock:
+            inst = next((i for i in mgr.instances.values() if i.profile == p.id), None)
+            running_context = inst.context if inst else None
+        e["context"] = running_context or mgr._context(p.id) or e["context"]
         e["output"] = min(e["output"], max(1024, e["context"] // 4))
         e["env_key"] = f"{p.engine.upper()}_API_KEY"
         out.append(e)

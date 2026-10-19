@@ -486,17 +486,19 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
 
   <!-- usage -->
   <section class="view" id="v-usage">
-    <div class="vh"><div><h1>Usage</h1><p>Tokens, speed and run time, recorded per minute.</p></div><span class="sp"></span><div class="seg" id="uscope" hidden></div><div class="seg" id="periods"></div></div>
+    <div class="vh"><div><h1>Usage</h1><p>Explore gateway requests or engine runtime.</p></div><span class="sp"></span><div class="seg" id="uscope" hidden></div><div class="seg" id="periods"></div></div>
+    <div class="row" style="margin-bottom:16px"><div class="seg" id="usource"></div><span class="small muted" id="usagehint"></span></div>
+    <div id="reqfilters" class="panel pb" style="margin-bottom:16px" hidden></div>
     <div class="small muted" id="umiss" hidden></div>
     <div class="kpis" id="totals"></div>
-    <div class="panel" id="seriespanel"><div class="ph"><h3>Tokens over time</h3><span class="sp"></span><div class="seg" id="buckets"></div></div>
+    <div class="panel" id="seriespanel"><div class="ph"><h3 id="seriestitle">Tokens over time</h3><span class="sp"></span><div class="seg" id="buckets"></div></div>
       <div class="pb"><svg id="series" class="chart" aria-label="tokens over time"></svg>
         <div class="legend" style="margin-top:6px"><span><i style="background:var(--s1)"></i>tokens out</span><span><i style="background:var(--s2)"></i>tokens in</span></div></div></div>
     <div class="panel" id="bypanel"><div class="ph"><h3>By profile</h3></div><div class="scroll"><table class="data" id="bytable"></table></div></div>
-    <div class="panel" id="reqpanel" hidden><div class="ph"><h3>Requests through the gateway</h3><span class="sp"></span><div class="seg" id="reqby"></div></div>
+    <div class="panel" id="reqpanel" hidden><div class="ph"><h3>Requests through the gateway</h3><span class="sp"></span><span class="small muted">Group by</span><div class="seg" id="reqby"></div></div>
       <div class="scroll"><table class="data" id="reqtable"></table></div>
-      <div class="ph"><h3>Latest</h3><span class="sp"></span><span class="small muted">answered here, or passed on to the machine shown</span></div>
-      <div class="scroll"><table class="data" id="reqlatest"></table></div></div>
+      <div class="ph"><h3>Request history</h3><span class="sp"></span><span class="small muted" id="reqcount"></span></div>
+      <div class="scroll"><table class="data" id="reqlatest"></table></div><div class="pb row" id="reqpaging"></div></div>
   </section>
 
   <!-- activity -->
@@ -525,6 +527,10 @@ let TOKEN = new URLSearchParams(location.search).get("token") || store.get("llmm
 if (new URLSearchParams(location.search).get("token")) { store.set("llmm-token", TOKEN); history.replaceState(null, "", location.pathname + location.hash); }
 let reqBy = store.get("llmm-reqby", "target"), period = store.get("llmm-period", "day"), bucket = store.get("llmm-bucket", "day"), uscope = store.get("llmm-uscope", "this"), watchJob = null, lastStatus = null;
 let completedJob = null, jobHideTimer = null, machineEpoch = 0;
+let usageSource = store.get("llmm-usage-source", "gateway"), statsVersion = 0, requestVersion = 0;
+let reqFilters = {}, reqBefore = null, reqPages = [], reqNext = null, reqOptions = null, reqOptionsKey = "", reqOptionsAt = 0;
+if (!["gateway", "runtime"].includes(usageSource)) usageSource = "gateway";
+const resetRequestPage = () => { reqBefore = null; reqPages = []; reqNext = null; };
 let view = (location.hash.slice(1) || store.get("llmm-view", "overview"));
 
 // the machine being viewed: "" is this one; a peer's calls go through this Hangar at /api/peers/<name>/...
@@ -561,6 +567,19 @@ $("#tok").addEventListener("keydown", e => { if (e.key === "Enter") $("#tokbtn")
 const gb = v => (v / 1024).toFixed(1);
 const mib = v => v >= 1024 ? (v / 1024).toFixed(1) + " GB" : (v || 0).toFixed(0) + " MiB";
 const num = v => { v = v || 0; return v >= 1e9 ? (v / 1e9).toFixed(2) + "B" : v >= 1e6 ? (v / 1e6).toFixed(2) + "M" : v >= 1e3 ? (v / 1e3).toFixed(1) + "K" : v.toFixed(0); };
+const contextBadge = run => {
+  const ctx = run.context_source ? run.context : null, configured = run.configured_context || (!run.context_source ? run.context : null);
+  const fmt = n => n % 1024 === 0 ? `${n / 1024}K` : Number(n).toLocaleString();
+  if (!ctx) return `<span class="tag" title="The running limit has not been confirmed">Context: unknown</span>` +
+    (configured ? ` <span class="tag" title="Profile setting: ${Number(configured).toLocaleString()} tokens; the running limit may differ">Profile: ${fmt(configured)} tokens</span>` : "");
+  const source = run.context_source === "runtime" ? "reported by the running server" : "captured from the launched process";
+  const launched = run.launched_context ?? (run.context_source === "launch" ? ctx : null);
+  const pending = configured && launched && configured !== launched && configured !== ctx;
+  const differs = configured && configured !== ctx;
+  return `<span class="tag info" title="${Number(ctx).toLocaleString()} tokens per request · ${source}">Context: ${fmt(ctx)} tokens</span>` +
+    (pending ? ` <span class="tag warn" title="The profile has changed since launch; restart to apply it">Configured: ${fmt(configured)} · restart needed</span>` :
+     differs ? ` <span class="tag" title="The running server reports a different limit from the profile setting">Profile: ${fmt(configured)} tokens</span>` : "");
+};
 const dur = s => { s = Math.floor(s || 0); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; };
 const tps = v => v ? v.toFixed(1) : "–";
 // one request's speed out; none for a handful of tokens, whose time is too short to measure
@@ -655,7 +674,7 @@ function renderStatus(s) {
       const g = lv.gen_tps ?? w1.gen_tps ?? w5.gen_tps; out += g || 0;
       const doing = lv.phase ? `${esc(lv.phase)}${lv.tokens ? ` · ${num(lv.tokens)}${lv.of ? " / " + num(lv.of) : ""} tok` : ""}` : busy ? "generating" : "idle";
       const rb = (s.roles || []).filter(r => r.serving && !r.serving.machine && r.serving.profile === run.profile).map(r => r.name);
-      h += `<div class="esub">${rb.map(n => `<span class="tag ok" style="margin-right:6px" title="the gateway sends '${esc(n)}' requests here">${esc(n)}</span>`).join("")}<b>${esc(run.profile)}</b> · up <span class="num">${dur(run.uptime_seconds)}</span> · pid <span class="num">${run.pid}</span>${run.managed ? "" : " · started outside the manager"}</div>
+      h += `<div class="esub">${rb.map(n => `<span class="tag ok" style="margin-right:6px" title="the gateway sends '${esc(n)}' requests here">${esc(n)}</span>`).join("")}<b>${esc(run.profile)}</b> ${contextBadge(run)} · up <span class="num">${dur(run.uptime_seconds)}</span> · pid <span class="num">${run.pid}</span>${run.managed ? "" : " · started outside the manager"}</div>
         <div class="stats">
           <div class="stat hero"><div class="sv">${tps(g)}<small>tok/s</small></div><div class="sl" title="${lv.phase ? "live, from the engine's progress" : "from finished requests"}">out · ${doing}</div></div>
           <div class="stat"><div class="sv">${tps(lv.prompt_tps ?? w5.prompt_tps)}<small>tok/s</small></div><div class="sl">in · ${lv.prompt_tps != null ? "reading now" : "5 min avg"}</div></div>
@@ -968,13 +987,29 @@ const PERIODS = [["day", "Today"], ["week", "Week"], ["month", "Month"], ["year"
 const BUCKETS = [["hour", "Hour", 24], ["day", "Day", 30], ["week", "Week", 26], ["month", "Month", 12], ["year", "Year", 5]];
 
 async function renderStats() {
+  const version = ++statsVersion;
+  const gateway = usageSource === "gateway";
+  $("#usource").innerHTML = [["gateway", "Gateway requests"], ["runtime", "Engine runtime"]].map(([k,l]) => `<button data-usource="${k}" class="${usageSource === k ? "on" : ""}">${l}</button>`).join("");
+  $("#usagehint").textContent = gateway ? "Requests recorded by this gateway, including calls passed to peers." : "Engine counters include traffic sent directly to engines. Gateway filters do not apply.";
+  $("#reqfilters").hidden = !gateway;
+  $("#reqpanel").hidden = !gateway;
+  $("#bypanel").hidden = gateway;
+  $("#buckets").hidden = gateway;
+  $("#seriestitle").textContent = gateway ? "Tokens through the gateway" : "Tokens over time";
   $("#periods").innerHTML = PERIODS.map(([k, l]) => `<button class="${k === period ? "on" : ""}" data-period="${k}">${l}</button>`).join("");
   $("#buckets").innerHTML = BUCKETS.map(([k, l]) => `<button class="${k === bucket ? "on" : ""}" data-bucket="${k}">${l}</button>`).join("");
   // All machines: this Hangar asks every online machine and adds them up (whichever machine is being viewed)
   const all = uscope === "all" && PEERS.length > 0;
-  $("#uscope").hidden = !PEERS.length;
+  $("#uscope").hidden = gateway || !PEERS.length;
+  if (gateway) {
+    $("#periods").innerHTML = PERIODS.map(([k,l]) => `<button class="${k === period ? "on" : ""}" data-period="${k}">${l}</button>`).join("");
+    $("#umiss").hidden = true;
+    $("#seriespanel").hidden = false;
+    return renderRequests();
+  }
   $("#uscope").innerHTML = [["this", MACHINE || "This machine"], ["all", "All machines"]].map(([k, l]) => `<button class="${(k === "all") === all ? "on" : ""}" data-uscope="${k}">${esc(l)}</button>`).join("");
   const s = all ? await api(`/api/stats/fleet/summary?period=${period}`, { local: true }) : await api(`/api/stats/summary?period=${period}`), t = s.total;
+  if (version !== statsVersion || usageSource !== "runtime") return;
   const miss = all ? s.machines.filter(m => !m.ok).map(m => m.name) : [];
   $("#umiss").hidden = !miss.length;
   $("#umiss").textContent = miss.length ? `Not counted: ${miss.join(", ")} did not answer.` : "";
@@ -994,48 +1029,96 @@ async function renderStats() {
   const b = BUCKETS.find(x => x[0] === bucket);
   $("#seriespanel").hidden = $("#bypanel").hidden = false;     // measured before drawing; a hub's view hides them again
   const ser = await api(`/api/stats${all ? "/fleet" : ""}/series?bucket=${bucket}&count=${b[2]}`, { local: all });
+  if (version !== statsVersion || usageSource !== "runtime") return;
   drawBars($("#series"), ser, bucket);
-  await renderRequests();
 }
 
-// ---- requests the gateway (/v1) passed on: per target, client or role, and the latest ones
-const REQBY = [["target", "Machine · profile"], ["client", "Client"], ["caller", "Device"], ["model", "Role"]];
+// ---- gateway usage: the same server-side filters apply to every report and page
+const REQBY = [["target", "Machine · profile"], ["client", "Client"], ["caller", "Device"], ["engine", "Engine"], ["model", "Role / model"]];
+const REQFILTERS = [["client", "Client"], ["caller", "Device"], ["engine", "Engine"], ["model", "Role / model"], ["machine", "Machine"], ["profile", "Profile"]];
+const engineLabel = e => ({llamacpp: "llama.cpp", strata: "Strata", mlx: "MLX"}[e] || e || "Unknown");
+function requestQuery() {
+  const params = new URLSearchParams({period});
+  for (const [key,value] of Object.entries(reqFilters)) if (value) params.set(key,value);
+  return params;
+}
+function renderRequestFilters(options) {
+  const key = JSON.stringify([options, reqFilters]);
+  if ($("#reqfilters").dataset.key === key) return;
+  $("#reqfilters").dataset.key = key;
+  $("#reqfilters").innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:end">` + REQFILTERS.map(([key,label]) => {
+    const values = [...new Set([...(options[key] || []), ...(reqFilters[key] ? [reqFilters[key]] : [])])];
+    return `<label class="fld" style="min-width:130px;flex:1">${label}<select class="input" data-reqfilter="${key}"><option value="">All</option>${values.map(v => `<option value="${esc(v)}" ${reqFilters[key] === v ? "selected" : ""}>${esc(v === "__unknown__" ? "Unknown" : key === "engine" ? engineLabel(v) : v)}</option>`).join("")}</select></label>`;
+  }).join("") + `<label class="fld" style="min-width:130px;flex:1">Result<select class="input" data-reqfilter="result">${[["", "All"], ["success", "Successful"], ["error", "Errors only"]].map(([v,l]) => `<option value="${v}" ${reqFilters.result === v ? "selected" : ""}>${l}</option>`).join("")}</select></label><button class="btn sm" data-act="reqclear" ${Object.keys(reqFilters).length ? "" : "disabled"}>Clear filters</button></div>`;
+}
 async function renderRequests() {
-  let s, latest;
-  try { [s, latest] = await Promise.all([api(`/api/requests/summary?period=${period}&by=${reqBy}`), api("/api/requests?limit=25")]); }
-  catch (e) { if (e.stale || e.name === "AbortError") return; $("#reqpanel").hidden = true; $("#seriespanel").hidden = $("#bypanel").hidden = false; return; }      // an older Hangar has no request log
-  $("#reqpanel").hidden = !s.total.requests && !latest.length;
-  // a hub runs no engines: its own token numbers are always empty, so its requests take their place
-  const hub = uscope !== "all" && lastStatus && !(lastStatus.engines || []).length && latest.length;
-  for (const id of ["#seriespanel", "#bypanel"]) $(id).hidden = !!hub;
-  if (hub) {
-    const t = s.total;
+  if (usageSource !== "gateway") return;
+  if (!REQBY.some(([key]) => key === reqBy)) reqBy = "target";
+  reqNext = null;
+  const version = ++requestVersion, query = requestQuery(), group = reqBy, cursor = reqBefore;
+  const chartBucket = ["day", "24h"].includes(period) ? "hour" : ["week", "7d", "month", "30d"].includes(period) ? "day" : "month";
+  const optionsKey = `${machineEpoch}/${period}`;
+  try {
+    const [s, page, series, options] = await Promise.all([
+      api(`/api/requests/summary?${query}&by=${group}`),
+      api(`/api/requests?${query}&limit=26${cursor ? `&before_id=${cursor}` : ""}`),
+      api(`/api/requests/series?${query}&bucket=${chartBucket}`),
+      reqOptions && reqOptionsKey === optionsKey && Date.now() - reqOptionsAt < 30000 ? Promise.resolve(reqOptions) : api(`/api/requests/options?period=${period}`)
+    ]);
+    if (version !== requestVersion || usageSource !== "gateway") return;
+    reqOptions = options; reqOptionsKey = optionsKey; reqOptionsAt = Date.now();
+    renderRequestFilters(options);
+    const latest = page.slice(0,25), t = s.total;
+    reqNext = page.length > 25 ? latest[latest.length - 1].id : null;
+    $("#reqpanel").hidden = false;
     $("#totals").innerHTML = `
-      <div class="kpi hero"><div class="sl">Out · via gateway</div><div class="sv">${num(t.gen_tokens)}</div></div>
+      <div class="kpi hero"><div class="sl">Tokens out</div><div class="sv">${num(t.gen_tokens)}</div></div>
       <div class="kpi"><div class="sl">Tokens in</div><div class="sv">${num(t.prompt_tokens)}</div></div>
       <div class="kpi"><div class="sl">Cache reused</div><div class="sv">${num(t.cached_tokens)}</div></div>
       <div class="kpi"><div class="sl">Avg out</div><div class="sv">${tps(t.gen_tps)}<small>tok/s</small></div></div>
       <div class="kpi"><div class="sl">Requests</div><div class="sv">${num(t.requests)}</div></div>
       <div class="kpi"><div class="sl">Failed</div><div class="sv ${t.errors ? "bad-t" : ""}">${num(t.errors)}</div></div>`;
+    drawBars($("#series"), series, chartBucket);
+    $("#reqby").innerHTML = REQBY.map(([k,l]) => `<button class="${k === group ? "on" : ""}" data-reqby="${k}">${l}</button>`).join("");
+    const ms = v => v == null ? "–" : v < 1 ? Math.round(v * 1000) + " ms" : v.toFixed(1) + " s";
+    const waited = r => r.ttft_s != null && r.prompt_s != null ? Math.max(0,r.ttft_s-r.prompt_s) : 0;
+    const label = r => group === "target" ? (r.machine ? `<span class="tag">${esc(r.machine)}</span> ${esc(r.profile)}` : `<span class="muted">Not served</span>`) : esc(group === "engine" ? engineLabel(r.engine) : r[group] || "Unknown");
+    const top = Math.max(1,...s.rows.map(r => r.requests));
+    $("#reqtable").innerHTML = `<tr><th>${REQBY.find(([k]) => k === group)[1]}</th><th>Requests</th><th>Failed</th><th>Out</th><th>In</th><th>Cached</th><th>tok/s out</th><th>tok/s in</th><th>First token</th><th>Last</th></tr>` + (s.rows.length ?
+      s.rows.map(r => `<tr><td>${label(r)}<span class="share" style="width:${r.requests/top*100}%"></span></td><td>${num(r.requests)}</td><td>${r.errors ? `<span class="tag bad">${r.errors}</span>` : "–"}</td><td>${num(r.gen_tokens)}</td><td>${num(r.prompt_tokens)}</td><td>${num(r.cached_tokens)}</td><td>${tps(r.gen_tps)}</td><td>${tps(r.prompt_tps)}</td><td>${ms(r.ttft_s)}</td><td>${ago(r.last)}</td></tr>`).join("") : `<tr><td colspan="10" class="empty">No requests match these filters in this period.</td></tr>`);
+    const openErrors = new Set([...document.querySelectorAll("details[data-request-error][open]")].map(e => e.dataset.requestError));
+    $("#reqlatest").innerHTML = `<tr><th>When</th><th>Role / model</th><th>Served by</th><th>Engine</th><th>Client / device</th><th>Result</th><th>Out</th><th>In</th><th>tok/s</th><th>First token</th><th>Took</th></tr>` + (latest.length ? latest.map(r => {
+      const failed = r.status >= 400 || !!r.error;
+      const result = failed ? `<details data-request-error="${r.id}" ${openErrors.has(String(r.id)) ? "open" : ""}><summary><span class="tag bad">${r.status >= 400 ? `HTTP ${r.status}` : "Interrupted / error"}</span></summary><div style="white-space:pre-wrap;overflow-wrap:anywhere;min-width:180px;max-width:420px;padding:8px 0">${esc(r.error || "No error details were recorded.")}</div></details>` : `<span class="tag ok">${r.status || "OK"}</span>`;
+      return `<tr><td title="${esc(new Date(r.ts*1000).toLocaleString())}">${ago(r.ts)}</td><td>${esc(r.model)}</td><td>${r.machine ? `<span class="tag">${esc(r.machine)}</span> ${esc(r.profile)}` : `<span class="muted">Not served</span>`}</td><td>${esc(engineLabel(r.engine))}</td><td>${esc(r.client || "Unknown")}${r.caller ? `<div class="muted small">on ${esc(r.caller)}</div>` : ""}${r.via ? `<div class="muted small">via ${esc(r.via)}</div>` : ""}</td><td>${result}</td><td>${num(r.gen_tokens)}</td><td>${num(r.prompt_tokens)}</td><td>${tps(reqTps(r))}</td><td>${ms(r.ttft_s)}${waited(r) >= 1 ? ` <span class="small warn-t" title="Waited for the engine before prompt processing">· waited ${ms(waited(r))}</span>` : ""}</td><td>${ms(r.duration_s)}</td></tr>`;
+    }).join("") : `<tr><td colspan="11" class="empty">No requests match these filters in this period.</td></tr>`);
+    $("#reqcount").textContent = `${latest.length} shown · ${t.requests.toLocaleString()} matching requests`;
+    $("#reqpaging").innerHTML = `<button class="btn sm" data-act="reqfirst" ${cursor ? "" : "disabled"}>Latest</button><span class="sp"></span><button class="btn sm" data-act="reqnewer" ${reqPages.length ? "" : "disabled"}>Newer</button><button class="btn sm" data-act="reqolder" ${reqNext ? "" : "disabled"}>Older</button>`;
+  } catch (e) {
+    if (version !== requestVersion || e.stale || e.name === "AbortError") return;
+    $("#totals").innerHTML = "";
+    $("#series").innerHTML = "";
+    $("#reqpanel").hidden = false;
+    $("#reqtable").innerHTML = `<tr><td class="empty">Gateway usage could not be loaded: ${esc(e.message)}. This machine may need a Hangar update.</td></tr>`;
+    $("#reqlatest").innerHTML = ""; $("#reqpaging").innerHTML = "";
+    renderRequestFilters(reqOptionsKey === optionsKey ? reqOptions || {} : {});
   }
-  $("#reqby").innerHTML = REQBY.map(([k, l]) => `<button class="${k === reqBy ? "on" : ""}" data-reqby="${k}">${l}</button>`).join("");
-  const ms = v => v == null ? "–" : v < 1 ? Math.round(v * 1000) + " ms" : v.toFixed(1) + " s";
-  const waited = r => r.ttft_s != null && r.prompt_s != null ? Math.max(0, r.ttft_s - r.prompt_s) : 0;   // queued behind others
-  const label = r => reqBy === "target" ? (r.machine ? `<span class="tag">${esc(r.machine)}</span> ${esc(r.profile)}` : `<span class="muted">not served</span>`) : esc(r[reqBy] || "–");
-  const top = Math.max(1, ...s.rows.map(r => r.requests));
-  $("#reqtable").innerHTML = s.rows.length ? `<tr><th>${REQBY.find(x => x[0] === reqBy)[1]}</th><th>Requests</th><th>Failed</th><th>Out</th><th>In</th><th>Cached</th><th>tok/s out</th><th>tok/s in</th><th>First token</th><th>Last</th></tr>` +
-    s.rows.map(r => `<tr><td>${label(r)}<span class="share" style="width:${r.requests / top * 100}%"></span></td><td>${num(r.requests)}</td><td>${r.errors ? `<span class="tag bad">${r.errors}</span>` : "–"}</td><td>${num(r.gen_tokens)}</td><td>${num(r.prompt_tokens)}</td><td>${num(r.cached_tokens)}</td><td>${tps(r.gen_tps)}</td><td>${tps(r.prompt_tps)}</td><td>${ms(r.ttft_s)}</td><td>${ago(r.last)}</td></tr>`).join("")
-    : `<tr><td class="empty">No requests in this period.</td></tr>`;
-  $("#reqlatest").innerHTML = latest.length ? `<tr><th>When</th><th>Asked for</th><th>Served by</th><th>Client</th><th>Out</th><th>In</th><th>tok/s</th><th>First token</th><th>Took</th></tr>` +
-    latest.map(r => `<tr title="${esc(r.error || "")}"><td>${ago(r.ts)}</td><td>${esc(r.model)}</td><td>${r.machine ? `<span class="tag">${esc(r.machine)}</span> ${esc(r.profile)}` : `<span class="tag bad">${r.status}</span> ${esc(r.error || "")}`}</td>` +
-      `<td>${esc(r.client)}${r.caller ? ` <span class="muted small">on ${esc(r.caller)}</span>` : ""}${r.via ? ` <span class="muted small">via ${esc(r.via)}</span>` : ""}${r.error && r.machine ? ` <span class="tag warn">${esc(r.error)}</span>` : ""}</td><td>${num(r.gen_tokens)}</td><td>${num(r.prompt_tokens)}</td>` +
-      `<td>${tps(reqTps(r))}</td><td>${ms(r.ttft_s)}${waited(r) >= 1 ? ` <span class="small warn-t" title="waited for the engine (busy with other requests) before reading the prompt">· waited ${ms(waited(r))}</span>` : ""}</td><td>${ms(r.duration_s)}</td></tr>`).join("")
-    : `<tr><td class="empty">No requests yet.</td></tr>`;
 }
+
+document.addEventListener("change", ev => {
+  const key = ev.target.dataset.reqfilter;
+  if (!key) return;
+  if (ev.target.value) reqFilters[key] = ev.target.value; else delete reqFilters[key];
+  resetRequestPage(); renderRequests().catch(fail);
+});
 
 function drawBars(svg, ser, bucket) {
   const W = Math.max(280, svg.clientWidth || 600), H = 190, L = 44, B = 20, T = 8, max = Math.max(1, ...ser.map(x => x.gen_tokens + x.prompt_tokens));
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (!ser.some(x => x.gen_tokens || x.prompt_tokens)) {
+    svg.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle">No token usage recorded in this period.</text>`;
+    return;
+  }
   const ih = H - B - T, bw = (W - L) / Math.max(1, ser.length);
   const fmt = t => { const d = new Date(t * 1000); return bucket === "hour" ? d.getHours() + "h" : bucket === "month" ? d.toLocaleString(undefined, { month: "short" }) : bucket === "year" ? d.getFullYear() : (d.getMonth() + 1) + "/" + d.getDate(); };
   let g = "";
@@ -1180,15 +1263,20 @@ document.addEventListener("click", async ev => {
   if (cg) { ev.preventDefault(); return copyText(cg.dataset.url); }
   if (ev.target.closest("[data-act=copycode]")) { ev.preventDefault(); const c = await loadMyCode(); return copyText(c.code); }
   if (ev.target.closest("[data-act=pastego]")) { ev.preventDefault(); const c = $("#pastecode").value.trim(); if (!c) return toast("Paste the other machine's pairing code first", true); return addFromCode(c, $("#pasteboth").checked, ev.target.closest("button")); }
-  const b = ev.target.closest("[data-act],[data-uscope],[data-period],[data-bucket],[data-reqby],[data-job],[data-cnkind],[data-cnclient],[data-view]");
-  if (!b) return;
+  const b = ev.target.closest("[data-act],[data-usource],[data-uscope],[data-period],[data-bucket],[data-reqby],[data-job],[data-cnkind],[data-cnclient],[data-view]");
+  if (!b || b.disabled) return;
   ev.preventDefault();
   try {
     if (b.dataset.view) return setView(b.dataset.view);
     if (b.dataset.cnkind) { cnKind = b.dataset.cnkind; store.set("llmm-cnkind", cnKind); return renderConnect(); }
     if (b.dataset.cnclient) { cnClient = b.dataset.cnclient; store.set("llmm-cnclient", cnClient); return renderConnect(); }
+    if (b.dataset.usource) { usageSource = b.dataset.usource; store.set("llmm-usage-source", usageSource); return renderStats(); }
+    if (b.dataset.act === "reqclear") { reqFilters = {}; resetRequestPage(); return renderRequests(); }
+    if (b.dataset.act === "reqfirst") { resetRequestPage(); return renderRequests(); }
+    if (b.dataset.act === "reqolder" && reqNext) { reqPages.push(reqBefore); reqBefore = reqNext; return renderRequests(); }
+    if (b.dataset.act === "reqnewer" && reqPages.length) { reqBefore = reqPages.pop(); return renderRequests(); }
     if (b.dataset.uscope) { uscope = b.dataset.uscope; store.set("llmm-uscope", uscope); return renderStats(); }
-    if (b.dataset.period) { period = b.dataset.period; store.set("llmm-period", period); return renderStats(); }
+    if (b.dataset.period) { resetRequestPage(); period = b.dataset.period; store.set("llmm-period", period); return renderStats(); }
     if (b.dataset.reqby) { reqBy = b.dataset.reqby; store.set("llmm-reqby", reqBy); return renderRequests(); }
     if (b.dataset.bucket) { bucket = b.dataset.bucket; store.set("llmm-bucket", bucket); return renderStats(); }
     if (b.dataset.job) { watchJob = b.dataset.job; setView("overview"); return renderJob(); }
@@ -1249,7 +1337,7 @@ async function renderMachines() {
   $("#mswbtn").className = MACHINE ? "remote" : "";
   $("#remotebar").hidden = !MACHINE;
   if (MACHINE) { $("#rbname").textContent = MACHINE; $("#rbself").textContent = SELF.name; $("#rbdot").className = "dot " + (cur && cur.online ? "ok" : "bad"); }
-  const runline = sm => (sm && sm.running.length) ? sm.running.map(r => `${esc(r.profile)}${r.gen_tps ? ` <span class="num">${r.gen_tps.toFixed(1)} tok/s</span>` : ""}`).join(" · ") : "idle";
+  const runline = sm => (sm && sm.running.length) ? sm.running.map(r => `${esc(r.profile)} ${contextBadge(r)}${r.gen_tps ? ` <span class="num">${r.gen_tps.toFixed(1)} tok/s</span>` : ""}`).join(" · ") : "idle";
   const item = (name, os, online, sm, sub, on) => `<button class="mi ${on ? "on" : ""}" data-machine="${esc(name)}"><span class="dot ${online ? "ok" : "bad"}"></span>
       <span style="min-width:0"><b>${esc(name)}</b><span class="sub">${sub}</span></span><span class="os">${esc(OS[os] || os || "")}</span></button>`;
   $("#mswmenu").innerHTML = item(SELF.name, SELF.os, true, SELF.summary, "this machine · " + runline(SELF.summary), !MACHINE) +
@@ -1337,7 +1425,7 @@ function switchMachine(name) {
   if (name === MACHINE) { $("#mswmenu").hidden = true; return; }
   pendingRequests.forEach(controller => controller.abort());
   stopLog(); if ($("#dlg").open) $("#dlg").close();
-  GW = null; gwAt = 0; cnHost = "127.0.0.1";
+  GW = null; gwAt = 0; cnHost = "127.0.0.1"; resetRequestPage(); reqOptions = null; requestVersion++; statsVersion++;
   machineEpoch++; completedJob = null; clearTimeout(jobHideTimer); clearTimeout(dlTimer);
   MACHINE = name; store.set("llmm-machine", name);
   $("#mswmenu").hidden = true;

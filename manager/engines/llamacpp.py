@@ -92,6 +92,29 @@ class LlamaCppEngine(Engine):
             cmd += ["--reasoning", "off"] if lvl == "none" else ["--reasoning-effort", str(lvl)]
         return Launch(cmd=cmd + args, cwd=str(self.dir), env={k: str(v) for k, v in (c.get("env") or {}).items()})
 
+    def launch_context(self, cmdline):
+        try:
+            # Later flags override earlier profile flags; -c is shared between parallel slots.
+            ctx, parallel = 0, None
+            for i, arg in enumerate(cmdline):
+                value = arg.split("=", 1)[1] if "=" in arg else (cmdline[i + 1] if i + 1 < len(cmdline) else "")
+                if arg.split("=", 1)[0] in ("-c", "--ctx-size"):
+                    ctx = int(value)
+                if arg.split("=", 1)[0] in ("-np", "--parallel"):
+                    parallel = int(value)
+            return ctx // parallel if ctx > 0 and parallel is not None and parallel > 0 else None
+        except (ValueError, TypeError):
+            return None
+
+    def runtime_context(self):
+        try:
+            r = httpx.get(self.base_url() + "/props", headers=self.auth_headers(), timeout=2)
+            r.raise_for_status()
+            ctx = int(r.json()["default_generation_settings"]["n_ctx"])
+            return ctx if ctx > 0 else None
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return None
+
     def health(self, profile):
         try:
             r = httpx.get(self.base_url() + "/health", headers=self.auth_headers(), timeout=5)

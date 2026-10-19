@@ -461,7 +461,10 @@ def summary(st: dict) -> dict:
             w = rs.get("window") or {}
             g = (rs.get("live") or {}).get("gen_tps") or (w.get("1m") or {}).get("gen_tps") or (w.get("5m") or {}).get("gen_tps")
             running.append({"engine": e["name"], "profile": run["profile"], "state": run["state"], "port": e["port"],
-                            "gen_tps": g})
+                            "gen_tps": g, "context": run.get("context"),
+                            "context_source": run.get("context_source"),
+                            "launched_context": run.get("launched_context"),
+                            "configured_context": run.get("configured_context")})
     loads = [g["util_percent"] for g in gpus if g.get("util_percent") is not None]
     return {"running": running, "engines": len(st.get("engines") or []),
             "gen_tps": sum(x["gen_tps"] or 0 for x in running),

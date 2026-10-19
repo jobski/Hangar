@@ -280,12 +280,11 @@ class Roles:
         """Routing reads cached peer context; background supervision refreshes older peers."""
         key = (t["machine"], t["profile"])
         if not t["machine"]:
-            from . import clients
-            try:
-                entries = clients.model_entries(self.mgr, [t["profile"]], "127.0.0.1", include_custom=True)
-                return entries[0]["context"] if entries else None
-            except (KeyError, ValueError):
-                return None
+            with self.mgr.lock:
+                inst = next((i for i in self.mgr.instances.values() if i.profile == t["profile"]), None)
+                if inst and inst.context:
+                    return inst.context
+            return self.mgr._context(t["profile"])
         st = (self.peers.state.get(t["machine"]) or {}).get("status") or {}
         for engine in st.get("engines") or []:
             running = engine.get("running") or {}

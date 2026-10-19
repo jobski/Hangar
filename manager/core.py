@@ -106,6 +106,10 @@ class Instance:
     cpu_percent: float = 0.0
     gauges: dict = field(default_factory=dict)
     custom_profile: Profile | None = None
+    context: int | None = None
+    context_source: str | None = None
+    launched_context: int | None = None
+    context_checked: float = 0.0
     startup_pending: bool = False
     last_activity: float = field(default_factory=time.time)   # last time it generated or had a request running
     totals: dict = field(default_factory=lambda: collections.defaultdict(float))   # since this start
@@ -123,7 +127,8 @@ class Instance:
                 "session": self.session, "log_path": self.log_path, "ours": self.ours,
                 "baseline_vram": self.baseline_vram, "started": self.started, "ready": self.ready,
                 "custom_profile": dataclasses.asdict(self.custom_profile) if self.custom_profile else None,
-                "vram_isolated": self.vram_isolated}
+                "vram_isolated": self.vram_isolated, "context": self.context, "context_source": self.context_source,
+                "launched_context": self.launched_context}
 
 
 # ------------------------------------------------------------------------------------------------------ manager
@@ -752,6 +757,7 @@ class Manager:
 
     def _spawn(self, job: Job, eng: Engine, p: Profile):
         launch = eng.launch(self.effective(p))
+        launched_context = eng.launch_context(launch.cmd)
         log_path = self.logs_dir / f"{eng.name}.log"
         if log_path.exists() and log_path.stat().st_size > 50 * 2**20:
             log_path.replace(log_path.with_suffix(".old.log"))
@@ -784,6 +790,8 @@ class Manager:
         inst = Instance(engine=eng.name, profile=p.id, pid=proc.pid, create_time=psutil.Process(proc.pid).create_time(),
                         session=sid, log_path=str(log_path), ours=True, baseline_vram=baseline, popen=proc,
                         tracker=CounterTracker(count_first=True), startup_pending=True,
+                        context=launched_context, launched_context=launched_context,
+                        context_source="launch" if launched_context else None,
                         custom_profile=p if p.source == "custom" else None)
         with self.lock:
             inst.vram_isolated = isolated and not self.instances
@@ -972,8 +980,25 @@ class Manager:
                                 baseline_vram=d.get("baseline_vram", 0), started=d.get("started", time.time()),
                                 ready=d.get("ready"), state="ready" if d.get("ready") else "starting",
                                 tracker=CounterTracker(count_first=False), custom_profile=custom,
-                                vram_isolated=d.get("vram_isolated", False))
+                                vram_isolated=d.get("vram_isolated", False),
+                                context=d.get("context") if isinstance(d.get("context"), int) and d["context"] > 0 else None,
+                                context_source=d.get("context_source") if d.get("context_source") in ("launch", "runtime") else None,
+                                launched_context=d.get("launched_context") if isinstance(d.get("launched_context"), int) and d["launched_context"] > 0 else None)
                 if inst.alive():
+                    if not inst.launched_context:
+                        try:
+                            process = psutil.Process(inst.pid)
+                            try:
+                                cwd = process.cwd()
+                            except psutil.Error:
+                                cwd = None
+                            inst.launched_context = self.engines[name].process_context(
+                                process.cmdline(), inst.create_time, cwd)
+                            if not inst.context:
+                                inst.context = inst.launched_context
+                                inst.context_source = "launch" if inst.context else None
+                        except psutil.Error:
+                            pass
                     with self.lock:
                         if custom:
                             self.transient[custom.id] = self.profiles[custom.id] = custom
@@ -1015,6 +1040,12 @@ class Manager:
             if ok:
                 inst.ready, inst.state = time.time(), "ready"
                 self.store.session_ready(sid)
+            try:
+                cwd = owner.cwd()
+            except psutil.Error:
+                cwd = None
+            inst.context = inst.launched_context = eng.process_context(cmd, ctime, cwd)
+            inst.context_source = "launch" if inst.context else None
             self.store.event("adopt", f"found {pid} already running (pid {owner.pid}); now managed", name, pid)
             self._save_state()
 
@@ -1079,6 +1110,11 @@ class Manager:
                 if ok:
                     inst.ready, inst.state = time.time(), "ready"
                     self.store.session_ready(inst.session)
+            if inst.state == "ready" and time.time() - inst.context_checked >= 60:
+                ctx = eng.runtime_context()
+                inst.context_checked = time.time()
+                if ctx:
+                    inst.context, inst.context_source = ctx, "runtime"
             cur = eng.scrape() if inst.state == "ready" else None
             if cur is None:
                 continue
@@ -1249,7 +1285,10 @@ class Manager:
                                 "uptime_seconds": time.time() - inst.started, "ram_mib": inst.ram_mib,
                                 "cpu_percent": inst.cpu_percent, "vram_mib_est": self._instance_vram(inst),
                                 "vram_measured": inst.vram_measured,
-                                "context": self._context(inst.profile),
+                                "context": inst.context,
+                                "context_source": inst.context_source,
+                                "launched_context": inst.launched_context,
+                                "configured_context": self._context(inst.profile),
                                 "stats": self.live(inst),
                                 "vision": self._vision(name, inst.profile),
                                 "reasoning": self._reasoning_now(name) if inst.state == "ready" else None}
@@ -1275,11 +1314,20 @@ class Manager:
                 "roles": self.roles.public() if getattr(self, "roles", None) else []}
 
     def _context(self, profile: str):
-        from .clients import model_entries
+        from .engines.base import arg_value
         try:
-            entries = model_entries(self, [profile], "127.0.0.1", include_custom=True)
-            return entries[0]["context"] if entries else None
-        except (KeyError, ValueError):
+            p = self.profiles.get(profile)
+            eng = self.engines.get(p.engine) if p else None
+            if not eng:
+                return None
+            if eng.plugin == "llamacpp":
+                args = [str(a) for a in p.cfg.get("args", [])]
+                return eng.launch_context((["-c", str(p.cfg["ctx"])] if p.cfg.get("ctx") else []) + args)
+            value = (arg_value(eng._run_config(p).get("args", []), "--max-context")
+                     if eng.plugin == "strata" else p.cfg.get("ctx"))
+            ctx = int(value or 0)
+            return ctx if ctx > 0 else None
+        except (KeyError, TypeError, ValueError):
             return None
 
     def profiles_public(self) -> list[dict]:
