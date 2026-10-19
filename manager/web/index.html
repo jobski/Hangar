@@ -1376,38 +1376,9 @@ async function renderMachines() {
         `<span class="small muted">Wake-on-LAN</span><span class="tag ${w.auto ? "ok" : ""}" data-act="mwakeauto" data-name="${esc(p.name)}" data-on="${w.auto ? 0 : 1}" role="button" style="cursor:pointer"
           title="${w.auto ? "woken when a role request needs it; click to turn off" : "click to wake it when a role request needs it"}">${w.auto ? "on request" : "off"}</span>`;
     };
-    $("#fleet").innerHTML = `<div class="pair" id="pairblock" style="grid-column:1/-1">
-        <div class="pc"><div class="pt"><span class="n">1</span>On the machine you want to add</div>
-          <p>On that machine's dashboard, press <b>Copy code</b> in this same panel. This machine's own code is right here.</p>
-          <div class="codebox"><span class="c" id="mycode">…</span><button class="btn sm primary" data-act="copycode">${ICON.copy}Copy code</button></div>
-          <div class="pairinfo" id="mycodeinfo"></div></div>
-        <div class="pc"><div class="pt"><span class="n">2</span>On the machine that should see it</div>
-          <p>Paste that code here. Hangar tries each of its addresses and keeps the first one that answers.</p>
-          <textarea id="pastecode" class="input code" placeholder="hangar-pair:…" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
-          <div class="pairinfo" id="pasteinfo"></div>
-          <div class="row"><label class="chk"><input type="checkbox" id="pasteboth" checked> also add this machine there</label><span class="sp"></span><button class="btn primary" data-act="pastego">Add machine</button></div></div>
-      </div>`;
-      $("#pastecode").oninput = () => { $("#pasteinfo").innerHTML = codeInfo($("#pastecode").value); };
-      loadMyCode().catch(() => { });
-    }
-    return;
-  }
-  if (PEERS.length) {
-    const wakeCtl = p => {
-      const w = p.wake || {};
-      if (!w.known) return "";
-      return (p.online ? "" : `<span class="btn sm" data-act="mwake" data-name="${esc(p.name)}" role="button" title="send a wake-on-LAN packet">Wake</span>`) +
-        `<span class="small muted">Wake-on-LAN</span><span class="tag ${w.auto ? "ok" : ""}" data-act="mwakeauto" data-name="${esc(p.name)}" data-on="${w.auto ? 0 : 1}" role="button" style="cursor:pointer"
-          title="${w.auto ? "woken when a role request needs it; click to turn off" : "click to wake it when a role request needs it"}">${w.auto ? "on request" : "off"}</span>`;
-    };
     const gpuBars = gl => gl.map(g => { const p = g.vram_total_mib ? g.vram_used_mib / g.vram_total_mib * 100 : 0;
-      const free = g.vram_free_mib ?? Math.max(0, (g.vram_total_mib || 0) - (g.vram_used_mib || 0));
-      const metrics = [g.util_percent == null ? "" : `load ${pc(g.util_percent)}`,
-        g.temp_c == null ? "" : `temp ${g.temp_c.toFixed(0)}°C`, `free ${mib(free)}`,
-        g.power_w == null ? "" : `power ${watts(g.power_w)} W`].filter(Boolean).join(" · ");
-      return `<div class="small muted num" style="display:flex;gap:8px;margin-top:5px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((g.name || "GPU").replace(/^NVIDIA (GeForce )?/, ""))}</span><span>${mib(g.vram_used_mib)} / ${mib(g.vram_total_mib)}</span></div>
-        <div class="bar thin ${pctCls(p)}" style="margin-top:3px"><i style="width:${p}%"></i></div>
-        <div class="small muted num" style="margin-top:4px" title="${g.unified ? "Shared memory: free is the remaining Metal memory budget" : "GPU readings"}">${metrics}</div>`; }).join("");
+      return `<div class="small muted num" style="display:flex;gap:8px;margin-top:5px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((g.name || "GPU").replace(/^NVIDIA (GeForce )?/, ""))}</span><span>${mib(g.vram_used_mib)} / ${mib(g.vram_total_mib)}${g.util_percent != null ? ` · ${pc(g.util_percent)}` : ""}</span></div>
+        <div class="bar thin ${pctCls(p)}" style="margin-top:3px"><i style="width:${p}%"></i></div>`; }).join("");
     const card = (name, os, online, sm, err, isSelf, src, peer) => {
       const vp = sm && sm.vram_total_mib ? sm.vram_used_mib / sm.vram_total_mib * 100 : 0;
       if (online && sm && sm.engines === 0)        // a hub: no models of its own, left out of the totals above
@@ -1419,8 +1390,8 @@ async function renderMachines() {
       return `<button class="mcd ${online ? "" : "off"} ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
         <div class="mh2"><span class="dot ${online ? "ok" : "bad"}"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="sp"></span>
           ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
-        ${online && sm ? `<div class="run"><span>${runline(sm)}</span>${(sm.gpu_list || []).length ? "" : sm.gpu ? `<span class="small muted">${esc(sm.gpu)}</span>` : ""}</div>
-          ${(sm.gpu_list || []).length ? gpuBars(sm.gpu_list) : `<div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div>`}<div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""}${!(sm.gpu_list || []).length && sm.gpu_util_percent != null ? ` · load ${pc(sm.gpu_util_percent)}` : ""}</div>`
+        ${online && sm ? `<div class="run"><span>${runline(sm)}</span>${(sm.gpu_list || []).length > 1 ? "" : sm.gpu ? `<span class="small muted">${esc(sm.gpu)}</span>` : ""}</div>
+          ${(sm.gpu_list || []).length > 1 ? gpuBars(sm.gpu_list) : `<div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div>`}<div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""}${sm.gpu_util_percent != null ? ` · load ${pc(sm.gpu_util_percent)}` : ""}</div>`
           : `<div class="run bad-t">${esc(err || "offline")}</div>`}${peer && (peer.wake || {}).known ? `<div class="row small" style="margin-top:6px;gap:6px">${wakeCtl(peer)}</div>` : ""}</button>`;
     };
     $("#fleet").innerHTML = card(SELF.name, SELF.os, true, SELF.summary, null, true) + PEERS.map(p => card(p.name, (p.machine || {}).os, p.online, p.summary, p.error, false, p.source, p)).join("");
