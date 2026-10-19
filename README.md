@@ -23,6 +23,10 @@ command line.
 - **Stats.** Live tok/s, tokens, requests, VRAM/RAM/CPU and context limits for running engines, plus totals for today,
   this week, this month, this year and all time. Gateway usage can be filtered by client, device, engine, role/model,
   machine, profile and result. Engine runtime remains available separately, including traffic sent directly to engines.
+  GPU temperatures come from NVIDIA's driver. CPU and RAM temperatures appear when identified sensors are available
+  through psutil on Linux/FreeBSD, or a running [Libre Hardware Monitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
+  or Open Hardware Monitor WMI provider on Windows. Each shows the hottest available sensor in °C; missing readings
+  are hidden. Hangar does not install monitoring software, and not every RAM module exposes a temperature sensor.
 - **Models.** A library folder (`E:\models`, one folder per model) and a downloader for **Hugging Face** (search, pick
   a quant), **ModelScope**, the **Ollama library** (its model files are plain GGUFs) and **any URL**. Interrupted
   downloads resume, and aria2c is used for parallel connections when it is installed. A finished download can become

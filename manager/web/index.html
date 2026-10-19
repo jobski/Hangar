@@ -630,13 +630,15 @@ function renderStatus(s) {
   }
   if (!r.gpus.length) m += `<div class="gauge"><div class="small muted">${s.engines.length ? "No NVIDIA GPU found (nvidia-smi)." : "No GPU here, and no engines: this machine passes requests on to the others."}</div></div>`;
   const rp = ramUsed / r.ram_total_mib * 100;
-  v += `<div class="vital"><span class="k">RAM</span><span class="mini ram ${rp > 95 ? "hot" : ""}"><i style="width:${rp}%"></i></span><span class="v">${gb(ramUsed)}/${gb(r.ram_total_mib)}G</span></div>
-        <div class="vital opt"><span class="k">CPU</span><span class="mini cpu"><i style="width:${r.cpu_percent}%"></i></span><span class="v">${r.cpu_percent.toFixed(0)}%</span></div>`;
+  const tempVital = value => value == null ? "" : ` · ${value.toFixed(0)}°C`;
+  const tempDetail = value => value == null ? "" : `<span title="Highest available sensor reading">temp <b>${value.toFixed(0)}°C</b></span>`;
+  v += `<div class="vital"><span class="k">RAM</span><span class="mini ram ${rp > 95 ? "hot" : ""}"><i style="width:${rp}%"></i></span><span class="v">${gb(ramUsed)}/${gb(r.ram_total_mib)}G${tempVital(r.ram_temp_c)}</span></div>
+        <div class="vital opt"><span class="k">CPU</span><span class="mini cpu"><i style="width:${r.cpu_percent}%"></i></span><span class="v">${r.cpu_percent.toFixed(0)}%${tempVital(r.cpu_temp_c)}</span></div>`;
   m += `<div class="gauge"><div class="gh"><span class="gl">RAM</span><span class="gv">${gb(ramUsed)}<small> / ${gb(r.ram_total_mib)} GB</small></span></div>
       <div class="bar ram ${pctCls(rp)}"><i style="width:${rp}%"></i></div>
-      <div class="gs"><span>available <b>${mib(r.ram_available_mib)}</b></span>${r.swap_used_mib > 512 ? `<span class="warn-t">swap <b class="warn-t">${mib(r.swap_used_mib)}</b></span>` : ""}</div></div>
+      <div class="gs"><span>available <b>${mib(r.ram_available_mib)}</b></span>${tempDetail(r.ram_temp_c)}${r.swap_used_mib > 512 ? `<span class="warn-t">swap <b class="warn-t">${mib(r.swap_used_mib)}</b></span>` : ""}</div></div>
     <div class="gauge"><div class="gh"><span class="gl">CPU</span><span class="gn">${r.cpu_count} threads</span><span class="gv">${r.cpu_percent.toFixed(0)}<small>%</small></span></div>
-      <div class="bar cpu"><i style="width:${r.cpu_percent}%"></i></div></div>`;
+      <div class="bar cpu"><i style="width:${r.cpu_percent}%"></i></div>${r.cpu_temp_c == null ? "" : `<div class="gs">${tempDetail(r.cpu_temp_c)}</div>`}</div>`;
   const bg = s.budget || {};
   if (bg.budget_mib) {
     const bp = Math.min(100, bg.used_mib / bg.budget_mib * 100);

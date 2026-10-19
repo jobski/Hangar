@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import platform
+import math
 import re
 from pathlib import Path
 import shutil
@@ -133,6 +134,76 @@ def cpu_percent() -> float:
 
 
 _cpu_sample = 0.0
+_temperature_cache: tuple[float, dict] = (0.0, {})
+_temperature_lock = threading.Lock()
+
+
+def _temperature_kind(source: str, label: str) -> str | None:
+    """Only attribute identified sensors; motherboard/ACPI zones are not CPU readings."""
+    name = f"{source} {label}".lower()
+    if "gpu" in name:
+        return None
+    if re.search(r"\b(dimm\w*|sodimm\w*|dram|ram|memory|jc42|spd5118)\b", name):
+        return "ram"
+    if re.search(r"\b(cpu\w*|amdcpu|intelcpu|coretemp|k10temp|zenpower|tctl|tdie)\b", name):
+        return "cpu"
+    return None
+
+
+def _windows_temperatures() -> list[tuple[str, str, float]]:
+    """Read existing Libre/Open Hardware Monitor WMI providers; never install or start one."""
+    try:
+        import pythoncom
+        import pywintypes
+        from win32com.client import GetObject
+    except ImportError:
+        return []
+    rows = []
+    pythoncom.CoInitialize()
+    try:
+        for namespace in ("LibreHardwareMonitor", "OpenHardwareMonitor"):
+            try:
+                service = GetObject(rf"winmgmts:\\.\root\{namespace}")
+                for sensor in service.ExecQuery("SELECT Parent, Name, Value FROM Sensor WHERE SensorType = 'Temperature'"):
+                    rows.append((str(sensor.Parent), str(sensor.Name), sensor.Value))
+            except pywintypes.com_error:
+                continue
+            if rows:
+                break
+    finally:
+        pythoncom.CoUninitialize()
+    return rows
+
+
+def temperatures() -> dict:
+    """Hottest identified CPU/RAM sensor in Celsius; unavailable readings stay None."""
+    global _temperature_cache
+    with _temperature_lock:
+        now = time.monotonic()
+        if _temperature_cache[1] and now - _temperature_cache[0] < 5:
+            return dict(_temperature_cache[1])
+        rows = []
+        if sys.platform == "win32":
+            rows = _windows_temperatures()
+        else:
+            try:
+                read = getattr(psutil, "sensors_temperatures", None)
+                for source, sensors in (read() if read else {}).items():
+                    rows.extend((source, sensor.label, sensor.current) for sensor in sensors)
+            except (OSError, RuntimeError, NotImplementedError):
+                pass
+        result = {"cpu_temp_c": None, "ram_temp_c": None}
+        for source, label, value in rows:
+            kind = _temperature_kind(source, label)
+            try:
+                value = float(value)
+            except (ValueError, TypeError):
+                continue
+            if kind and math.isfinite(value) and 0 < value < 150:
+                key = kind + "_temp_c"
+                result[key] = max(result[key] or value, value)
+        _temperature_cache = (time.monotonic(), result)
+        return dict(result)
 
 
 def snapshot(sample_cpu: bool = True) -> dict:
@@ -150,6 +221,7 @@ def snapshot(sample_cpu: bool = True) -> dict:
         "swap_used_mib": sw.used / 2**20,
         "cpu_percent": _cpu_sample,
         "cpu_count": psutil.cpu_count(),
+        **temperatures(),
     }
 
 
