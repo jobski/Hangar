@@ -166,6 +166,15 @@ class StrataEngine(Engine):
         key = key.split(",")[0].strip()
         return {"Authorization": f"Bearer {key}"} if key else {}
 
+    def runtime_context(self):
+        try:
+            r = httpx.get(self.base_url() + "/health", headers=self.auth_headers(), timeout=2)
+            r.raise_for_status()
+            ctx = int(r.json()["max_context"])
+            return ctx if ctx > 0 else None
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return None
+
     def health(self, profile):
         try:
             r = httpx.get(self.base_url() + "/health", headers=self.auth_headers(), timeout=5)
