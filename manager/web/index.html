@@ -291,15 +291,43 @@ dialog .dh b { font-size: 14.5px; font-weight: 650; }
 .remotebar { display: flex; align-items: center; gap: 10px; padding: 7px 18px; font-size: 12.5px; color: var(--ink2); background: color-mix(in srgb, var(--s3) 13%, var(--bg)); border-bottom: 1px solid color-mix(in srgb, var(--s3) 35%, var(--line)); position: sticky; top: var(--top); z-index: 25; }
 .remotebar b { color: var(--ink); }
 .fleet { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 1px; background: var(--line); }
-.mcd { display: grid; grid-row: span 5; grid-template-rows: subgrid; row-gap: 0; align-items: start; background: var(--panel); padding: 13px 16px; cursor: pointer; min-width: 0; text-align: left; border: 0; color: inherit; font: inherit; }
+.mcd { position: relative; display: grid; grid-row: span 5; grid-template-rows: subgrid; row-gap: 0; align-items: start; background: var(--panel); padding: 18px; min-width: 0; text-align: left; color: inherit; }
 .mcd:hover { background: var(--panel2); }
-.mcd.on { box-shadow: inset 0 2px 0 var(--accent); }
-.mcd .mh2 { grid-row: 1; min-height: 24px; display: flex; align-items: center; gap: 8px; font-weight: 650; }
-.mcd .run { grid-row: 2; min-width: 0; overflow-wrap: anywhere; margin-top: 8px; font-size: 12.5px; color: var(--ink2); display: grid; gap: 3px; }
+.mcd.on { background: color-mix(in srgb, var(--accent) 4%, var(--panel)); box-shadow: inset 0 2px 0 var(--accent); }
+.mcd .mh2 { grid-row: 1; min-height: 28px; display: flex; align-items: center; gap: 8px; }
+.machine-select { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+.machine-select::after { content: ""; position: absolute; inset: 0; z-index: 1; }
+.machine-select:focus-visible::after { outline: 2px solid var(--accent); outline-offset: -3px; }
+.machine-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.mcd .machine-select .tag { font-size: 10.5px; padding: 1px 5px; flex: none; }
+.machine-actions { position: relative; z-index: 3; margin-left: auto; }
+.machine-actions summary { list-style: none; padding: 0 5px; color: var(--muted); font-size: 20px; cursor: pointer; }
+.machine-actions summary::-webkit-details-marker { display: none; }
+.machine-actions .machine-menu { position: absolute; right: 0; top: 100%; min-width: 150px; padding: 5px; border: 1px solid var(--line2); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
+.machine-menu button { width: 100%; text-align: left; }
+.mcd .run { grid-row: 2; min-width: 0; margin-top: 9px; font-size: 12.5px; color: var(--ink2); display: grid; gap: 8px; }
+.machine-profile { min-width: 0; }
+.machine-profile-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.machine-profile-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; margin-top: 5px; font-size: 11.5px; }
+.machine-profile-meta .tag { font-size: 10.5px; }
 .mcd .run .num { color: var(--accent); }
-.mcd .machine-gpus { grid-row: 3; min-width: 0; margin-top: 5px; }
-.mcd .machine-resources { grid-row: 4; margin-top: 6px; }
-.mcd .machine-wake { grid-row: 5; margin-top: 8px; gap: 6px; }
+.mcd .machine-gpus { grid-row: 3; min-width: 0; margin-top: 14px; padding-bottom: 16px; }
+.machine-gpu + .machine-gpu { margin-top: 12px; }
+.machine-gpu-line { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--muted); }
+.machine-gpu-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.machine-gpu-value { flex: none; font-variant-numeric: tabular-nums; }
+.machine-gpu .bar { margin-top: 5px; height: 4px; }
+.machine-gpu-note { margin-top: 5px; font-size: 11.5px; color: var(--muted); }
+.machine-gateway { color: var(--muted); font-size: 12px; }
+.machine-peer { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 11.5px; }
+.machine-peer .dot { width: 5px; height: 5px; }
+.mcd .machine-resources { grid-row: 4; border-top: 1px solid var(--line); padding-top: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 12px; align-content: start; }
+.machine-resource-label { color: var(--muted); font-size: 11.5px; margin-bottom: 3px; }
+.machine-resource-value { font-size: 12.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.machine-resource-value small { font-size: 11.5px; color: var(--muted); }
+.mcd .machine-wake { grid-row: 5; margin-top: 14px; gap: 7px; min-height: 20px; font-size: 11.5px; color: var(--muted); }
+.machine-wake button { position: relative; z-index: 2; }
+.machine-wake .tag { border: 0; background: none; padding: 0; font-size: inherit; }
 .mcd.off { opacity: .7; }
 .fsum { padding: 14px 16px; border-bottom: 1px solid var(--line); }
 .fsum .stats { margin-top: 0; }
@@ -1375,29 +1403,40 @@ async function renderMachines() {
     const wakeCtl = p => {
       const w = p.wake || {};
       if (!w.known) return "";
-      return (p.online ? "" : `<span class="btn sm" data-act="mwake" data-name="${esc(p.name)}" role="button" title="send a wake-on-LAN packet">Wake</span>`) +
-        `<span class="small muted">Wake-on-LAN</span><span class="tag ${w.auto ? "ok" : ""}" data-act="mwakeauto" data-name="${esc(p.name)}" data-on="${w.auto ? 0 : 1}" role="button" style="cursor:pointer"
-          title="${w.auto ? "woken when a role request needs it; click to turn off" : "click to wake it when a role request needs it"}">${w.auto ? "on request" : "off"}</span>`;
+      return (p.online ? "" : `<button type="button" class="btn sm" data-act="mwake" data-name="${esc(p.name)}" title="Send a wake-on-LAN packet">Wake</button>`) +
+        `<span>Wake-on-LAN</span><button type="button" class="tag ${w.auto ? "ok" : ""}" data-act="mwakeauto" data-name="${esc(p.name)}" data-on="${w.auto ? 0 : 1}" style="cursor:pointer"
+          title="${w.auto ? "Woken when a role request needs it; click to turn off" : "Click to wake it when a role request needs it"}">${w.auto ? "On request" : "Off"}</button>`;
     };
     const gpuBars = gl => gl.map(g => { const p = g.vram_total_mib ? g.vram_used_mib / g.vram_total_mib * 100 : 0;
-      return `<div class="small muted num" style="display:flex;gap:8px;margin-top:5px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((g.name || "GPU").replace(/^NVIDIA (GeForce )?/, ""))}</span><span>${mib(g.vram_used_mib)} / ${mib(g.vram_total_mib)}${g.util_percent != null ? ` · ${pc(g.util_percent)}` : ""}</span></div>
-        <div class="bar thin ${pctCls(p)}" style="margin-top:3px"><i style="width:${p}%"></i></div>`; }).join("");
+      return `<div class="machine-gpu"><div class="machine-gpu-line"><span class="machine-gpu-name">${esc((g.name || "GPU").replace(/^NVIDIA (GeForce )?/, "").replace(/ \(unified memory\)$/, ""))}</span><span class="machine-gpu-value">${mib(g.vram_used_mib)} / ${mib(g.vram_total_mib)}${g.util_percent != null ? ` · ${pc(g.util_percent)}` : ""}</span></div>
+        <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>${g.unified ? `<div class="machine-gpu-note">Unified memory</div>` : ""}</div>`; }).join("");
+    const metric = (label, value) => `<div><div class="machine-resource-label">${label}</div><div class="machine-resource-value">${value}</div></div>`;
+    const memory = (used, total) => `${mib(used)} <small>/ ${mib(total)}</small>`;
+    const modelLine = sm => (sm.running || []).length ? sm.running.map(r => `<div class="machine-profile"><div class="machine-profile-name">${esc(r.profile)}</div><div class="machine-profile-meta">${contextBadge(r)}${r.gen_tps ? `<span class="num">${r.gen_tps.toFixed(1)} tok/s</span>` : ""}</div></div>`).join("") : `<span class="muted">Idle</span>`;
     const card = (name, os, online, sm, err, isSelf, src, peer) => {
-      const vp = sm && sm.vram_total_mib ? sm.vram_used_mib / sm.vram_total_mib * 100 : 0;
-      if (online && sm && sm.engines === 0)        // a hub: no models of its own, left out of the totals above
-        return `<button class="mcd ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
-          <div class="mh2"><span class="gwi sm">${ICON.relay}</span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="tag info">hub</span><span class="sp"></span>
-            ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
-          <div class="run"><span class="muted">${isSelf && !MACHINE && GW ? `${num(GW.sum.total.requests)} requests today · ${num(GW.sum.total.gen_tokens)} tokens out` : "passes requests on to the others"}</span></div>
-          <div class="machine-resources small muted num">${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""} · not counted in the totals</div></button>`;
-      return `<button class="mcd ${online ? "" : "off"} ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
-        <div class="mh2"><span class="dot ${online ? "ok" : "bad"}"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="sp"></span>
-          ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
-        ${online && sm ? `<div class="run"><span>${runline(sm)}</span></div>
-          <div class="machine-gpus">${(sm.gpu_list || []).length > 1 ? gpuBars(sm.gpu_list) : `${sm.gpu ? `<div class="small muted">${esc(sm.gpu)}</div>` : ""}<div class="bar thin ${pctCls(vp)}" style="margin-top:3px"><i style="width:${vp}%"></i></div>`}</div><div class="machine-resources small muted num">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""}${sm.gpu_util_percent != null ? ` · load ${pc(sm.gpu_util_percent)}` : ""}</div>`
-          : `<div class="run bad-t">${esc(err || "offline")}</div>`}${peer && (peer.wake || {}).known ? `<div class="machine-wake row small">${wakeCtl(peer)}</div>` : ""}</button>`;
+      const hub = online && sm && sm.engines === 0;
+      const selected = (MACHINE || SELF.name) === name;
+      const profiles = (sm?.running || []).map(r => r.profile).join(", ");
+      const header = `<div class="mh2"><button type="button" class="machine-select" data-machine="${isSelf ? "" : esc(name)}" aria-pressed="${selected}" title="${esc(`View ${name}${profiles ? ": " + profiles : ""}`)}"><span class="dot ${online ? "ok" : "bad"}"></span><span class="machine-name">${esc(name)}</span><span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}</button>
+        ${!isSelf && src === "managed" ? `<details class="machine-actions" data-machine-menu="${esc(name)}"><summary aria-label="Options for ${esc(name)}">⋯</summary><div class="machine-menu"><button type="button" class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}">Remove machine</button></div></details>` : ""}</div>`;
+      let body;
+      if (hub) {
+        const connected = isSelf ? PEERS.filter(p => p.online).map(p => p.name) : [];
+        body = `<div class="run"><div class="machine-profile"><div class="machine-profile-name">Gateway</div><div class="machine-profile-meta muted">Routes requests to your servers</div></div></div>
+          <div class="machine-gpus machine-gateway">${connected.length ? `Connected servers${connected.map(n => `<div class="machine-peer"><span class="dot ok"></span>${esc(n)}</div>`).join("")}` : "No local inference engine"}</div>
+          <div class="machine-resources">${metric("Memory", memory(sm.ram_used_mib, sm.ram_total_mib))}${metric("CPU", pc(sm.cpu_percent))}</div><div class="machine-wake">Excluded from fleet resource totals</div>`;
+      } else if (online && sm) {
+        const gl = sm.gpu_list?.length ? sm.gpu_list : sm.gpu ? [{ name: sm.gpu, vram_used_mib: sm.vram_used_mib, vram_total_mib: sm.vram_total_mib, util_percent: sm.gpu_util_percent, unified: sm.unified }] : [];
+        body = `<div class="run">${modelLine(sm)}</div><div class="machine-gpus">${gpuBars(gl)}</div>
+          <div class="machine-resources">${metric("GPU memory", gl.length ? memory(sm.vram_used_mib, sm.vram_total_mib) : "–")}${metric("RAM", memory(sm.ram_used_mib, sm.ram_total_mib))}${metric("CPU", pc(sm.cpu_percent))}${metric("GPU load", pc(sm.gpu_util_percent))}</div>`;
+      } else {
+        body = `<div class="run bad-t">${esc(err || "Offline")}</div>`;
+      }
+      return `<article class="mcd ${online ? "" : "off"} ${selected ? "on" : ""}">${header}${body}${!hub && peer && (peer.wake || {}).known ? `<div class="machine-wake row">${wakeCtl(peer)}</div>` : ""}</article>`;
     };
+    const openMenus = new Set([...$("#fleet").querySelectorAll("details[open]")].map(d => d.dataset.machineMenu));
     $("#fleet").innerHTML = card(SELF.name, SELF.os, true, SELF.summary, null, true) + PEERS.map(p => card(p.name, (p.machine || {}).os, p.online, p.summary, p.error, false, p.source, p)).join("");
+    $("#fleet").querySelectorAll("details[data-machine-menu]").forEach(d => { d.open = openMenus.has(d.dataset.machineMenu); });
     $("#fleetmeta").textContent = `${PEERS.filter(p => p.online).length + 1} of ${PEERS.length + 1} online`;
   }
   renderFleet(res.fleet);
