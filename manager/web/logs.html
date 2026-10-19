@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hangar · log</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0e12; --panel: #13171d; --panel2: #181d24; --line: #222932; --line2: #2c343f;
+      --ink: #e6eaf0; --ink2: #b7c0cc; --muted: #7d8794; --faint: #4c5562;
+      --accent: #3ee6a0; --accent-dim: rgba(62, 230, 160, .14); --accent-ink: #04130c;
+      --ok: #3ee6a0; --warn: #f5b041; --bad: #ff6b6b;
+      --warn-dim: rgba(245, 176, 65, .13); --bad-dim: rgba(255, 107, 107, .13);
+      --sans: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+      --mono: "JetBrains Mono", "Cascadia Code", "Cascadia Mono", Consolas, monospace;
+      color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f3f5f8; --panel: #ffffff; --panel2: #f7f9fb; --line: #e1e5eb; --line2: #d3d9e1;
+        --ink: #121820; --ink2: #3a4552; --muted: #69737f; --faint: #a3acb7;
+        --accent: #0f9d6b; --accent-dim: rgba(15, 157, 107, .1); --accent-ink: #fff;
+        --ok: #0f9d6b; --warn: #b7700a; --bad: #d63c3c;
+        --warn-dim: rgba(183, 112, 10, .1); --bad-dim: rgba(214, 60, 60, .09);
+        color-scheme: light;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { display: flex; flex-direction: column; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+    .bar { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+    .bar b { font-size: 14.5px; font-weight: 650; }
+    .sp { flex: 1; }
+    .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; background: var(--panel); }
+    .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: var(--accent-dim); }
+    .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: var(--bad-dim); }
+    .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: var(--warn-dim); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
+    .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--accent-dim), 0 0 10px var(--ok); animation: pulse 2.2s infinite; }
+    .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-dim); animation: pulse 1s infinite; }
+    .dot.bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-dim); }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 27px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--line2); background: var(--panel2); color: var(--ink); font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+    .btn:hover { border-color: var(--muted); }
+    .term { flex: 1; background: #07090c; color: #c9d3de; border: 0; border-top: 1px solid var(--line); margin: 0; padding: 12px 14px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 12px/1.6 var(--mono); }
+    @media (prefers-color-scheme: light) { .term { background: #0e1217; color: #d3dbe4; } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <b id="title">log</b>
+    <span id="state" class="pill"></span>
+    <span class="sp"></span>
+    <button class="btn" id="pause">Pause</button>
+    <button class="btn" id="copy">Copy</button>
+  </div>
+  <pre class="term" id="logpre"></pre>
+  <script>
+    const $ = s => document.querySelector(s);
+    const P = new URLSearchParams(location.search);
+    const engine = P.get("engine") || "";
+    const machine = P.get("machine") || "";
+    const TOKEN = P.get("token") || "";
+    const LOG_MAX = 5000;
+    let logAbort = null, logPaused = false, logPending = "";
+
+    document.title = (machine ? machine + " · " : "") + engine + " · log";
+    $("#title").textContent = machine ? machine + " · " + engine : engine;
+
+    function logState(txt, cls) { $("#state").innerHTML = `<span class="dot ${cls}"></span>${txt}`; }
+    function flushLog() {
+      const pre = $("#logpre");
+      if (!pre || !logPending) return;
+      const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+      let text = pre.textContent + logPending;
+      logPending = "";
+      const lines = text.split("\n");
+      if (lines.length > LOG_MAX) text = lines.slice(-LOG_MAX).join("\n");
+      pre.textContent = text;
+      if (atEnd) pre.scrollTop = pre.scrollHeight;
+    }
+    // Mirror the dashboard's route(): a peer's log is proxied through this host.
+    const path = machine
+      ? `/api/peers/${encodeURIComponent(machine)}/api/logs/${encodeURIComponent(engine)}/stream?lines=400`
+      : `/api/logs/${encodeURIComponent(engine)}/stream?lines=400`;
+
+    async function stream() {
+      if (!engine || !TOKEN) { logState("no token", "bad"); return; }
+      logState("live", "ok");
+      const ctl = logAbort = new AbortController();
+      try {
+        const r = await fetch(path, { headers: { "Authorization": "Bearer " + TOKEN }, signal: ctl.signal, cache: "no-store" });
+        if (!r.ok) throw new Error((await r.text()) || r.statusText);
+        const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          logPending += value;
+          if (logPending.length > 4e6) logPending = logPending.slice(-2e6);
+          if (!logPaused) flushLog();
+        }
+        if (logAbort === ctl) logState("ended", "");
+      } catch (err) {
+        if (err.name !== "AbortError" && logAbort === ctl) logState("disconnected", "bad");
+      }
+    }
+
+    $("#pause").onclick = () => {
+      logPaused = !logPaused;
+      $("#pause").textContent = logPaused ? "Resume" : "Pause";
+      logState(logPaused ? "paused" : "live", logPaused ? "warn" : "ok");
+      if (!logPaused) flushLog();
+    };
+    $("#copy").onclick = () => navigator.clipboard.writeText($("#logpre").textContent);
+
+    stream();
+  </script>
+</body>
+</html>

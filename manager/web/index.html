@@ -626,6 +626,7 @@ const ICON = {
   restart: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
   logs: '<svg viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 17h7"/></svg>',
   copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>',
+  popout: '<svg viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg>',
   info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
   eye: '<svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
   warn: '<svg viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>',
@@ -1219,7 +1220,7 @@ function flushLog() {
 function logState(txt, cls) { const s = $("#logstate"); if (s) { s.innerHTML = `<span class="dot ${cls}"></span>${txt}`; } }
 async function streamLog(engine) {
   dialog(`${engine} · log`, `<div class="row" style="margin-bottom:10px"><span id="logstate" class="pill"></span><span class="sp"></span>
-      <button class="btn sm" data-act="logpause">Pause</button><button class="btn sm" data-act="logcopy">${ICON.copy}Copy</button></div>
+      <button class="btn sm" data-act="logpause">Pause</button><button class="btn sm" data-act="logcopy">${ICON.copy}Copy</button><button class="btn sm" data-act="logpop" data-e="${esc(engine)}" title="Move this log to its own window">${ICON.popout}Pop out</button></div>
     <pre class="term tall" id="logpre"></pre>`, true);
   logPaused = false; logPending = "";
   logState("live", "ok");
@@ -1239,6 +1240,13 @@ async function streamLog(engine) {
   } catch (err) {
     if (err.name !== "AbortError" && logAbort === ctl) logState("disconnected", "bad");
   }
+}
+// Move the live log out of the dialog into its own browser window (it keeps streaming there).
+function popoutLog(engine) {
+  const p = new URLSearchParams({ engine, token: TOKEN });
+  if (MACHINE) p.set("machine", MACHINE);
+  const w = window.open("/logs?" + p, "_blank", "width=1000,height=780");
+  if (w) { stopLog(); $("#dlg").close(); } else toast("Pop-up blocked — allow pop-ups for this site", true);
 }
 
 async function startProfile(id) {
@@ -1352,6 +1360,7 @@ document.addEventListener("click", async ev => {
     if (act === "gwinfo") return gatewayDialog();
     if (act === "logpause") { logPaused = !logPaused; b.textContent = logPaused ? "Resume" : "Pause"; logState(logPaused ? "paused" : "live", logPaused ? "warn" : "ok"); if (!logPaused) flushLog(); return; }
     if (act === "logcopy") return copyText($("#logpre").textContent);
+    if (act === "logpop") return popoutLog(e);
     const confirmMsg = { stop: `Stop ${e}?`, restart: `Restart ${e}?`, update: `Update ${e}? It stops while updating and starts again after.`, rollback: `Roll ${e} back to its previous version?` }[act];
     if (confirmMsg && !confirm(confirmMsg)) return;
     const j = await post(`/api/${act}`, { engine: e });

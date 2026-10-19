@@ -109,6 +109,10 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     def favicon():
         return FileResponse(WEB / "favicon.svg")
 
+    @app.get("/logs", include_in_schema=False)
+    def logs_window():
+        return FileResponse(WEB / "logs.html", headers={"Cache-Control": "no-cache"})
+
     @app.get("/api/ping")
     def ping():
         return {"ok": True, "service": "hangar"}
