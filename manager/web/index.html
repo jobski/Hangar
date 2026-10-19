@@ -1377,13 +1377,8 @@ async function renderMachines() {
           title="${w.auto ? "woken when a role request needs it; click to turn off" : "click to wake it when a role request needs it"}">${w.auto ? "on request" : "off"}</span>`;
     };
     const gpuBars = gl => gl.map(g => { const p = g.vram_total_mib ? g.vram_used_mib / g.vram_total_mib * 100 : 0;
-      const free = g.vram_free_mib ?? Math.max(0, (g.vram_total_mib || 0) - (g.vram_used_mib || 0));
-      const metrics = [g.util_percent == null ? "" : `load ${pc(g.util_percent)}`,
-        g.temp_c == null ? "" : `temp ${g.temp_c.toFixed(0)}°C`, `free ${mib(free)}`,
-        g.power_w == null ? "" : `power ${watts(g.power_w)} W`].filter(Boolean).join(" · ");
-      return `<div class="small muted num" style="display:flex;gap:8px;margin-top:5px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((g.name || "GPU").replace(/^NVIDIA (GeForce )?/, ""))}</span><span>${mib(g.vram_used_mib)} / ${mib(g.vram_total_mib)}</span></div>
-        <div class="bar thin ${pctCls(p)}" style="margin-top:3px"><i style="width:${p}%"></i></div>
-        <div class="small muted num" style="margin-top:4px" title="${g.unified ? "Shared memory: free is the remaining Metal memory budget" : "GPU readings"}">${metrics}</div>`; }).join("");
+      return `<div class="small muted num" style="display:flex;gap:8px;margin-top:5px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((g.name || "GPU").replace(/^NVIDIA (GeForce )?/, ""))}</span><span>${mib(g.vram_used_mib)} / ${mib(g.vram_total_mib)}${g.util_percent != null ? ` · ${pc(g.util_percent)}` : ""}</span></div>
+        <div class="bar thin ${pctCls(p)}" style="margin-top:3px"><i style="width:${p}%"></i></div>`; }).join("");
     const card = (name, os, online, sm, err, isSelf, src, peer) => {
       const vp = sm && sm.vram_total_mib ? sm.vram_used_mib / sm.vram_total_mib * 100 : 0;
       if (online && sm && sm.engines === 0)        // a hub: no models of its own, left out of the totals above
@@ -1395,8 +1390,8 @@ async function renderMachines() {
       return `<button class="mcd ${online ? "" : "off"} ${(MACHINE || SELF.name) === name || (!MACHINE && isSelf) ? "on" : ""}" data-machine="${isSelf ? "" : esc(name)}">
         <div class="mh2"><span class="dot ${online ? "ok" : "bad"}"></span>${esc(name)}<span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}<span class="sp"></span>
           ${!isSelf && src === "managed" ? `<span class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}" role="button">Remove</span>` : ""}</div>
-        ${online && sm ? `<div class="run"><span>${runline(sm)}</span>${(sm.gpu_list || []).length ? "" : sm.gpu ? `<span class="small muted">${esc(sm.gpu)}</span>` : ""}</div>
-          ${(sm.gpu_list || []).length ? gpuBars(sm.gpu_list) : `<div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div>`}<div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""}${!(sm.gpu_list || []).length && sm.gpu_util_percent != null ? ` · load ${pc(sm.gpu_util_percent)}` : ""}</div>`
+        ${online && sm ? `<div class="run"><span>${runline(sm)}</span>${(sm.gpu_list || []).length > 1 ? "" : sm.gpu ? `<span class="small muted">${esc(sm.gpu)}</span>` : ""}</div>
+          ${(sm.gpu_list || []).length > 1 ? gpuBars(sm.gpu_list) : `<div class="bar thin ${pctCls(vp)}"><i style="width:${vp}%"></i></div>`}<div class="small muted num" style="margin-top:4px">${mib(sm.vram_used_mib)} / ${mib(sm.vram_total_mib)} GPU · ${mib(sm.ram_used_mib)} / ${mib(sm.ram_total_mib)} RAM${sm.cpu_percent != null ? ` · CPU ${pc(sm.cpu_percent)}` : ""}${sm.gpu_util_percent != null ? ` · load ${pc(sm.gpu_util_percent)}` : ""}</div>`
           : `<div class="run bad-t">${esc(err || "offline")}</div>`}${peer && (peer.wake || {}).known ? `<div class="row small" style="margin-top:6px;gap:6px">${wakeCtl(peer)}</div>` : ""}</button>`;
     };
     $("#fleet").innerHTML = card(SELF.name, SELF.os, true, SELF.summary, null, true) + PEERS.map(p => card(p.name, (p.machine || {}).os, p.online, p.summary, p.error, false, p.source, p)).join("");
