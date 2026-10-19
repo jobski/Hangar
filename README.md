@@ -95,8 +95,8 @@ also signs a device in.
 
 Hangar runs on a Mac too. On Apple Silicon the GPU shares the machine's memory, so Hangar shows what Metal may use
 (about 75% of RAM on 32 GB+ Macs, or `iogpu.wired_limit_mb` if you have raised it) as GPU memory, with the GPU load
-from macOS's own statistics. GPU load, free memory, temperature and power appear on the local dashboard and hub
-machine cards when available. For temperature and GPU power, install the optional
+from macOS's own statistics. GPU load, free memory, temperature and power appear on the selected server's main
+page when available. For temperature and GPU power, install the optional
 [macmon](https://github.com/vladkens/macmon) helper with `brew install macmon`; Hangar discovers it automatically,
 including `/opt/homebrew/bin` when the manager has a restricted PATH. Sampling is bounded and cached, needs no sudo,
 and leaves unavailable sensor values hidden. Power readings cover the GPU. Free GPU memory on Apple Silicon is the

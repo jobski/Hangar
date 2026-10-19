@@ -1376,6 +1376,30 @@ async function renderMachines() {
         `<span class="small muted">Wake-on-LAN</span><span class="tag ${w.auto ? "ok" : ""}" data-act="mwakeauto" data-name="${esc(p.name)}" data-on="${w.auto ? 0 : 1}" role="button" style="cursor:pointer"
           title="${w.auto ? "woken when a role request needs it; click to turn off" : "click to wake it when a role request needs it"}">${w.auto ? "on request" : "off"}</span>`;
     };
+    $("#fleet").innerHTML = `<div class="pair" id="pairblock" style="grid-column:1/-1">
+        <div class="pc"><div class="pt"><span class="n">1</span>On the machine you want to add</div>
+          <p>On that machine's dashboard, press <b>Copy code</b> in this same panel. This machine's own code is right here.</p>
+          <div class="codebox"><span class="c" id="mycode">…</span><button class="btn sm primary" data-act="copycode">${ICON.copy}Copy code</button></div>
+          <div class="pairinfo" id="mycodeinfo"></div></div>
+        <div class="pc"><div class="pt"><span class="n">2</span>On the machine that should see it</div>
+          <p>Paste that code here. Hangar tries each of its addresses and keeps the first one that answers.</p>
+          <textarea id="pastecode" class="input code" placeholder="hangar-pair:…" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+          <div class="pairinfo" id="pasteinfo"></div>
+          <div class="row"><label class="chk"><input type="checkbox" id="pasteboth" checked> also add this machine there</label><span class="sp"></span><button class="btn primary" data-act="pastego">Add machine</button></div></div>
+      </div>`;
+      $("#pastecode").oninput = () => { $("#pasteinfo").innerHTML = codeInfo($("#pastecode").value); };
+      loadMyCode().catch(() => { });
+    }
+    return;
+  }
+  if (PEERS.length) {
+    const wakeCtl = p => {
+      const w = p.wake || {};
+      if (!w.known) return "";
+      return (p.online ? "" : `<span class="btn sm" data-act="mwake" data-name="${esc(p.name)}" role="button" title="send a wake-on-LAN packet">Wake</span>`) +
+        `<span class="small muted">Wake-on-LAN</span><span class="tag ${w.auto ? "ok" : ""}" data-act="mwakeauto" data-name="${esc(p.name)}" data-on="${w.auto ? 0 : 1}" role="button" style="cursor:pointer"
+          title="${w.auto ? "woken when a role request needs it; click to turn off" : "click to wake it when a role request needs it"}">${w.auto ? "on request" : "off"}</span>`;
+    };
     const gpuBars = gl => gl.map(g => { const p = g.vram_total_mib ? g.vram_used_mib / g.vram_total_mib * 100 : 0;
       const free = g.vram_free_mib ?? Math.max(0, (g.vram_total_mib || 0) - (g.vram_used_mib || 0));
       const metrics = [g.util_percent == null ? "" : `load ${pc(g.util_percent)}`,
