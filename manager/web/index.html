@@ -55,14 +55,22 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15.5px; letter-spacing: -.02em; white-space: nowrap; width: calc(var(--side) - 18px); }
 .brand .mark { width: 28px; height: 28px; border-radius: 8px; display: block; box-shadow: 0 0 20px rgba(62,230,160,.22); }
 .brand small { font-weight: 500; color: var(--muted); font-size: 12px; }
-.vitals { display: flex; gap: 6px; flex: 1; min-width: 0; overflow: hidden; }
-.vital { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-width: 0; white-space: nowrap; }
+.vitals { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.vital { display: flex; flex: none; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-width: 0; white-space: nowrap; }
 .vital .k { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .vital .v { font: 500 12.5px var(--mono); font-variant-numeric: tabular-nums; }
 .vital .mini { width: 46px; height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; }
 .vital .mini > i { display: block; height: 100%; background: var(--s1); border-radius: 9px; transition: width .5s; }
 .vital .mini.ram > i { background: var(--s2); } .vital .mini.cpu > i { background: var(--s3); }
 .vital .mini.hot > i { background: var(--bad); }
+.vital.gpu { display: grid; gap: 2px; padding: 4px 9px; }
+.gpu-head, .gpu-readings { display: flex; align-items: center; gap: 10px; }
+.gpu-head { justify-content: space-between; }
+.gpu-name { max-width: 130px; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 600; }
+.gpu-head .v { font-size: 11.5px; }
+.gpu-readings { color: var(--ink2); font: 11px var(--mono); }
+.gpu-readings .k { font: 10px var(--sans); letter-spacing: 0; text-transform: none; margin-right: 4px; }
+.top > .brand, .top > .msw, .top > .pill { flex-shrink: 0; }
 .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; background: var(--panel); }
 .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: var(--accent-dim); }
 .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: var(--bad-dim); }
@@ -441,7 +449,7 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
 <header class="top">
   <div class="brand"><img class="mark" src="/favicon.svg" alt="">Hangar</div>
   <div class="msw" id="msw"><button id="mswbtn" aria-haspopup="true"><span class="dot" id="mswdot"></span><span id="mswname">…</span><span class="os" id="mswos"></span><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button><div class="menu" id="mswmenu" hidden></div></div>
-  <div class="vitals" id="vitals"></div>
+  <div class="vitals" id="vitals" role="region" aria-label="Live machine readings" tabindex="0"></div>
   <span id="jobpill" class="pill warn" hidden></span>
   <span id="conn" class="pill"><span class="dot"></span>connecting</span>
 </header>
@@ -648,6 +656,16 @@ function setView(v) {
 window.addEventListener("hashchange", () => setView(location.hash.slice(1)));
 
 // ---- status: top bar vitals, machine, engines
+function gpuVital(g) {
+  const name = (g.name || "GPU").replace(/^(?:NVIDIA\s+)?GeForce\s+|^NVIDIA\s+|^AMD\s+/i, "");
+  const used = gb(g.vram_used_mib), total = gb(g.vram_total_mib);
+  const load = g.util_percent == null ? "–" : g.util_percent.toFixed(0) + "%";
+  const hot = g.vram_total_mib > 0 && g.vram_used_mib / g.vram_total_mib > .95;
+  const memory = `${g.unified ? "Shared GPU memory" : "VRAM"}: ${used} / ${total} GB`;
+  return `<div class="vital gpu" title="${esc(g.name || "GPU")} · ${esc(memory)}">
+    <div class="gpu-head"><span class="gpu-name">${esc(name)}</span><span class="v ${hot ? "bad-t" : ""}">${used}/${total} GB</span></div>
+    <div class="gpu-readings"><span><span class="k">Load</span>${load}</span>${g.temp_c == null ? "" : `<span><span class="k">Temp</span><span class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</span></span>`}${g.power_w == null ? "" : `<span><span class="k">Power</span>${watts(g.power_w)} W</span>`}</div></div>`;
+}
 function renderStatus(s) {
   lastStatus = s;
   const r = s.resources;
@@ -655,8 +673,7 @@ function renderStatus(s) {
   let v = "", m = "";
   for (const g of r.gpus) {
     const p = g.vram_used_mib / g.vram_total_mib * 100;
-    v += `<div class="vital"><span class="k">VRAM</span><span class="mini ${p > 95 ? "hot" : ""}"><i style="width:${p}%"></i></span><span class="v">${gb(g.vram_used_mib)}/${gb(g.vram_total_mib)}G</span></div>
-          <div class="vital opt"><span class="k">GPU</span><span class="v">${g.util_percent == null ? "–" : g.util_percent.toFixed(0) + "%"}${g.temp_c == null ? "" : ` · ${g.temp_c.toFixed(0)}°`}${g.power_w == null ? "" : ` · ${watts(g.power_w)} W`}</span></div>`;
+    v += gpuVital(g);
     m += `<div class="gauge"><div class="gh"><span class="gl">${g.unified ? "GPU MEM" : "VRAM"}</span><span class="gn">${esc(g.name)}</span><span class="gv">${gb(g.vram_used_mib)}<small> / ${gb(g.vram_total_mib)} GB</small></span></div>
       <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>
       <div class="gs">${g.util_percent == null ? "" : `<span>load <b>${g.util_percent.toFixed(0)}%</b></span>`}${g.temp_c == null ? "" : `<span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</b></span>`}${g.power_w == null ? "" : `<span>power <b>${watts(g.power_w)} W</b></span>`}<span>free <b>${mib(g.vram_free_mib ?? Math.max(0, g.vram_total_mib - g.vram_used_mib))}</b></span>${g.unified ? `<span class="tag" title="shares the machine's RAM; the limit is what Metal may use">unified</span>` : ""}</div></div>`;
