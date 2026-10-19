@@ -477,7 +477,9 @@ def summary(st: dict) -> dict:
             "cpu_percent": r.get("cpu_percent"), "cpu_count": r.get("cpu_count"),
             "gpu": gpus[0]["name"] if gpus else None, "gpu_count": len(gpus), "job": (st.get("job") or {}).get("title"),
             "gpu_list": [{"name": g.get("name"), "vram_used_mib": g.get("vram_used_mib") or 0, "vram_total_mib":
-                          g.get("vram_total_mib") or 0, "util_percent": g.get("util_percent")} for g in gpus]}
+                          g.get("vram_total_mib") or 0, "util_percent": g.get("util_percent"),
+                          "vram_free_mib": g.get("vram_free_mib"), "temp_c": g.get("temp_c"),
+                          "power_w": g.get("power_w"), "unified": bool(g.get("unified"))} for g in gpus]}
 
 
 def fleet(summaries: list[dict]) -> dict:
