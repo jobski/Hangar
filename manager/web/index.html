@@ -1028,11 +1028,29 @@ async function renderGateway(s) {
     <div class="gwto">Sends to${to.length ? to.map(m => { const r = rows.find(x => x.machine === m), p = PEERS.find(x => x.name === m);
       return `<span class="tchip" style="border-left:3px solid ${col(m)}"><span class="dot ${p && p.online ? "ok" : "bad"}"></span><span class="p">${esc(m)}</span>${r ? `<span class="m">${num(r.requests)} · ${Math.round(r.requests / Math.max(1, t.requests - t.errors) * 100)}%</span>` : ""}</span>`; }).join("") : ` <span>nothing yet: add machines and give the roles targets on them</span>`}</div>
     ${rows.length ? `<div class="gwsplit">${rows.map(r => `<i style="width:${r.requests / rows.reduce((a, x) => a + x.requests, 0) * 100}%;background:${col(r.machine)}" title="${esc(r.machine)}: ${r.requests}"></i>`).join("")}</div>` : ""}
+    <div class="gwlast feed" id="gwlive"></div>
     <div class="gwlast feed">${GW.last.length ? GW.last.map(r => `<div class="it"><span class="ts">${ago(r.ts)}</span>
       <span class="msg"><span class="k">${esc(r.model)}</span>${r.machine ? `→ ${esc(r.machine)}/${esc(r.profile)}` : `<span class="bad-t">${esc(r.error || "failed")}</span>`} <span class="muted small">· ${esc(r.client || "")}${r.caller ? ` on ${esc(r.caller)}` : ""}</span></span>
       <span class="ts">${reqTps(r) ? tps(reqTps(r)) + " tok/s" : r.error && r.machine ? esc(r.error) : ""}</span></div>`).join("")
       : `<div class="empty" style="padding:16px">No requests yet: point a tool at the address above.</div>`}</div></div>`;
+  refreshInflight();
 }
+
+// live strip of gateway requests that are generating right now (queued ones appear when they start)
+async function refreshInflight() {
+  const el = document.getElementById("gwlive");
+  if (!el) return;
+  let d;
+  try { d = await api("/api/inflight"); } catch { return; }
+  if (!document.getElementById("gwlive")) return;
+  const fmt = s => s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s` : `${Math.round(s)}s`;
+  const rows = d.requests || [];
+  document.getElementById("gwlive").innerHTML =
+    `<div class="small muted" style="padding:8px 16px;border-top:1px solid var(--line)">Now serving${rows.length ? ` · ${rows.length}` : ""} — queued requests appear when they start generating</div>`
+    + (rows.length ? rows.map(r => `<div class="it"><span class="ts">${fmt(r.elapsed_s)}</span><span class="msg"><span class="k">${esc(r.model)}</span>${r.machine ? `→ ${esc(r.machine)}/${esc(r.profile)}` : ""} <span class="muted small">· ${esc(r.client || "unknown")}${r.caller ? ` on ${esc(r.caller)}` : ""}${r.engine ? ` · ${esc(r.engine)}` : ""}</span></span><span class="ts muted">generating</span></div>`).join("")
+      : `<div class="empty" style="padding:12px 16px">Nothing generating right now.</div>`);
+}
+setInterval(refreshInflight, 3000);
 
 // ---- usage
 const PERIODS = [["day", "Today"], ["week", "Week"], ["month", "Month"], ["year", "Year"], ["all", "All"], ["24h", "24h"], ["7d", "7d"], ["30d", "30d"]];
