@@ -84,7 +84,7 @@
     }
     // Mirror the dashboard's route(): a peer's log is proxied through this host.
     const path = machine
-      ? `/api/peers/${encodeURIComponent(machine)}/api/logs/${encodeURIComponent(engine)}/stream?lines=400`
+      ? `/api/peers/${encodeURIComponent(machine)}/logs/${encodeURIComponent(engine)}/stream?lines=400`
       : `/api/logs/${encodeURIComponent(engine)}/stream?lines=400`;
 
     async function stream() {
