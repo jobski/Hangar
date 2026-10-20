@@ -26,6 +26,7 @@ import psutil
 from . import config as config_mod
 from .peers import machine_info
 from . import engines as engines_mod
+from . import gpumonitor
 from . import models as models_mod
 from . import resources
 from .downloads import Downloader
@@ -1306,12 +1307,16 @@ class Manager:
         warn = []
         if snap["ram_percent"] >= self.cfg["resources"]["warn_ram_percent"]:
             warn.append(f"RAM is {snap['ram_percent']:.0f}% used")
-        return {"time": time.time(), "machine": machine_info(self.cfg), "budget": self.budget_public(),
-                "engines": engines, "resources": snap, "warnings": warn,
-                "job": self.current_job.public(10) if self.current_job else None,
-                "queued": self.queue.qsize(),
-                "main_follows_running": self.roles.follows_running() if getattr(self, "roles", None) else True,
-                "roles": self.roles.public() if getattr(self, "roles", None) else []}
+        st = {"time": time.time(), "machine": machine_info(self.cfg), "budget": self.budget_public(),
+              "engines": engines, "resources": snap, "warnings": warn,
+              "job": self.current_job.public(10) if self.current_job else None,
+              "queued": self.queue.qsize(),
+              "main_follows_running": self.roles.follows_running() if getattr(self, "roles", None) else True,
+              "roles": self.roles.public() if getattr(self, "roles", None) else []}
+        gm = gpumonitor.status()
+        if gm:
+            st["gpumonitor"] = gm
+        return st
 
     def _context(self, profile: str):
         from .engines.base import arg_value

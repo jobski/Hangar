@@ -456,6 +456,20 @@ class Peers:
         return out
 
 
+def _gpu_row(g: dict) -> dict:
+    """One GPU row for the fleet view; GPUMonitor extras ride along only when present."""
+    row = {"name": g.get("name"), "vram_used_mib": g.get("vram_used_mib") or 0, "vram_total_mib":
+           g.get("vram_total_mib") or 0, "util_percent": g.get("util_percent"),
+           "vram_free_mib": g.get("vram_free_mib"), "temp_c": g.get("temp_c"),
+           "power_w": g.get("power_w"), "unified": bool(g.get("unified"))}
+    if g.get("gpumonitor"):
+        row["gpumonitor"] = True
+        for k in ("kernel_percent", "fan_percent", "pstate", "sm_clock_mhz", "memory_clock_mhz",
+                  "power_limit_w", "power_default_w", "tm_number"):
+            row[k] = g.get(k)
+    return row
+
+
 def summary(st: dict) -> dict:
     """The few numbers the fleet view needs from a status."""
     r = st.get("resources") or {}
@@ -483,10 +497,7 @@ def summary(st: dict) -> dict:
             "ram_total_mib": r.get("ram_total_mib") or 0,
             "cpu_percent": r.get("cpu_percent"), "cpu_count": r.get("cpu_count"),
             "gpu": gpus[0]["name"] if gpus else None, "gpu_count": len(gpus), "job": (st.get("job") or {}).get("title"),
-            "gpu_list": [{"name": g.get("name"), "vram_used_mib": g.get("vram_used_mib") or 0, "vram_total_mib":
-                          g.get("vram_total_mib") or 0, "util_percent": g.get("util_percent"),
-                          "vram_free_mib": g.get("vram_free_mib"), "temp_c": g.get("temp_c"),
-                          "power_w": g.get("power_w"), "unified": bool(g.get("unified"))} for g in gpus]}
+            "gpu_list": [_gpu_row(g) for g in gpus]}
 
 
 def fleet(summaries: list[dict]) -> dict:

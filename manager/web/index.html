@@ -666,6 +666,20 @@ function gpuVital(g) {
     <div class="gpu-head"><span class="gpu-name">${esc(name)}</span><span class="v ${hot ? "bad-t" : ""}">${used}/${total} GB</span></div>
     <div class="gpu-readings"><span><span class="k">Load</span>${load}</span>${g.temp_c == null ? "" : `<span><span class="k">Temp</span><span class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</span></span>`}${g.power_w == null ? "" : `<span><span class="k">Power</span>${watts(g.power_w)} W</span>`}</div></div>`;
 }
+function gpuExtra(g) {
+  // deeper GPUMonitor sidecar readings, shown only when that card carries them
+  if (!g.gpumonitor) return "";
+  const s = [];
+  if (g.kernel_percent != null) s.push(`<span title="True CUDA kernel time">kernel <b>${g.kernel_percent.toFixed(0)}%</b></span>`);
+  if (g.fan_percent != null) s.push(`<span>fan <b>${g.fan_percent.toFixed(0)}%</b></span>`);
+  if (g.pstate) s.push(`<span title="Driver performance state">${esc(g.pstate)}</span>`);
+  if (g.sm_clock_mhz != null) s.push(`<span>SM <b>${g.sm_clock_mhz}</b> MHz</span>`);
+  if (g.memory_clock_mhz != null) s.push(`<span>mem <b>${g.memory_clock_mhz}</b> MHz</span>`);
+  if (g.power_limit_w != null) s.push(`<span title="Enforced / factory default power limit">limit <b>${g.power_limit_w}${g.power_default_w != null ? " / " + g.power_default_w : ""} W</b></span>`);
+  if (g.tm_number != null) s.push(`<span title="Task Manager card number">TM #${g.tm_number}</span>`);
+  if (g.throttle && g.throttle.length) s.push(`<span class="warn-t" title="Clocks event reasons">throttling: ${esc(g.throttle.join(", "))}</span>`);
+  return s.length ? `<div class="gs">${s.join("")}</div>` : "";
+}
 function renderStatus(s) {
   lastStatus = s;
   const r = s.resources;
@@ -676,9 +690,11 @@ function renderStatus(s) {
     v += gpuVital(g);
     m += `<div class="gauge"><div class="gh"><span class="gl">${g.unified ? "GPU MEM" : "VRAM"}</span><span class="gn">${esc(g.name)}</span><span class="gv">${gb(g.vram_used_mib)}<small> / ${gb(g.vram_total_mib)} GB</small></span></div>
       <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>
-      <div class="gs">${g.util_percent == null ? "" : `<span>load <b>${g.util_percent.toFixed(0)}%</b></span>`}${g.temp_c == null ? "" : `<span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</b></span>`}${g.power_w == null ? "" : `<span>power <b>${watts(g.power_w)} W</b></span>`}<span>free <b>${mib(g.vram_free_mib ?? Math.max(0, g.vram_total_mib - g.vram_used_mib))}</b></span>${g.unified ? `<span class="tag" title="shares the machine's RAM; the limit is what Metal may use">unified</span>` : ""}</div></div>`;
+      <div class="gs">${g.util_percent == null ? "" : `<span>load <b>${g.util_percent.toFixed(0)}%</b></span>`}${g.temp_c == null ? "" : `<span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</b></span>`}${g.power_w == null ? "" : `<span>power <b>${watts(g.power_w)} W</b></span>`}<span>free <b>${mib(g.vram_free_mib ?? Math.max(0, g.vram_total_mib - g.vram_used_mib))}</b></span>${g.unified ? `<span class="tag" title="shares the machine's RAM; the limit is what Metal may use">unified</span>` : ""}</div>${gpuExtra(g)}</div>`;
   }
   if (!r.gpus.length) m += `<div class="gauge"><div class="small muted">${s.engines.length ? "No NVIDIA GPU found (nvidia-smi)." : "No GPU here, and no engines: this machine passes requests on to the others."}</div></div>`;
+  if (r.gpus.length && s.gpumonitor && s.gpumonitor.available === false)
+    m += `<div class="gauge"><div class="small muted">Start GPU Monitor on this machine for deeper GPU telemetry.</div></div>`;
   const rp = ramUsed / r.ram_total_mib * 100;
   const tempVital = value => value == null ? "" : ` · ${value.toFixed(0)}°C`;
   const tempDetail = value => value == null ? "" : `<span title="Highest available sensor reading">temp <b>${value.toFixed(0)}°C</b></span>`;

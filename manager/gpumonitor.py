@@ -68,6 +68,13 @@ def telemetry() -> dict[str, dict]:
         return dict(_state["cards"])
 
 
+def status() -> dict | None:
+    """Availability for /api/status; None off Windows so the key is omitted entirely."""
+    if sys.platform != "win32":
+        return None
+    return {"available": _state["ok"], "version": _state["version"]}
+
+
 def merge(gpus: list[dict]) -> list[dict]:
     """Attach sidecar readings to cards whose bus id matches; no-op when unavailable."""
     tele = telemetry()
