@@ -16,6 +16,10 @@ resources:
   sample_interval_s: 5
   warn_ram_percent: 92
 
+#gpumonitor:
+#  base_url: http://127.0.0.1:8765   # optional GPUMonitor sidecar (Windows) for honest NVIDIA load
+#                                     # (power ÷ limit); "" or absent disables it. See README.
+
 updates:
   auto_before_start: true      # check for (and install) engine updates before starting an engine...
   min_interval_hours: 6        # ...checking at most this often per engine (a known update is always installed)

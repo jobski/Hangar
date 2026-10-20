@@ -56,6 +56,7 @@ DEFAULTS = {
         "sample_interval_s": 5,
         "warn_ram_percent": 92,
     },
+    "gpumonitor": {"base_url": "http://127.0.0.1:8765"},   # optional Windows sidecar; "" disables it. See README.
     "updates": {
         "auto_before_start": True,     # check (and apply) engine updates before starting an engine
         "min_interval_hours": 6,       # ...but at most this often per engine

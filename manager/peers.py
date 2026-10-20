@@ -472,7 +472,9 @@ def summary(st: dict) -> dict:
                             "context_source": run.get("context_source"),
                             "launched_context": run.get("launched_context"),
                             "configured_context": run.get("configured_context")})
-    loads = [g["util_percent"] for g in gpus if g.get("util_percent") is not None]
+    def best(g):   # the sidecar's honest load (power / limit) when it reports this card, else kernel time
+        return g.get("load_percent") if g.get("load_percent") is not None else g.get("util_percent")
+    loads = [v for g in gpus if (v := best(g)) is not None]
     return {"running": running, "engines": len(st.get("engines") or []),
             "gen_tps": sum(x["gen_tps"] or 0 for x in running),
             "vram_used_mib": sum(g.get("vram_used_mib") or 0 for g in gpus),
@@ -484,9 +486,10 @@ def summary(st: dict) -> dict:
             "cpu_percent": r.get("cpu_percent"), "cpu_count": r.get("cpu_count"),
             "gpu": gpus[0]["name"] if gpus else None, "gpu_count": len(gpus), "job": (st.get("job") or {}).get("title"),
             "gpu_list": [{"name": g.get("name"), "vram_used_mib": g.get("vram_used_mib") or 0, "vram_total_mib":
-                          g.get("vram_total_mib") or 0, "util_percent": g.get("util_percent"),
+                          g.get("vram_total_mib") or 0, "util_percent": best(g), "kernel_percent": g.get("util_percent") if g.get("load_percent") is not None else None,
                           "vram_free_mib": g.get("vram_free_mib"), "temp_c": g.get("temp_c"),
-                          "power_w": g.get("power_w"), "unified": bool(g.get("unified"))} for g in gpus]}
+                          "power_w": g.get("power_w"), "power_limit_w": g.get("power_limit_w"),
+                          "throttling": g.get("throttling") or [], "unified": bool(g.get("unified"))} for g in gpus]}
 
 
 def fleet(summaries: list[dict]) -> dict:

@@ -24,10 +24,11 @@ from pathlib import Path
 import psutil
 
 from . import config as config_mod
-from .peers import machine_info
 from . import engines as engines_mod
+from . import gpumonitor
 from . import models as models_mod
 from . import resources
+from .peers import machine_info
 from .downloads import Downloader
 from .engines import Engine, Profile
 from .stats import CounterTracker, Store
@@ -135,6 +136,7 @@ class Instance:
 class Manager:
     def __init__(self, cfg: dict | None = None):
         self.cfg = cfg or config_mod.load()
+        gpumonitor.configure((self.cfg.get("gpumonitor") or {}).get("base_url", ""))
         self.data_dir: Path = self.cfg["manager"]["data_dir"]
         self.logs_dir: Path = self.cfg["manager"]["logs_dir"]
         self.store = Store(self.data_dir / "stats.db")
@@ -1072,7 +1074,8 @@ class Manager:
         used = resources.vram_used(snap)
         point = {"t": snap["time"], "vram_used_mib": used, "ram_used_mib": snap["ram_total_mib"] - snap["ram_available_mib"],
                  "cpu_percent": snap["cpu_percent"],
-                 "gpu_util": max((g["util_percent"] or 0 for g in snap["gpus"]), default=0), "gen_tokens": 0.0,
+                 "gpu_util": max(((g.get("load_percent") if g.get("load_percent") is not None else g["util_percent"]) or 0
+                                  for g in snap["gpus"]), default=0), "gen_tokens": 0.0,
                  "prompt_tokens": 0.0}
         with self.lock:
             insts = list(self.instances.values())
@@ -1311,7 +1314,8 @@ class Manager:
                 "job": self.current_job.public(10) if self.current_job else None,
                 "queued": self.queue.qsize(),
                 "main_follows_running": self.roles.follows_running() if getattr(self, "roles", None) else True,
-                "roles": self.roles.public() if getattr(self, "roles", None) else []}
+                "roles": self.roles.public() if getattr(self, "roles", None) else [],
+                "gpumonitor": gpumonitor.public()}
 
     def _context(self, profile: str):
         from .engines.base import arg_value
