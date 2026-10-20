@@ -1272,17 +1272,25 @@ class Manager:
             return (agg["gen_tokens"] / span if span else None), (agg["prompt_tokens"] / span if span else None)
         g15, p15 = inst_rate(15)
         t = collections.defaultdict(float, totals)
+        # the honest now: the engine's own per-second progress lines. gate on the log actually being
+        # written (not the collector's requests_processing gauge, which only refreshes on a slow scrape and
+        # lags the log by up to a whole sample - so it missed the entire tail of a live request).
+        eng = self.engines.get(inst.engine)
         live = None
-        if inst.gauges.get("requests_processing"):
-            eng = self.engines.get(inst.engine)
-            path = self.log_path(inst.engine)
+        if eng is not None:
             try:
-                fresh = time.time() - path.stat().st_mtime < 5      # progress lines are printed every second
+                fresh = time.time() - self.log_path(inst.engine).stat().st_mtime < 5
             except OSError:
                 fresh = False
-            if eng and fresh:
+            if fresh:
                 live = eng.progress(self.tail_log(inst.engine, 6))
-        return {"window": out, "instant": {"gen_tps": g15, "prompt_tps": p15}, "live": live, "since_start": {
+        # an engine that reports a live rate owns the headline while it works and reads idle when it stops;
+        # the counter-derived rate is only kept for engines that never report a live rate (plain llama.cpp /
+        # mlx servers), whose counters move as it generates - for an engine whose counters only jump at the
+        # end of a request (Strata) that average reads 0 while streaming then spikes on completion.
+        reports_live = eng is not None and type(eng).progress is not Engine.progress
+        instant = None if reports_live else {"gen_tps": g15, "prompt_tps": p15}
+        return {"window": out, "instant": instant, "live": live, "since_start": {
             "gen_tokens": t["gen_tokens"], "prompt_tokens": t["prompt_tokens"], "cached_tokens": t["cached_tokens"],
             "requests": t["requests"],
             "gen_tps": t["gen_tokens"] / t["gen_seconds"] if t["gen_seconds"] else None,

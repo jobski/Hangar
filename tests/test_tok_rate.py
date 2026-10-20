@@ -4,6 +4,7 @@ import unittest
 from collections import defaultdict, deque
 
 from manager import core, peers
+from manager.engines import Engine
 
 
 class _Inst:
@@ -15,23 +16,51 @@ class _Inst:
         self.engine = "strata"
 
 
+class _CounterEngine(Engine):
+    """A plain server: counters move as it generates; it prints no per-second rate."""
+    plugin = "counter"
+
+    def __init__(self):
+        super().__init__("llamacpp", {"port": 8081})
+
+
+class _LiveEngine(Engine):
+    """Strata-like: its log prints the live rate; its counters only jump when a request ends."""
+    plugin = "live"
+
+    def __init__(self, rate=None):
+        super().__init__("strata", {"port": 8082})
+        self._rate = rate
+
+    def progress(self, lines):
+        return {"phase": "answering", "gen_tps": self._rate} if self._rate is not None else None
+
+
+class _FreshPath:
+    def stat(self):
+        return type("S", (), {"st_mtime": time.time() - 1})()
+
+
 class _Manager(core.Manager):
-    """Just enough of Manager for live(): the window math touches nothing else."""
-    def __init__(self, inst):
+    """Just enough of Manager for live(): the rate math touches nothing else."""
+    def __init__(self, inst, engine=None, fresh=True):
         self.lock = threading.Lock()
         self.instances = {"strata": inst}
-        self.engines = {}
+        self.engines = {inst.engine: engine} if engine is not None else {}
         self.store = None
+        self._fresh = fresh
 
     def log_path(self, engine):
-        raise OSError("no log")
+        if not self._fresh:
+            raise OSError("no log")
+        return _FreshPath()
 
     def tail_log(self, engine, lines=100):
-        return []
+        return ["[strata] answering: 100 of max 4096 tokens, 70.0 tok/s, 2 s"]
 
 
-def _streaming(per_sec, seconds):
-    """An engine that has produced `per_sec` tokens/s for the last `seconds` (1-second samples)."""
+def _generating(per_sec, seconds):
+    """An engine whose counters reported `per_sec` tokens/s for the last `seconds` (1-second samples)."""
     inst = _Inst()
     now = time.time()
     for i in range(1, seconds + 1):
@@ -41,18 +70,17 @@ def _streaming(per_sec, seconds):
     return inst
 
 
-class InstantRateTest(unittest.TestCase):
+class CounterEngineTest(unittest.TestCase):
+    """Engines that report no live rate (plain llama.cpp / mlx): the wall-clock counter rate drives them,
+    tracks throughput, and decays to zero when they go quiet."""
     def rate(self, inst):
-        return _Manager(inst).live(inst)
+        return _Manager(inst, _CounterEngine()).live(inst)
 
     def test_streaming_rate_tracks_throughput(self):
-        # a steady 40 tok/s reads near 40 (a hair under from the fixed wall-clock span)
-        tps = self.rate(_streaming(40, 20))["instant"]["gen_tps"]
+        tps = self.rate(_generating(40, 20))["instant"]["gen_tps"]
         self.assertTrue(34 <= tps <= 42, tps)
 
     def test_rate_decays_after_generation_stops(self):
-        # a short burst that just ended: the instant rate is already well below the
-        # busy-seconds average, and keeps falling as the samples leave the window
         inst = _Inst()
         now = time.time()
         for dt in (1, 2, 3, 4):
@@ -64,8 +92,6 @@ class InstantRateTest(unittest.TestCase):
         self.assertGreater(st["instant"]["gen_tps"], 0)
 
     def test_idle_reads_zero_not_the_last_burst(self):
-        # 30s after the only activity, the headline is 0 while the busy-seconds window
-        # still holds the last burst's speed (the bug this fixes)
         inst = _Inst()
         now = time.time()
         for dt in (30, 31):
@@ -73,6 +99,32 @@ class InstantRateTest(unittest.TestCase):
         st = self.rate(inst)
         self.assertEqual(st["instant"]["gen_tps"], 0.0)
         self.assertEqual(st["window"]["5m"]["gen_tps"], 40.0)
+
+
+class LiveEngineTest(unittest.TestCase):
+    """Strata: the log's per-second rate is the honest now; the counter rate would read 0 mid-request
+    and spike when a request finishes, so it must never be shown for this engine."""
+    def test_log_rate_shown_even_while_the_gauge_lags(self):
+        # the bug: requests_processing was 0 (the slow scrape lags the log), so live was skipped and the
+        # headline fell to the counter rate - now the fresh log drives it regardless of the gauge
+        inst = _Inst()
+        inst.gauges = {"requests_processing": 0}
+        st = _Manager(inst, _LiveEngine(rate=70.0)).live(inst)
+        self.assertEqual(st["live"]["gen_tps"], 70.0)
+
+    def test_no_bursty_counter_rate_for_a_live_engine(self):
+        # the counter window still holds a big burst; the live engine exposes no instant rate to fall back to
+        inst = _generating(40, 60)
+        st = _Manager(inst, _LiveEngine(rate=70.0)).live(inst)
+        self.assertIsNone(st["instant"])
+
+    def test_idle_live_engine_reports_nothing(self):
+        # generation finished: the log's last line is 'done', so progress says nothing - live and instant
+        # both None, so the headline reads idle (0), never a stale burst
+        inst = _Inst()
+        st = _Manager(inst, _LiveEngine(rate=None)).live(inst)
+        self.assertIsNone(st["live"])
+        self.assertIsNone(st["instant"])
 
 
 class FleetGateTest(unittest.TestCase):
@@ -87,13 +139,12 @@ class FleetGateTest(unittest.TestCase):
         return peers.summary(self.status(instant, live))["running"][0]["gen_tps"]
 
     def test_idle_engine_contributes_nothing_to_the_fleet(self):
-        # stale 1m/5m windows say 40; an idle engine must report 0, not the last burst
-        self.assertIn(self.report({"gen_tps": 0.0}, None), (0, None))
+        self.assertIn(self.report(None, None), (0, None))
 
-    def test_live_rate_wins_over_the_decaying_window(self):
-        self.assertEqual(self.report({"gen_tps": 10.0}, {"gen_tps": 38.0}), 38.0)
+    def test_live_rate_wins_over_the_counter_window(self):
+        self.assertEqual(self.report(None, {"gen_tps": 38.0}), 38.0)
 
-    def test_decaying_window_is_used_while_generating(self):
+    def test_counter_rate_used_when_there_is_no_live_rate(self):
         self.assertEqual(self.report({"gen_tps": 12.5}, None), 12.5)
 
 
