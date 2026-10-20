@@ -1313,7 +1313,7 @@ class Manager:
                                 "context_source": inst.context_source,
                                 "launched_context": inst.launched_context,
                                 "configured_context": self._context(inst.profile),
-                                "stats": self.live(inst),
+                                "stats": self.live(inst), "engine_key": eng.auth_headers().get("Authorization", "")[7:],
                                 "vision": self._vision(name, inst.profile),
                                 "reasoning": self._reasoning_now(name) if inst.state == "ready" else None}
             else:

@@ -410,21 +410,26 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         data += [{"id": i.profile, "object": "model", "owned_by": "hangar-profile"} for i in mgr.instances.values()]
         return {"object": "list", "data": data}
 
-    async def direct_engine(t: dict) -> tuple[str, str] | None:
-        """For a peer without a gateway: its engine's /v1/models URL (from the peer's status) and the model id it
-        serves."""
+    async def direct_engine(t: dict):
+        """A peer's engine, reached straight (not through its gateway): (request_url, model_id, auth). Used when a
+        peer has no gateway, or its gateway is down/restarting while its engine is still up. Authenticated with the
+        engine key the peer published in its status."""
         st = (peers.state.get(t["machine"]) or {}).get("status") or {}
+        run = next(((e.get("running") or {}) for e in st.get("engines") or []
+                    if (e.get("running") or {}).get("profile") == t["profile"]), None)
         port = next((e["port"] for e in st.get("engines") or [] if (e.get("running") or {}).get("profile") == t["profile"]), None)
-        if not port:
+        if not (port and run):
             return None
+        key = run.get("engine_key") or ""
+        auth = {"Authorization": f"Bearer {key}"} if key else {}
         host = httpx.URL(peers.get(t["machine"])["url"]).host
         host = f"[{host}]" if ":" in host else host
-        url = f"http://{host}:{port}/v1/models"
+        base = f"http://{host}:{port}"
         try:
-            ids = [m["id"] for m in (await gateway.get(url, timeout=5)).json().get("data", [])]
+            ids = [m["id"] for m in (await gateway.get(base + "/v1/models", headers=auth, timeout=5)).json().get("data", [])]
         except (httpx.HTTPError, ValueError, AttributeError, TypeError, KeyError):
             return None
-        return (url, ids[0]) if ids else None
+        return (base, ids[0], auth) if ids else None
 
     def target_engine(target):
         if target["machine"]:
@@ -493,12 +498,42 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                     continue
             r, relaying = None, False
             served_engine = target_engine(t)
+            direct_tried = False
+
+            async def send_direct():
+                """Relay to this target's engine straight (its gateway is down or has none). Sets r, or None."""
+                nonlocal r, direct_tried
+                direct = await direct_engine(t)
+                if not direct:
+                    return None
+                base, mid, auth = direct
+                direct_tried = True
+                req = gateway.build_request("POST", f"{base}/v1/{path}", content=json.dumps({**data, "model": mid}).encode(),
+                                            headers={**passthrough, **auth, "Content-Type": "application/json"})
+                r = await gateway.send(req, stream=True)
+                return r
+
             try:
                 if t["machine"]:
-                    p = peers.get(t["machine"])
-                    url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
-                    auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client,
-                            "X-Hangar-Caller": caller}
+                    if (peers.state.get(t["machine"]) or {}).get("online"):
+                        p = peers.get(t["machine"])
+                        url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
+                        auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client,
+                                "X-Hangar-Caller": caller}
+                        req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
+                                                    headers={**passthrough, **auth, "Content-Type": "application/json"})
+                        r = await gateway.send(req, stream=True)
+                        # old peers have no gateway (404); a restarting one refuses or 5xx's: fall through to its engine
+                        if r.status_code == 404:
+                            with anyio.CancelScope(shield=True):
+                                await r.aclose()
+                            await send_direct()
+                    else:
+                        # gateway down (its manager is restarting); the engine is likely still up
+                        await send_direct()
+                    if r is None:
+                        errors.append(f"{t['machine']}/{t['profile']}: gateway down, engine not reachable")
+                        continue
                 else:
                     ents = await anyio.to_thread.run_sync(lambda: clients.model_entries(
                         mgr, [t["profile"]], "127.0.0.1", include_custom=True))
@@ -508,28 +543,30 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                     e = ents[0]
                     url, mid = f"{e['base']}/v1/{path}", e["model"]
                     auth = {"Authorization": f"Bearer {e['api_key']}"} if e["api_key"] else {}
-                req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
-                                            headers={**passthrough, **auth, "Content-Type": "application/json"})
-                r = await gateway.send(req, stream=True)
-                if t["machine"] and r.status_code == 404:
-                    # older peers have no gateway: try their engine directly when it needs no API key
-                    await r.aclose()
-                    direct = await direct_engine(t)
-                    if direct:
-                        url, mid = direct
-                        req = gateway.build_request("POST", url.replace("/v1/models", f"/v1/{path}"), content=json.dumps(
-                            {**data, "model": mid}).encode(), headers={**passthrough, "Content-Type": "application/json"})
-                        r = await gateway.send(req, stream=True)
+                    req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
+                                                headers={**passthrough, **auth, "Content-Type": "application/json"})
+                    r = await gateway.send(req, stream=True)
                 if t["machine"]:
                     served_engine = r.headers.get("x-hangar-engine") or served_engine
                 if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 404)):
-                    body = bytearray()
-                    async for chunk in r.aiter_bytes():
-                        body.extend(chunk[:8192 - len(body)])
-                        if len(body) >= 8192:
-                            break
-                    errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {request_error(bytes(body), r.status_code)}")
-                    continue
+                    # a gateway that answered but is on its way out: last-ditch try its engine before the next target
+                    if t["machine"] and not direct_tried:
+                        with anyio.CancelScope(shield=True):
+                            await r.aclose()
+                        if not await send_direct():
+                            errors.append(f"{t['machine']}/{t['profile']}: gateway down, engine not reachable")
+                            continue
+                        if r.status_code in (401, 404, 502, 503, 504):
+                            errors.append(f"{t['machine']}/{t['profile']}: HTTP {r.status_code}")
+                            continue
+                    else:
+                        body = bytearray()
+                        async for chunk in r.aiter_bytes():
+                            body.extend(chunk[:8192 - len(body)])
+                            if len(body) >= 8192:
+                                break
+                        errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {request_error(bytes(body), r.status_code)}")
+                        continue
                 if r.status_code in (400, 413) and len(cands) > 1:
                     body = await r.aread()
                     if TOO_LONG.search(body[:4096].decode("utf-8", "replace")):

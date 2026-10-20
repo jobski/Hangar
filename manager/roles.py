@@ -19,6 +19,8 @@ import httpx
 DOWN_GRACE_S = 30            # a primary must be down this long before a backup is started (sleep/wake flapping)
 WAKE_WAIT_S = 90             # how long a request with nothing else to answer it waits for a woken machine
 IDLE_STOP_S = 600            # a backup Hangar started is stopped after this long unused, once the primary is back
+PEER_DIRECT_GRACE_S = 90     # keep a peer routable this long after its gateway stops answering: the engine is
+                             # almost certainly still up (a manager restart), so the hub can still relay to it directly
 ROLE_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
@@ -128,6 +130,14 @@ class Roles:
         self.mgr.write_settings(s)
 
     # ---- what is up
+    def _peer_engine_state(self, st: dict, profile: str) -> str | None:
+        """The state a peer's last status reported for this profile, or None when it wasn't running there."""
+        for e in (st.get("status") or {}).get("engines") or []:
+            run = e.get("running")
+            if run and run.get("profile") == profile:
+                return run.get("state")
+        return None
+
     def _target_state(self, t: dict) -> str:
         """ready | starting | stopped (the machine is up, the profile is not running) | offline | unknown"""
         if not t["machine"]:
@@ -136,13 +146,17 @@ class Roles:
                     return "ready" if inst.state == "ready" else "starting"
             return "stopped" if t["profile"] in self.mgr.profiles else "unknown"
         st = self.peers.state.get(t["machine"]) or {}
-        if not st.get("online"):
-            return "offline"
-        for e in (st.get("status") or {}).get("engines") or []:
-            run = e.get("running")
-            if run and run.get("profile") == t["profile"]:
-                return "ready" if run.get("state") == "ready" else "starting"
-        return "stopped"
+        if st.get("online"):
+            state = self._peer_engine_state(st, t["profile"])
+            if state is None:
+                return "stopped"
+            return "ready" if state == "ready" else "starting"
+        # the gateway stopped answering (its manager is restarting; the engine is almost certainly still up):
+        # stay routable from the last known status for a grace window so the hub can relay straight to the engine.
+        if (state := self._peer_engine_state(st, t["profile"])) == "ready" and \
+                time.time() - (st.get("seen") or 0) < PEER_DIRECT_GRACE_S:
+            return "ready"
+        return "offline"
 
     def target_state(self, t: dict) -> str:
         state = self._target_state(t)
@@ -182,8 +196,8 @@ class Roles:
         for name, inst in list(self.mgr.instances.items()):        # anything running here
             add({"machine": "", "profile": inst.profile})
         for name, st in list(self.peers.state.items()):                  # then on the peers
-            for e in ((st.get("status") or {}).get("engines") or []) if st.get("online") else []:
-                if e.get("running"):
+            for e in (st.get("status") or {}).get("engines") or []:      # last-known: add() keeps only ready,
+                if e.get("running"):                                     # which still covers a peer mid-restart
                     add({"machine": name, "profile": e["running"]["profile"]})
         return sorted(out, key=lambda t: not self.fits(t, need)) if need else out
 
