@@ -548,6 +548,32 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                     r = await gateway.send(req, stream=True)
                 if t["machine"]:
                     served_engine = r.headers.get("x-hangar-engine") or served_engine
+            except (httpx.HTTPError, KeyError, ConnectionError) as ex:
+                # a connection error (refused, timeout, etc) from an online peer: try its engine before next target
+                if t["machine"] and not direct_tried and (peers.state.get(t["machine"]) or {}).get("online"):
+                    with anyio.CancelScope(shield=True):
+                        await r.aclose()
+                    if await send_direct() and r.status_code not in (401, 404, 502, 503, 504):
+                        pass
+                    else:
+                        errors.append(f"{t['machine']}/{t['profile']}: HTTP {r.status_code}")
+                        continue
+                else:
+                    errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {type(ex).__name__}")
+                    continue
+                    ents = await anyio.to_thread.run_sync(lambda: clients.model_entries(
+                        mgr, [t["profile"]], "127.0.0.1", include_custom=True))
+                    if not ents:
+                        errors.append(f"here/{t['profile']}: profile no longer available")
+                        continue
+                    e = ents[0]
+                    url, mid = f"{e['base']}/v1/{path}", e["model"]
+                    auth = {"Authorization": f"Bearer {e['api_key']}"} if e["api_key"] else {}
+                    req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
+                                                headers={**passthrough, **auth, "Content-Type": "application/json"})
+                    r = await gateway.send(req, stream=True)
+                if t["machine"]:
+                    served_engine = r.headers.get("x-hangar-engine") or served_engine
                 if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 404)):
                     # a gateway that answered but is on its way out: last-ditch try its engine before the next target
                     if t["machine"] and not direct_tried:
