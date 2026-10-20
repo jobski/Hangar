@@ -50,7 +50,7 @@ $all = $kept + $PubKey
 if ($isTargetAdmin) {
   icacls $f /inheritance:r /grant "SYSTEM:(F)" "BUILTIN\Administrators:(F)" | Out-Null
 } else {
-  icacls $f /inheritance:r /grant "SYSTEM:(F)" "$env:USERDOMAIN\$User:(F)" | Out-Null
+  icacls $f /inheritance:r /grant "SYSTEM:(F)" "$env:USERDOMAIN\$($User):(F)" | Out-Null
 }
 
 Write-Host "installed $fp -> $f ($($all.Count) key(s))"
