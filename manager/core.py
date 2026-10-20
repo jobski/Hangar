@@ -1248,6 +1248,7 @@ class Manager:
         with self.lock:
             window = list(inst.window)
             totals = dict(inst.totals)
+        age = now - inst.started
         for label, secs in (("1m", 60), ("5m", 300), ("1h", 3600)):
             agg = collections.defaultdict(float)
             for t, d in window:
@@ -1256,8 +1257,20 @@ class Manager:
                         agg[k] += v
             out[label] = {"gen_tokens": agg["gen_tokens"], "prompt_tokens": agg["prompt_tokens"],
                           "requests": agg["requests"],
+                          # speed while the engine was actually generating (busy seconds), the honest throughput
                           "gen_tps": agg["gen_tokens"] / agg["gen_seconds"] if agg["gen_seconds"] else None,
                           "prompt_tps": agg["prompt_tokens"] / agg["prompt_seconds"] if agg["prompt_seconds"] else None}
+        # the headline speed: tokens over the *wall-clock* span, so it tracks the engine now and decays to
+        # zero within the window when nothing is generating (a busy-seconds average holds the last burst).
+        def inst_rate(window_secs):
+            agg = collections.defaultdict(float)
+            for t, d in window:
+                if now - t <= window_secs:
+                    for k, v in d.items():
+                        agg[k] += v
+            span = min(window_secs, age)
+            return (agg["gen_tokens"] / span if span else None), (agg["prompt_tokens"] / span if span else None)
+        g15, p15 = inst_rate(15)
         t = collections.defaultdict(float, totals)
         live = None
         if inst.gauges.get("requests_processing"):
@@ -1269,7 +1282,7 @@ class Manager:
                 fresh = False
             if eng and fresh:
                 live = eng.progress(self.tail_log(inst.engine, 6))
-        return {"window": out, "live": live, "since_start": {
+        return {"window": out, "instant": {"gen_tps": g15, "prompt_tps": p15}, "live": live, "since_start": {
             "gen_tokens": t["gen_tokens"], "prompt_tokens": t["prompt_tokens"], "cached_tokens": t["cached_tokens"],
             "requests": t["requests"],
             "gen_tps": t["gen_tokens"] / t["gen_seconds"] if t["gen_seconds"] else None,

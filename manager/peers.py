@@ -465,8 +465,9 @@ def summary(st: dict) -> dict:
         run = e.get("running")
         if run:
             rs = run.get("stats") or {}
-            w = rs.get("window") or {}
-            g = (rs.get("live") or {}).get("gen_tps") or (w.get("1m") or {}).get("gen_tps") or (w.get("5m") or {}).get("gen_tps")
+            # live (this second) else the decaying wall-clock rate - never the busy-seconds windows, which
+            # hold the last burst's speed for minutes after the engine goes quiet
+            g = (rs.get("live") or {}).get("gen_tps") or (rs.get("instant") or {}).get("gen_tps")
             running.append({"engine": e["name"], "profile": run["profile"], "state": run["state"], "port": e["port"],
                             "gen_tps": g, "context": run.get("context"),
                             "context_source": run.get("context_source"),

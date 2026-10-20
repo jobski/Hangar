@@ -731,15 +731,17 @@ function renderStatus(s) {
       ${run ? `<span class="tag ${stateTag(run.state)}">${esc(run.state)}</span>` : `<span class="tag">stopped</span>`}${run && run.vision ? `<span class="tag info" title="this model takes images">${ICON.eye}vision enabled</span>` : ""}<span class="tag">:${e.port}</span>${ver}${upd}<div class="acts">${acts}</div></div>`;
     if (run) {
       nrun++;
-      const st = run.stats, w1 = st.window["1m"], w5 = st.window["5m"], ss = st.since_start, busy = (st.gauges || {}).requests_processing;
+      const st = run.stats, w5 = st.window["5m"], inst = st.instant || {}, ss = st.since_start, busy = (st.gauges || {}).requests_processing;
       const lv = st.live || {};
-      const g = lv.gen_tps ?? w1.gen_tps ?? w5.gen_tps; out += g || 0;
+      // headline is the live rate, else a short wall-clock rate that decays to 0 when quiet (never the
+      // busy-seconds windows, which hold the last burst's speed for minutes); 5-min avg stays as context
+      const g = lv.gen_tps ?? inst.gen_tps; out += g || 0;
       const doing = lv.phase ? `${esc(lv.phase)}${lv.tokens ? ` · ${num(lv.tokens)}${lv.of ? " / " + num(lv.of) : ""} tok` : ""}` : busy ? "generating" : "idle";
       const rb = (s.roles || []).filter(r => r.serving && !r.serving.machine && r.serving.profile === run.profile).map(r => r.name);
       h += `<div class="esub">${rb.map(n => `<span class="tag ok" style="margin-right:6px" title="the gateway sends '${esc(n)}' requests here">${esc(n)}</span>`).join("")}<b>${esc(run.profile)}</b> ${contextBadge(run)} · up <span class="num">${dur(run.uptime_seconds)}</span> · pid <span class="num">${run.pid}</span>${run.managed ? "" : " · started outside the manager"}</div>
         <div class="stats">
-          <div class="stat hero"><div class="sv">${tps(g)}<small>tok/s</small></div><div class="sl" title="${lv.phase ? "live, from the engine's progress" : "from finished requests"}">out · ${doing}</div></div>
-          <div class="stat"><div class="sv">${tps(lv.prompt_tps ?? w5.prompt_tps)}<small>tok/s</small></div><div class="sl">in · ${lv.prompt_tps != null ? "reading now" : "5 min avg"}</div></div>
+          <div class="stat hero"><div class="sv" title="over the last few seconds; 5-min average while generating: ${tps(w5.gen_tps)}">${tps(g)}<small>tok/s</small></div><div class="sl" title="${lv.phase ? "live, from the engine's progress" : busy ? "recent, decays when it stops" : "from finished requests"}">out · ${doing}</div></div>
+          <div class="stat"><div class="sv">${tps(lv.prompt_tps ?? inst.prompt_tps)}<small>tok/s</small></div><div class="sl">in · ${lv.prompt_tps != null ? "reading now" : busy ? "recent" : "idle"}</div></div>
           <div class="stat"><div class="sv">${num(ss.gen_tokens)}</div><div class="sl">out since start</div></div>
           <div class="stat"><div class="sv">${num(ss.prompt_tokens)}</div><div class="sl">in since start</div></div>
           <div class="stat"><div class="sv">${gb(run.ram_mib)}<small>GB</small></div><div class="sl">RAM · CPU ${run.cpu_percent.toFixed(0)}%</div></div>
