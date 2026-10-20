@@ -27,6 +27,10 @@ command line.
   through psutil on Linux/FreeBSD, or a running [Libre Hardware Monitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
   or Open Hardware Monitor WMI provider on Windows. Each shows the hottest available sensor in °C; missing readings
   are hidden. Hangar does not install monitoring software, and not every RAM module exposes a temperature sensor.
+  On a Windows NVIDIA box, an optional [GPUMonitor](https://github.com/jobski/GPUMonitor) sidecar replaces GPU "load"
+  with the honest number — power ÷ the card's power limit — because a card doing pure CUDA work reads ~0 % utilization
+  yet can be working hard; when it is running, the dashboard also shows power draw against the limit, flags thermal or
+  hardware throttling, and links to GPU Monitor for per-card charts and power caps. Nothing changes when it is not.
 - **Models.** A library folder (`E:\models`, one folder per model) and a downloader for **Hugging Face** (search, pick
   a quant), **ModelScope**, the **Ollama library** (its model files are plain GGUFs) and **any URL**. Interrupted
   downloads resume, and aria2c is used for parallel connections when it is installed. A finished download can become

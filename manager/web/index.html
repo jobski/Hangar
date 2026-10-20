@@ -377,7 +377,8 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
 .gw .gwsplit { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--bg2); margin-top: 8px; }
 .gw .gwsplit i { display: block; height: 100%; }
 .gw .gwlast { margin: 14px -16px -16px; border-top: 1px solid var(--line); }
-.gw .gwlast .it { grid-template-columns: 74px minmax(0, 1fr) auto; }
+.gw .gwlast #gwlastreq .it { grid-template-columns: 74px minmax(0, 1fr) auto; }
+.gwnow { padding: 8px 16px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); border-bottom: 1px solid var(--line); }
 .tchip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; border: 1px solid var(--line2); border-radius: 7px; background: var(--bg2); font-size: 12px; min-width: 0; max-width: 100%; }
 .tchip .m { color: var(--muted); }
 .tchip .p { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -659,12 +660,15 @@ window.addEventListener("hashchange", () => setView(location.hash.slice(1)));
 function gpuVital(g) {
   const name = (g.name || "GPU").replace(/^(?:NVIDIA\s+)?GeForce\s+|^NVIDIA\s+|^AMD\s+/i, "");
   const used = gb(g.vram_used_mib), total = gb(g.vram_total_mib);
-  const load = g.util_percent == null ? "–" : g.util_percent.toFixed(0) + "%";
+  const honest = g.load_percent != null;   // the sidecar's power ÷ limit, when it reports this card
+  const lv = honest ? g.load_percent : g.util_percent;
+  const load = lv == null ? "–" : lv.toFixed(0) + "%";
   const hot = g.vram_total_mib > 0 && g.vram_used_mib / g.vram_total_mib > .95;
   const memory = `${g.unified ? "Shared GPU memory" : "VRAM"}: ${used} / ${total} GB`;
-  return `<div class="vital gpu" title="${esc(g.name || "GPU")} · ${esc(memory)}">
+  const tip = [esc(g.name || "GPU"), esc(memory), honest ? `Load = power ÷ limit · kernel time ${g.kernel_percent ?? "–"}%` : ""].filter(Boolean).join(" · ");
+  return `<div class="vital gpu" title="${tip}">
     <div class="gpu-head"><span class="gpu-name">${esc(name)}</span><span class="v ${hot ? "bad-t" : ""}">${used}/${total} GB</span></div>
-    <div class="gpu-readings"><span><span class="k">Load</span>${load}</span>${g.temp_c == null ? "" : `<span><span class="k">Temp</span><span class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</span></span>`}${g.power_w == null ? "" : `<span><span class="k">Power</span>${watts(g.power_w)} W</span>`}</div></div>`;
+    <div class="gpu-readings"><span><span class="k">Load</span>${load}</span>${g.temp_c == null ? "" : `<span><span class="k">Temp</span><span class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</span></span>`}${g.power_w == null ? "" : `<span><span class="k">Power</span>${watts(g.power_w)}${g.power_limit_w ? ` / ${watts(g.power_limit_w)}` : ""} W</span>`}</div></div>`;
 }
 function renderStatus(s) {
   lastStatus = s;
@@ -673,12 +677,18 @@ function renderStatus(s) {
   let v = "", m = "";
   for (const g of r.gpus) {
     const p = g.vram_used_mib / g.vram_total_mib * 100;
+    const honest = g.load_percent != null;
+    const lv = honest ? g.load_percent : g.util_percent;
     v += gpuVital(g);
     m += `<div class="gauge"><div class="gh"><span class="gl">${g.unified ? "GPU MEM" : "VRAM"}</span><span class="gn">${esc(g.name)}</span><span class="gv">${gb(g.vram_used_mib)}<small> / ${gb(g.vram_total_mib)} GB</small></span></div>
       <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>
-      <div class="gs">${g.util_percent == null ? "" : `<span>load <b>${g.util_percent.toFixed(0)}%</b></span>`}${g.temp_c == null ? "" : `<span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</b></span>`}${g.power_w == null ? "" : `<span>power <b>${watts(g.power_w)} W</b></span>`}<span>free <b>${mib(g.vram_free_mib ?? Math.max(0, g.vram_total_mib - g.vram_used_mib))}</b></span>${g.unified ? `<span class="tag" title="shares the machine's RAM; the limit is what Metal may use">unified</span>` : ""}</div></div>`;
+      <div class="gs">${lv == null ? "" : `<span${honest ? ` title="how hard the card works: power ÷ limit (kernel time: ${g.kernel_percent ?? "–"}%)"` : ""}>load <b>${lv.toFixed(0)}%</b></span>`}${(g.throttling || []).length ? `<span class="tag warn" title="clocks held back: ${esc(g.throttling.join(", "))}">throttling</span>` : ""}${g.temp_c == null ? "" : `<span>temp <b class="${g.temp_c > 82 ? "bad-t" : ""}">${g.temp_c.toFixed(0)}°C</b></span>`}${g.power_w == null ? "" : `<span>power <b>${watts(g.power_w)}${g.power_limit_w ? ` / ${watts(g.power_limit_w)}` : ""} W</b></span>`}<span>free <b>${mib(g.vram_free_mib ?? Math.max(0, g.vram_total_mib - g.vram_used_mib))}</b></span>${g.unified ? `<span class="tag" title="shares the machine's RAM; the limit is what Metal may use">unified</span>` : ""}</div></div>`;
   }
-  if (!r.gpus.length) m += `<div class="gauge"><div class="small muted">${s.engines.length ? "No NVIDIA GPU found (nvidia-smi)." : "No GPU here, and no engines: this machine passes requests on to the others."}</div></div>`;
+  if (r.gpus.length && s.gpumonitor?.port) {
+    const base = MACHINE ? (PEERS.find(p => p.name === MACHINE) || {}).url : location.origin;
+    const url = base ? base.replace(/(?::\d+)?$/, ":" + s.gpumonitor.port) : "";
+    if (url) m += `<div class="gauge"><div class="small muted">Per-card charts, history and power caps: <a href="${esc(url)}" target="_blank" rel="noopener">GPU Monitor</a>.</div></div>`;
+  }
   const rp = ramUsed / r.ram_total_mib * 100;
   const tempVital = value => value == null ? "" : ` · ${value.toFixed(0)}°C`;
   const tempDetail = value => value == null ? "" : `<span title="Highest available sensor reading">temp <b>${value.toFixed(0)}°C</b></span>`;
@@ -1028,11 +1038,28 @@ async function renderGateway(s) {
     <div class="gwto">Sends to${to.length ? to.map(m => { const r = rows.find(x => x.machine === m), p = PEERS.find(x => x.name === m);
       return `<span class="tchip" style="border-left:3px solid ${col(m)}"><span class="dot ${p && p.online ? "ok" : "bad"}"></span><span class="p">${esc(m)}</span>${r ? `<span class="m">${num(r.requests)} · ${Math.round(r.requests / Math.max(1, t.requests - t.errors) * 100)}%</span>` : ""}</span>`; }).join("") : ` <span>nothing yet: add machines and give the roles targets on them</span>`}</div>
     ${rows.length ? `<div class="gwsplit">${rows.map(r => `<i style="width:${r.requests / rows.reduce((a, x) => a + x.requests, 0) * 100}%;background:${col(r.machine)}" title="${esc(r.machine)}: ${r.requests}"></i>`).join("")}</div>` : ""}
-    <div class="gwlast feed">${GW.last.length ? GW.last.map(r => `<div class="it"><span class="ts">${ago(r.ts)}</span>
+    <div class="gwlast feed"><div id="gwlive"></div><div id="gwlastreq">${GW.last.length ? GW.last.map(r => `<div class="it"><span class="ts">${ago(r.ts)}</span>
       <span class="msg"><span class="k">${esc(r.model)}</span>${r.machine ? `→ ${esc(r.machine)}/${esc(r.profile)}` : `<span class="bad-t">${esc(r.error || "failed")}</span>`} <span class="muted small">· ${esc(r.client || "")}${r.caller ? ` on ${esc(r.caller)}` : ""}</span></span>
       <span class="ts">${reqTps(r) ? tps(reqTps(r)) + " tok/s" : r.error && r.machine ? esc(r.error) : ""}</span></div>`).join("")
       : `<div class="empty" style="padding:16px">No requests yet: point a tool at the address above.</div>`}</div></div>`;
+  refreshInflight();
 }
+
+// live strip of gateway requests generating right now (queued ones appear when they start)
+async function refreshInflight() {
+  const el = document.getElementById("gwlive");
+  if (!el) return;
+  let d;
+  try { d = await api("/api/inflight"); } catch { return; }
+  if (document.getElementById("gwlive") !== el) return;   // view changed while fetching
+  const fmt = s => s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s` : `${Math.round(s)}s`;
+  const rows = d.requests || [];
+  el.innerHTML = `<div class="gwnow">Now serving${rows.length ? ` · ${rows.length}` : " · nothing right now"}</div>`
+    + rows.map(r => `<div class="it"><span class="ts">${fmt(r.elapsed_s)}</span><span class="dot ${r.streaming ? "ok" : "warn"}" title="${r.streaming ? "generating" : "waiting for the first token"}"></span>`
+      + `<span class="msg"><span class="k">${esc(r.model)}</span>${r.machine ? `→ ${esc(r.machine)}/${esc(r.profile)}` : ""} <span class="muted small">· ${esc(r.client || "unknown")}${r.caller ? ` on ${esc(r.caller)}` : ""}${r.engine ? ` · ${esc(r.engine)}` : ""}</span>`
+      + `<span class="muted small" style="float:right">${r.tok_s ? tps(r.tok_s) + " tok/s" : r.streaming ? (r.gen_tokens != null ? `${num(r.gen_tokens)} tok` : "generating") : "prompting"}</span></span></div>`).join("");
+}
+setInterval(() => { if (!document.hidden && view === "overview") refreshInflight().catch(() => { }); }, 3000);
 
 // ---- usage
 const PERIODS = [["day", "Today"], ["week", "Week"], ["month", "Month"], ["year", "Year"], ["all", "All"], ["24h", "24h"], ["7d", "7d"], ["30d", "30d"]];
@@ -1434,8 +1461,8 @@ async function renderMachines() {
           title="${w.auto ? "Woken when a role request needs it; click to turn off" : "Click to wake it when a role request needs it"}">${w.auto ? "On request" : "Off"}</button>`;
     };
     const gpuBars = gl => gl.map(g => { const p = g.vram_total_mib ? g.vram_used_mib / g.vram_total_mib * 100 : 0;
-      return `<div class="machine-gpu"><div class="machine-gpu-line"><span class="machine-gpu-name">${esc((g.name || "GPU").replace(/^NVIDIA (GeForce )?/, "").replace(/ \(unified memory\)$/, ""))}</span><span class="machine-gpu-value">${mib(g.vram_used_mib)} / ${mib(g.vram_total_mib)}${g.util_percent != null ? ` · ${pc(g.util_percent)}` : ""}</span></div>
-        <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>${g.unified ? `<div class="machine-gpu-note">Unified memory</div>` : ""}</div>`; }).join("");
+      return `<div class="machine-gpu"><div class="machine-gpu-line"><span class="machine-gpu-name">${esc((g.name || "GPU").replace(/^NVIDIA (GeForce )?/, "").replace(/ \(unified memory\)$/, ""))}</span><span class="machine-gpu-value">${mib(g.vram_used_mib)} / ${mib(g.vram_total_mib)}${g.util_percent != null ? ` · ${pc(g.kernel_percent != null ? g.kernel_percent : g.util_percent)}` : ""}</span></div>
+        <div class="bar ${pctCls(p)}"><i style="width:${p}%"></i></div>${g.unified || (g.throttling || []).length ? `<div class="machine-gpu-note">${g.unified ? `Unified memory` : ""}${(g.throttling || []).length ? `${g.unified ? " · " : ""}<span class="warn-t">throttling</span>` : ""}</div>` : ""}</div>`; }).join("");
     const metric = (label, value) => `<div><div class="machine-resource-label">${label}</div><div class="machine-resource-value">${value}</div></div>`;
     const memory = (used, total) => `${mib(used)} <small>/ ${mib(total)}</small>`;
     const modelLine = sm => (sm.running || []).length ? sm.running.map(r => `<div class="machine-profile"><div class="machine-profile-name">${esc(r.profile)}</div><div class="machine-profile-meta">${contextBadge(r)}${r.gen_tps ? `<span class="num">${r.gen_tps.toFixed(1)} tok/s</span>` : ""}</div></div>`).join("") : `<span class="muted">Idle</span>`;

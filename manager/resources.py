@@ -14,6 +14,8 @@ import threading
 
 import psutil
 
+from . import gpumonitor
+
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -252,7 +254,7 @@ def snapshot(sample_cpu: bool = True) -> dict:
         _cpu_sample = cpu_percent()
     return {
         "time": time.time(),
-        "gpus": gpus(),
+        "gpus": gpumonitor.merge(gpus()) if sample_cpu else gpus(),
         "ram_total_mib": vm.total / 2**20,
         "ram_available_mib": vm.available / 2**20,
         "ram_percent": vm.percent,

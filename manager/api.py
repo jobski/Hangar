@@ -4,6 +4,7 @@ from __future__ import annotations
 import codecs
 import contextlib
 import hmac
+import itertools
 import json
 import re
 import time
@@ -397,6 +398,11 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     routing_lock = anyio.Lock()
     wake_limiter = anyio.CapacityLimiter(8)
     gateway = httpx.AsyncClient(timeout=httpx.Timeout(10, read=None))   # generations can stream for many minutes
+    # requests being generated right now, keyed by a counter; only the event loop touches it, so no lock
+    inflight: dict[int, dict] = {}
+    inflight_seq = itertools.count()
+
+    app.state.inflight = inflight
 
     @app.get("/v1/models")
     def gateway_models():
@@ -535,13 +541,18 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                                              "X-Hangar-Engine": served_engine or ""})
                 roles.note_used(t, model, (client, caller))
                 meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
+                seq = next(inflight_seq)
+                inflight[seq] = {"started": time.time(), "model": model, "client": client, "caller": caller,
+                                 "machine": t["machine"] or me, "profile": t["profile"], "engine": served_engine,
+                                 "meter": meter}
                 done, finished = False, False
 
-                async def finish(r=r, t=t, meter=meter, served_engine=served_engine):
+                async def finish(r=r, t=t, meter=meter, served_engine=served_engine, seq=seq):
                     nonlocal finished
                     if finished:
                         return
                     finished = True
+                    inflight.pop(seq, None)
                     roles.closed(t)
                     with anyio.CancelScope(shield=True):
                         await r.aclose()
@@ -588,6 +599,19 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
     def requests_list(limit: int = 50, before: float | None = None, before_id: int | None = None,
                       period: str = "all", filters: dict = Depends(request_filters)):
         return guard(mgr.store.requests, min(500, max(1, limit)), before, period, filters, before_id)
+
+    @app.get("/api/inflight", include_in_schema=False)
+    async def inflight_list():
+        """Gateway requests that are generating right now (headers arrived; queued ones are not here yet)."""
+        now = time.time()
+        def row(e):
+            m = e["meter"]
+            t, u = m.timings, m.usage
+            gen = t.get("predicted_n") or u.get("completion_tokens") or u.get("output_tokens")
+            return {k: v for k, v in e.items() if k != "meter"} | {
+                "elapsed_s": round(now - e["started"], 1), "streaming": m.token_at is not None, "gen_tokens": gen,
+                "tok_s": round(gen / (now - m.token_at), 1) if gen and m.token_at and now > m.token_at else None}
+        return {"time": now, "requests": sorted((row(e) for e in inflight.values()), key=lambda e: e["started"])}
 
     @app.get("/api/requests/summary")
     def requests_summary(period: str = "day", by: str = "target", filters: dict = Depends(request_filters)):
