@@ -124,6 +124,17 @@ class Instance:
         except psutil.Error:
             return False
 
+    def owns_process(self, pid: int | None) -> bool:
+        """A launcher may keep the listening server in a child process."""
+        if pid is None or not self.alive():
+            return False
+        if pid == self.pid:
+            return True
+        try:
+            return any(parent.pid == self.pid for parent in psutil.Process(pid).parents())
+        except psutil.Error:
+            return False
+
     def persist(self) -> dict:
         return {"engine": self.engine, "profile": self.profile, "pid": self.pid, "create_time": self.create_time,
                 "session": self.session, "log_path": self.log_path, "ours": self.ours,
@@ -377,7 +388,7 @@ class Manager:
         base = self.profile(profile_id)
         eng = self.engines[base.engine]
         cfg = {**base.cfg, "engine": base.engine}
-        if eng.plugin == "strata":
+        if eng.plugin in ("strata", "maya"):
             cfg["args"] = list(eng._run_config(base).get("args") or [])
         ov = dict(overrides or {})
         add = [str(a) for a in ov.pop("args_add", []) or []]
@@ -721,7 +732,7 @@ class Manager:
             raise Refused(plan["reason"])
         owner = resources.port_owner(eng.port, fresh=True)
         current = self.instances.get(eng.name)
-        if owner is not None and (not current or owner.pid != current.pid) and not force:
+        if owner is not None and (not current or not current.owns_process(owner.pid)) and not force:
             raise Refused(f"port {eng.port} is in use outside this manager; stop its owner or use force")
         previous = {n: self.profiles.get(self.instances[n].profile) for n in plan["will_stop"] if n in self.instances}
         try:
@@ -1352,7 +1363,7 @@ class Manager:
                 args = [str(a) for a in p.cfg.get("args", [])]
                 return eng.launch_context((["-c", str(p.cfg["ctx"])] if p.cfg.get("ctx") else []) + args)
             value = (arg_value(eng._run_config(p).get("args", []), "--max-context")
-                     if eng.plugin == "strata" else p.cfg.get("ctx"))
+                     if eng.plugin in ("strata", "maya") else p.cfg.get("ctx"))
             ctx = int(value or 0)
             return ctx if ctx > 0 else None
         except (KeyError, TypeError, ValueError):

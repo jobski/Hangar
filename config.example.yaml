@@ -66,6 +66,17 @@ engines:
     profile_defaults:
       policy: exclusive
 
+  # Project Maya installs its models itself; Hangar discovers maya-*.json.
+  # Updates are managed in Maya, not by Hangar.
+  # maya:
+  #   plugin: maya
+  #   dir: E:\Project-maya
+  #   port: 8082
+  #   host: 0.0.0.0
+  #   startup_timeout_s: 1200
+  #   profile_defaults:
+  #     policy: exclusive
+
   # any other program can be managed with the generic plugin:
   # comfyui:
   #   plugin: command

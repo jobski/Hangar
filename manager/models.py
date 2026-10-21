@@ -95,29 +95,34 @@ class Library:
     def _references(self, p, strict: bool = False) -> list[Path]:
         ecfg = (self.cfg.get("engines") or {}).get(p.engine, {})
         plugin = ecfg.get("plugin", p.engine)
-        cwd = ecfg.get("dir") if plugin in ("llamacpp", "strata") else p.cfg.get("cwd")
+        cwd = ecfg.get("dir") if plugin in ("llamacpp", "strata", "maya") else p.cfg.get("cwd")
         base = Path(cwd) if cwd else Path.cwd()
         out = []
         values = [p.cfg.get(key) for key in ("model", "mmproj")]
         args = list(p.cfg.get("args") or [])
-        if plugin == "strata" and p.cfg.get("config"):
+        if plugin in ("strata", "maya") and p.cfg.get("config"):
             from .config import read_json
             try:
                 rc = read_json(Path(p.cfg["config"]))
                 if not isinstance(rc, dict):
                     raise ValueError("run config must be an object")
                 args += rc.get("args") or []
+                if plugin == "maya":
+                    values += [(rc.get("vision") or {}).get(key) for key in ("model", "mmproj")]
             except (OSError, ValueError, TypeError):
                 if strict:
                     raise ValueError(f"cannot verify model references for {p.id}; repair its run config first")
         from .engines.base import arg_value
-        for names in (("-m", "--model"), ("--mmproj",), ("-md", "--model-draft"), ("--native",), ("--pack",)):
+        for names in (("-m", "--model"), ("--mmproj",), ("-md", "--model-draft"), ("--native",), ("--pack",), ("--glm-pack",)):
             values.append(arg_value([str(a) for a in args], *names))
         for value in values:
             if value:
                 path = Path(os.path.expanduser(os.path.expandvars(str(value).strip('"'))))
                 path = path if path.is_absolute() else base / path
                 out.extend((Path(os.path.abspath(path)), path.resolve()))
+                if plugin == "maya" and path.is_dir():
+                    from .engines.maya import pack_sources
+                    out.extend(source.resolve() for source in pack_sources(path))
         return out
 
     def list(self, profiles: dict | None = None) -> list[dict]:

@@ -48,6 +48,8 @@ def _kill_tree(pid: int):
 
 class StrataEngine(Engine):
     plugin = "strata"
+    display_name = "Strata"
+    config_glob = "strata-*.json"
     can_update = True
     metrics_path = "/metrics/prometheus"
 
@@ -62,7 +64,7 @@ class StrataEngine(Engine):
 
     # ---- profiles
     def _run_configs(self) -> list[Path]:
-        return sorted(p for p in self.dir.glob("strata-*.json") if not p.name.endswith(".shared-settings.json"))
+        return sorted(p for p in self.dir.glob(self.config_glob) if not p.name.endswith(".shared-settings.json"))
 
     def discover_profiles(self):
         out = {}
@@ -124,12 +126,15 @@ class StrataEngine(Engine):
             folder.mkdir(parents=True, exist_ok=True, mode=0o700)
             config = folder / (hashlib.sha256(profile.id.encode()).hexdigest()[:24] + ".json")
             write_json(config, self._run_config(profile))
-        cmd = [str(self.python), str(self.dir / "serve" / "server.py"), "--engine", "strata",
-               "--config", str(config), "--port", str(self.port)]
+        cmd = self._server_command(config)
         if self.cfg.get("host"):
             cmd += ["--host", self.host]
         cmd += [str(a) for a in profile.cfg.get("server_args", [])]
         return Launch(cmd=cmd, cwd=str(self.dir), env={k: str(v) for k, v in (profile.cfg.get("env") or {}).items()})
+
+    def _server_command(self, config):
+        return [str(self.python), str(self.dir / "serve" / "server.py"), "--engine", "strata",
+                "--config", str(config), "--port", str(self.port)]
 
     def _context_config(self, cmdline, cwd=None):
         config = arg_value(cmdline, "--config")
@@ -246,7 +251,7 @@ class StrataEngine(Engine):
         try:
             shared = self._shared()                  # keep the other Chat settings (temperature, ...) as they are
         except (httpx.HTTPError, ValueError) as e:
-            raise ValueError(f"Strata is not answering ({type(e).__name__}); start it first") from e
+            raise ValueError(f"{self.display_name} is not answering ({type(e).__name__}); start it first") from e
         if level == "default":
             shared.pop("reasoning_effort", None)
         else:
@@ -254,7 +259,7 @@ class StrataEngine(Engine):
         r = httpx.post(self.base_url() + "/settings", headers={**self.auth_headers(), "Content-Type": "application/json"},
                        json={"defaults": shared or None}, timeout=10)
         if r.status_code != 200:
-            raise ValueError(f"Strata refused it: {r.text[:200]}")
+            raise ValueError(f"{self.display_name} refused it: {r.text[:200]}")
         return True
 
     def progress(self, lines):

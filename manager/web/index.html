@@ -849,12 +849,15 @@ function whyNoDelete(p) {
     ? `<p>This profile is ${eng}'s own run config. Hangar lists every run config it finds in the ${eng} folder, and leaves ${eng}'s files alone.</p>
        <p>To remove it, delete or rename the file (a name not ending in <code>.json</code>, such as <code>.json.off</code>, hides it):</p>
        <p><code class="num" style="word-break:break-all">${esc(file)}</code></p>
-       <p>The model itself stays: the run config's <code>--pack</code> and <code>--native</code> paths are its prepared pack and GGUF files. Delete those too to free the space, unless another run config uses them.</p>
+       <p>The model itself stays: the run config's <code>--pack</code>, <code>--glm-pack</code> and <code>--native</code> paths are its prepared pack and GGUF files. Delete those too to free the space, unless another run config uses them.</p>
        ${p.engine === "strata" ? `<h4 style="margin:18px 0 6px">Adding a Strata model</h4>
        <p>Strata installs its own models; Hangar's downloads don't make Strata profiles. In a terminal, in the Strata folder (<code class="num" style="word-break:break-all">${esc(file.replace(/[\\/][^\\/]*$/, ""))}</code>), run:</p>
        <p><code class="num">START-HERE.bat --setup --no-start</code> <span class="muted">(Linux: <code>./setup.sh --setup --no-start</code>)</span></p>
        <p>It asks which model (Qwen3.8-Flash-Next, Swift, Coder, …), which size, how much context and whether it should read images, then downloads and prepares it and writes a new <code>strata-*.json</code>. Refresh this page and it is a profile. <code>--gguf-dir &lt;folder&gt;</code> uses GGUF files you already have.</p>
-       <p class="muted">Preparing a model takes a lot of RAM: stop the running model first if memory is tight.</p>` : ""}`
+       <p class="muted">Preparing a model takes a lot of RAM: stop the running model first if memory is tight.</p>` : ""}
+       ${p.engine === "maya" ? `<h4 style="margin:18px 0 6px">Adding a Maya model</h4>
+       <p>In the Project Maya folder, run <code>START-MAYA.bat --setup --no-start</code> (Linux: <code>./maya.sh --setup --no-start</code>). Maya prepares the model and writes a <code>maya-*.json</code> run config. Refresh this page to discover it.</p>
+       <p>Manage Maya updates through its own launcher/dashboard. Hangar's Maya updater is disabled.</p>` : ""}`
     : `<p>The ${eng} engine found this profile from its model files, and Hangar leaves the engine's files alone.</p>
        <p>It disappears once the model is removed: from the Library, or from the ${eng} engine's own model folder.</p>`;
   dialog(`Why ${p.id} has no Delete`, `<div class="small">${body}</div>
@@ -1129,7 +1132,7 @@ async function renderStats() {
 // ---- gateway usage: the same server-side filters apply to every report and page
 const REQBY = [["target", "Machine · profile"], ["client", "Client"], ["caller", "Device"], ["engine", "Engine"], ["model", "Role / model"]];
 const REQFILTERS = [["client", "Client"], ["caller", "Device"], ["engine", "Engine"], ["model", "Role / model"], ["machine", "Machine"], ["profile", "Profile"]];
-const engineLabel = e => ({llamacpp: "llama.cpp", strata: "Strata", mlx: "MLX"}[e] || e || "Unknown");
+const engineLabel = e => ({llamacpp: "llama.cpp", strata: "Strata", maya: "Maya", mlx: "MLX"}[e] || e || "Unknown");
 function requestQuery() {
   const params = new URLSearchParams({period});
   for (const [key,value] of Object.entries(reqFilters)) if (value) params.set(key,value);

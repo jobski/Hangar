@@ -10,9 +10,9 @@ Hangar uses semantic versions starting with **0.2.0**. Run `hangar --version` fo
 version. The dashboard shows each running manager's version and exact Git revision; `/api/ping` and the OpenAPI
 document also report the server's release. Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
-- **Engines are plugins.** llama.cpp (`llama-server`) and [Strata](https://github.com/Niko1221/Strata) are built in,
-  and a generic `command` plugin runs any program that listens on a port. Adding an engine means writing one file in
-  `manager/engines/`.
+- **Engines are plugins.** llama.cpp (`llama-server`), [Strata](https://github.com/Niko1221/Strata) and Project Maya
+  are built in, and a generic `command` plugin runs any program that listens on a port. Adding an engine means
+  writing one file in `manager/engines/`.
 - **Resource-aware.** Before anything starts, the manager checks free VRAM and RAM against what the profile needs.
   It starts from an estimate and, after each run, uses the peak it measured. Each profile has a policy for what
   happens when something else is running: `exclusive` stops the others first, `coexist` runs alongside them if it
@@ -193,6 +193,15 @@ Where to see it:
 Handy for comparing two quantisations of the same model on real work: same role, look at tok/s and time to first
 token per profile.
 
+**Project Maya.** Add an engine with `plugin: maya`, `dir` pointing at its installation, and an unused `port`
+(for example 8082); see `config.example.yaml`. Every `maya-*.json` run config becomes a profile. Maya must already
+be set up through `START-MAYA.bat --setup --no-start` (Linux: `./maya.sh --setup --no-start`). Hangar starts its
+`maya.py --plain --yes` launcher, preserving model checks and incremental builds, and uses its health, metrics
+and shared settings APIs. Profiles default to exclusive GPU use. Vision, context overrides, live progress and
+client configuration are supported. Profile `server_args` are passed to `maya.py` and must be flags it accepts.
+Maya updates remain managed through Maya's own launcher/dashboard; Hangar's Update action is disabled for it.
+On Linux, the default Python is `.venv/bin/python`; `python` in the engine config can override it on any platform.
+
 ### Reasoning effort
 
 How hard a thinking model thinks before it answers. A running engine that supports it shows **Reasoning: <level>**
@@ -200,6 +209,8 @@ next to Stop/Restart; press it to change the level.
 
 - **Strata** (`default`, `none`, `low`, `medium`, `high`): changes at once, for every client that does not ask for its
   own level, through Strata's shared Chat settings (which it keeps between starts; its other settings stay as they are).
+- **Maya** (`default`, `none`, `low`, `high`, `max`): changes at once through its shared Chat settings, preserving
+  other sampling settings. `default` uses the run config's level.
 - **llama.cpp** (`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`): set when it starts
   (`--reasoning-effort`, or `--reasoning off` for none), so the dashboard offers to restart it; the level is kept per
   profile, also for profiles that are not running. Needs a llama.cpp build that has `--reasoning-effort` (update it if

@@ -48,6 +48,7 @@ COUNTERS = {
     "llamacpp:prompt_seconds_total": "prompt_seconds",
     "llamacpp:tokens_predicted_seconds_total": "gen_seconds",
     "strata:requests_total": "requests",
+    "maya:requests_total": "requests",
 }
 
 

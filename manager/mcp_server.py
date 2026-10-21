@@ -11,7 +11,7 @@ from . import autostart, clients
 from .core import Manager
 from .peers import fleet, machine_info, summary
 
-INSTRUCTIONS = """Manages local LLM engines (llama.cpp, Strata, ...) on one PC with one GPU.
+INSTRUCTIONS = """Manages local LLM engines (llama.cpp, Strata, Maya, ...) on one PC with one GPU.
 Use `status` first. `list_profiles` shows what can run and what each needs. `plan` tells you what starting a profile
 would stop or whether it fits, without doing it. start/switch/stop/restart/update return a job; long jobs keep running
 after the tool returns - poll `job_status`. Starting usually checks for engine updates first (pass update="skip" to
@@ -261,7 +261,7 @@ def build(mgr: Manager) -> MCPServer:
         return _j(snip)
 
     @mcp.tool(description="A thinking model's reasoning effort on an engine: omit level to see it and the levels "
-                          "(Strata: default/none/low/medium/high, applied at once; llama.cpp: default/none/minimal/low/"
+                          "(Strata: default/none/low/medium/high, Maya: default/none/low/high/max, applied at once; llama.cpp: default/none/minimal/low/"
                           "medium/high/xhigh/max, applied at the next start, or now with restart=true).")
     async def reasoning_effort(engine: str, level: str | None = None, restart: bool = False,
                                machine: str | None = None) -> str:

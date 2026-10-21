@@ -84,9 +84,11 @@ def model_entries(mgr, profile_ids: list[str] | None, host: str, *, include_cust
         if p.engine and eng.plugin == "llamacpp":
             e.update(model=p.cfg.get("alias") or p.id, api_key=eng.api_key, vision=bool(p.cfg.get("mmproj")),
                      context=int(p.cfg.get("ctx") or arg_value([str(a) for a in p.cfg.get("args", [])], "-c") or 32768))
-        elif eng.plugin == "strata":
+        elif eng.plugin in ("strata", "maya"):
             rc = eng._run_config(p)
             key = rc.get("api_key") or eng.api_key or ""
+            if eng.plugin == "maya" and eng.api_key:
+                key = eng.api_key
             e.update(model=rc.get("model_name") or p.id, api_key=key if isinstance(key, str) else (key[0] if key else ""),
                      vision=bool(rc.get("vision")), reasoning=True,
                      context=int(arg_value(rc.get("args", []), "--max-context") or 131072), output=32768)
@@ -107,7 +109,7 @@ def model_entries(mgr, profile_ids: list[str] | None, host: str, *, include_cust
 
 
 def _provider_name(engine: str) -> str:
-    return {"llamacpp": "llama.cpp (local)", "strata": "Strata (local)"}.get(engine, f"{engine} (local)")
+    return {"llamacpp": "llama.cpp (local)", "strata": "Strata (local)", "maya": "Maya (local)"}.get(engine, f"{engine} (local)")
 
 
 def _by_provider(entries):
@@ -150,7 +152,7 @@ def gen_qwen(entries, use_env):
     env = {}
     for e in entries:
         item = {"id": e["model"], "name": e["name"], "baseUrl": e["base"] + "/v1",
-                "wireApi": "responses" if e["engine"] == "strata" else "chat-completions"}
+                "wireApi": "responses" if e["engine"] in ("strata", "maya") else "chat-completions"}
         if e["api_key"]:
             item["envKey"] = e["env_key"]
             env[e["env_key"]] = e["api_key"]
