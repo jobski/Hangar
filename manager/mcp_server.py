@@ -246,7 +246,7 @@ def build(mgr: Manager) -> MCPServer:
         return "deleted"
 
     @mcp.tool(description="Ready-to-paste config that points a coding agent at the local models. client: opencode, qwen, "
-                          "pi, codex, claude, aider, continue, generic. host: how the client reaches this PC (default "
+                          "pi, omp, codex, claude, aider, continue, generic. host: how the client reaches this PC (default "
                           "127.0.0.1; see the hosts list in the result's notes). profiles: comma-separated, default all.")
     async def client_config(client: str, host: str = "127.0.0.1", profiles: str | None = None,
                             machine: str | None = None) -> str:

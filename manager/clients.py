@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 import psutil
+import yaml
 
 from .engines import Profile
 from .engines.base import arg_value
@@ -180,6 +181,14 @@ def gen_pi(entries, use_env):
             "notes": "Pi's custom models file. Merged by provider. Pick the model with /model (or pi --model)."}
 
 
+def gen_omp(entries, use_env):
+    snip = gen_pi(entries, use_env)
+    return {**snip, "title": "Oh My Pi (omp)", "file": str(HOME / ".omp" / "agent" / "models.yml"), "language": "yaml",
+            "content": yaml.safe_dump(json.loads(snip["content"]), sort_keys=False, allow_unicode=True), "apply": "omp",
+            "notes": "Merged into omp's models.yml: these models are updated by id, their other settings kept. Pick the "
+                     "model with /model."}
+
+
 def _toml_key(k: str) -> str:
     return k if k.replace("-", "").replace("_", "").isalnum() else json.dumps(k)
 
@@ -250,7 +259,7 @@ def gen_generic(entries, use_env):
             "notes": "Base URL, key and model id for any app that speaks the OpenAI API."}
 
 
-MODEL_CLIENTS = {"opencode": gen_opencode, "qwen": gen_qwen, "pi": gen_pi, "codex": gen_codex, "claude": gen_claude,
+MODEL_CLIENTS = {"opencode": gen_opencode, "qwen": gen_qwen, "pi": gen_pi, "omp": gen_omp, "codex": gen_codex, "claude": gen_claude,
                  "aider": gen_aider, "continue": gen_continue, "generic": gen_generic}
 
 
@@ -298,18 +307,41 @@ def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() and path.read_text(encoding="utf-8").strip() else {}
 
 
-def _write_json(path: Path, data: dict) -> str:
+def _write_json(path: Path, data: dict, text: str | None = None) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     backup = None
     if path.exists():
         backup = path.with_name(path.name + f".bak-{time.strftime('%Y%m%d-%H%M%S')}")
         shutil.copy2(path, backup)
     from .config import write_text
-    write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    write_text(path, text if text is not None else json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return str(backup) if backup else ""
 
 
-APPLY = {"opencode", "opencode-mcp", "qwen", "qwen-mcp", "pi"}
+def _merge_models(old: list, new: list, key: str = "id") -> list:
+    """Models with a new entry's id take its values and keep their own other settings (sampling, timeouts ...)."""
+    by_id = {m[key]: m for m in new}
+    out = [{**m, **by_id.pop(m.get(key))} if m.get(key) in by_id else m for m in old]
+    return out + list(by_id.values())
+
+
+def _merge_providers(cur: dict, new: dict) -> dict:
+    for name, prov in new.items():
+        old = cur.get(name) or {}
+        models = prov.get("models")
+        if isinstance(models, dict):                                    # opencode: models keyed by id
+            models = {**(old.get("models") or {}), **{k: {**(old.get("models") or {}).get(k, {}), **v}
+                                                       for k, v in models.items()}}
+        elif isinstance(models, list):
+            models = _merge_models(old.get("models") or [], models)
+        cur[name] = {**old, **prov, **({"models": models} if models is not None else {})}
+    return cur
+
+
+CONFIG_FILES = {"opencode": HOME / ".config" / "opencode" / "opencode.json", "qwen": HOME / ".qwen" / "settings.json",
+                "pi": HOME / ".pi" / "agent" / "models.json", "omp": HOME / ".omp" / "agent" / "models.yml"}
+CONFIG_FILES.update({"opencode-mcp": CONFIG_FILES["opencode"], "qwen-mcp": CONFIG_FILES["qwen"]})
+APPLY = set(CONFIG_FILES)
 
 
 def apply(kind: str, snippet: dict) -> dict:
@@ -317,11 +349,17 @@ def apply(kind: str, snippet: dict) -> dict:
     if kind not in APPLY:
         raise ValueError(f"cannot apply {kind}; one of {', '.join(sorted(APPLY))}")
     path = Path(snippet["file"])
+    if kind == "omp":
+        new = yaml.safe_load(snippet["content"])
+        cur = (yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None) or {}
+        _merge_providers(cur.setdefault("providers", {}), new["providers"])
+        backup = _write_json(path, cur, yaml.safe_dump(cur, sort_keys=False, allow_unicode=True))
+        return {"file": str(path), "backup": backup}
     new = json.loads(snippet["content"])
     cur = _load_json(path)
     if kind == "opencode":
         cur.setdefault("$schema", "https://opencode.ai/config.json")
-        cur.setdefault("provider", {}).update(new["provider"])
+        _merge_providers(cur.setdefault("provider", {}), new["provider"])
         cur.setdefault("model", new.get("model"))
     elif kind == "opencode-mcp":
         cur.setdefault("$schema", "https://opencode.ai/config.json")
@@ -329,12 +367,11 @@ def apply(kind: str, snippet: dict) -> dict:
     elif kind == "qwen":
         cur.setdefault("env", {}).update(new["env"])
         lst = cur.setdefault("modelProviders", {}).setdefault("openai", [])
-        ids = {m["id"] for m in new["modelProviders"]["openai"]}
-        cur["modelProviders"]["openai"] = [m for m in lst if m.get("id") not in ids] + new["modelProviders"]["openai"]
+        cur["modelProviders"]["openai"] = _merge_models(lst, new["modelProviders"]["openai"])
     elif kind == "qwen-mcp":
         cur.setdefault("mcpServers", {}).update(new["mcpServers"])
     elif kind == "pi":
-        cur.setdefault("providers", {}).update(new["providers"])
+        _merge_providers(cur.setdefault("providers", {}), new["providers"])
     backup = _write_json(path, cur)
     return {"file": str(path), "backup": backup}
 

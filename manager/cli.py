@@ -25,7 +25,8 @@
     hangar custom <profile> [--ctx N] [-- extra llama args...]   one-off run with changes
 
   connect other tools
-    hangar connect <client> [--host H] [--apply]   config for opencode, qwen, pi, codex, claude, aider, continue, generic
+    hangar connect <client> [--host H] [--apply]   config for opencode, qwen, pi, omp, codex, claude, aider, continue,
+                                                   generic; --apply writes it on the machine you run this on
     hangar connect mcp [client] [--host H] [--apply]   this manager as an MCP server (claude, codex, qwen, opencode, ...)
     hangar hosts                                    addresses other machines can use for --host
 
@@ -399,7 +400,8 @@ def cmd_connect(a):
     if "--apply" in a:
         if not snip.get("apply"):
             sys.exit(f"{snip['title']} cannot be written automatically; run without --apply and paste it ({snip['file']})")
-        res = _call("POST", "/api/connect/apply", json={"kind": snip["apply"], "client": pl[0], "host": host})
+        from .clients import CONFIG_FILES, apply         # the tool's config lives here, not on the manager's machine
+        res = apply(snip["apply"], {**snip, "file": str(CONFIG_FILES[snip["apply"]])})
         print(f"written to {res['file']}" + (f" (backup {res['backup']})" if res["backup"] else ""))
         return
     print(f"# {snip['title']} -> {snip['file']}\n")

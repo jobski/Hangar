@@ -10,6 +10,14 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.4.0 — 2026-10-22
+
+- Name each role after the model serving it in `/v1/models` and the Connect configs, flagging a fallback, with its context size.
+- Mark roles served by Strata or Maya as reasoning models in generated client configs.
+- Add an Oh My Pi (omp) client config, written to `~/.omp/agent/models.yml`.
+- Merge applied client configs by model id, keeping each model's other settings instead of replacing them.
+- Write `hangar connect --apply` on the machine running the command rather than the manager's machine.
+
 ## 0.3.0 — 2026-10-21
 
 - Keep routing directly to healthy peer engines while their manager is offline, without a fixed grace window.
