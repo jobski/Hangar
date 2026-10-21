@@ -16,11 +16,11 @@ import time
 
 import httpx
 
+from .peers import engine_health, engine_reachable
+
 DOWN_GRACE_S = 30            # a primary must be down this long before a backup is started (sleep/wake flapping)
 WAKE_WAIT_S = 90             # how long a request with nothing else to answer it waits for a woken machine
 IDLE_STOP_S = 600            # a backup Hangar started is stopped after this long unused, once the primary is back
-PEER_DIRECT_GRACE_S = 90     # keep a peer routable this long after its gateway stops answering: the engine is
-                             # almost certainly still up (a manager restart), so the hub can still relay to it directly
 ROLE_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
@@ -62,10 +62,11 @@ class Roles:
         else:
             peer = self.peers.state.get(machine) or {}
             status = peer.get("status") or {}
-            if not peer.get("online") or status.get("main_follows_running") is False:
+            if status.get("main_follows_running") is False:
                 return None
             running = [engine["running"] for engine in status.get("engines") or []
-                       if (engine.get("running") or {}).get("state") in ("ready", "starting")]
+                       if (engine.get("running") or {}).get("state") in ("ready", "starting")
+                       and (peer.get("online") or engine_reachable(peer, engine["running"]["profile"]))]
         if not running:
             return None
         current = max(running, key=lambda inst: (inst.get("state") == "ready", inst.get("started") or 0))
@@ -147,11 +148,14 @@ class Roles:
             return "stopped" if t["profile"] in self.mgr.profiles else "unknown"
         st = self.peers.state.get(t["machine"]) or {}
         if st.get("online"):
+            health = engine_health(st, t["profile"])
+            if health is not None and not health["online"]:
+                return "offline"
             state = self._peer_engine_state(st, t["profile"])
             if state is None:
                 return "stopped"
             return "ready" if state == "ready" else "starting"
-        return "offline"
+        return "ready" if engine_reachable(st, t["profile"]) else "offline"
 
     def target_state(self, t: dict) -> str:
         state = self._target_state(t)
@@ -163,19 +167,9 @@ class Roles:
                 return "starting"
         return state
 
-    def _grace_ready(self, t: dict) -> bool:
-        """The peer's gateway has stopped answering, but its last status still showed this profile ready and that was
-        within the grace window: almost certainly a manager restart with the engine still up, so a hub may still reach
-        it directly. Health (supervision, wake, backup) is still 'offline' - this only keeps it *routable*."""
-        st = self.peers.state.get(t["machine"]) or {}
-        return (not st.get("online")
-                and self._peer_engine_state(st, t["profile"]) == "ready"
-                and time.time() - (st.get("seen") or 0) < PEER_DIRECT_GRACE_S)
-
     def routable(self, t: dict) -> bool:
-        """Can a request go to this target right now: it is ready, or its gateway is mid-restart and the hub can
-        still relay to its engine. Use for routing (candidates/opened); use target_state for health."""
-        return self.target_state(t) == "ready" or (t["machine"] and self._grace_ready(t))
+        """Ready through its manager or a directly verified engine, without an offline time limit."""
+        return self.target_state(t) == "ready"
 
     def candidates(self, model: str, need: int = 0, who: tuple | None = None) -> list[dict]:
         """Who should answer a request for this model name, best first. A role gives its targets that are ready, then
@@ -205,8 +199,8 @@ class Roles:
         for name, inst in list(self.mgr.instances.items()):        # anything running here
             add({"machine": "", "profile": inst.profile})
         for name, st in list(self.peers.state.items()):                  # then on the peers
-            for e in (st.get("status") or {}).get("engines") or []:      # last-known: add() keeps only ready,
-                if e.get("running"):                                     # which still covers a peer mid-restart
+            for e in (st.get("status") or {}).get("engines") or []:
+                if e.get("running"):                 # cached details plus direct health cover an offline manager
                     add({"machine": name, "profile": e["running"]["profile"]})
         return sorted(out, key=lambda t: not self.fits(t, need)) if need else out
 
@@ -343,7 +337,10 @@ class Roles:
         if not t["machine"]:
             return any(i.profile == t["profile"] and (i.gauges or {}).get("requests_processing")
                        for i in list(self.mgr.instances.values()))
-        st = (self.peers.state.get(t["machine"]) or {}).get("status") or {}
+        peer = self.peers.state.get(t["machine"]) or {}
+        if not peer.get("online"):
+            return False
+        st = peer.get("status") or {}
         return any(((e.get("running") or {}).get("profile") == t["profile"]
                     and (((e["running"].get("stats") or {}).get("gauges") or {}).get("requests_processing")))
                    for e in st.get("engines") or [])
@@ -351,7 +348,7 @@ class Roles:
     def opened(self, t: dict):
         k = (t["machine"], t["profile"])
         with self.lock:
-            if self._target_state(t) != "ready" and not self._grace_ready(t):
+            if self._target_state(t) != "ready":
                 return False
             self.inflight[k] = self.inflight.get(k, 0) + 1
             return True
@@ -568,6 +565,7 @@ class Roles:
             for i, t in enumerate(role.get("targets", [])):
                 k = (t["machine"], t["profile"])
                 rows.append({**t, "state": self.target_state(t), "backup": i > 0, "started_by_hangar": k in self.started,
+                             "manager_online": not t["machine"] or bool((self.peers.state.get(t["machine"]) or {}).get("online")),
                              "busy": self.busy(t),
                              "serving": bool(serving) and (serving["machine"], serving["profile"]) == k})
             fallback = serving and not any(r["serving"] for r in rows)

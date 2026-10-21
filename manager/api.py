@@ -21,7 +21,8 @@ from . import autostart, clients
 from . import config as config_mod
 from .core import Manager
 from .mcp_server import build as build_mcp
-from .peers import Peers, fleet, machine_info, make_code, normalize_url, summary
+from .peers import (Peers, engine_connection, engine_instance, fleet, machine_info, make_code,
+                    normalize_url, record_engine_result, record_manager_failure, summary)
 from .roles import WAKE_WAIT_S, Roles
 from .stats import RequestMeter, client_name, merge_series, merge_summaries, request_error
 
@@ -421,30 +422,30 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         peer has no gateway, or its gateway is down/restarting while its engine is still up. Authenticated with the
         engine key the peer published in its status."""
         st = (peers.state.get(t["machine"]) or {}).get("status") or {}
-        run = next(((e.get("running") or {}) for e in st.get("engines") or []
-                    if (e.get("running") or {}).get("profile") == t["profile"]), None)
-        port = next((e["port"] for e in st.get("engines") or [] if (e.get("running") or {}).get("profile") == t["profile"]), None)
-        if not (port and run):
+        engine = next((e for e in st.get("engines") or []
+                       if (e.get("running") or {}).get("profile") == t["profile"]), None)
+        if not engine or not engine.get("port"):
             return None
-        key = run.get("engine_key") or ""
-        auth = {"Authorization": f"Bearer {key}"} if key else {}
-        host = httpx.URL(peers.get(t["machine"])["url"]).host
-        host = f"[{host}]" if ":" in host else host
-        base = f"http://{host}:{port}"
+        base, auth = engine_connection(peers.get(t["machine"])["url"], engine)
+        instance = engine_instance(engine)
         ck = (t["machine"], t["profile"])
-        engine_id = (base, run.get("pid"), run.get("started"))
+        engine_id = (base, *instance)
         cached = direct_cache.get(ck)
         mid = cached[1] if cached and cached[0] == engine_id else None
         if mid is None:
             try:
-                ids = [m["id"] for m in (await gateway.get(base + "/v1/models", headers=auth, timeout=5)).json().get("data", [])]
-            except (httpx.HTTPError, ValueError, AttributeError, TypeError, KeyError):
+                response = await gateway.get(base + "/v1/models", headers=auth, timeout=5)
+                response.raise_for_status()
+                ids = [m["id"] for m in response.json().get("data", [])]
+            except (httpx.HTTPError, ValueError, AttributeError, TypeError, KeyError) as exc:
+                record_engine_result(peers, t["machine"], t["profile"], instance, False, type(exc).__name__)
                 return None
             if not ids:
+                record_engine_result(peers, t["machine"], t["profile"], instance, False, "no model available")
                 return None
             mid = ids[0]
             direct_cache[ck] = (engine_id, mid)
-        return (base, mid, auth)
+        return (base, mid, auth, instance)
 
     def target_engine(target):
         if target["machine"]:
@@ -514,18 +515,29 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
             r, relaying = None, False
             served_engine = target_engine(t)
             direct_tried = False
+            direct_instance = None
 
             async def send_direct():
                 """Relay to this target's engine straight (its gateway is down or has none). Sets r, or None."""
-                nonlocal r, direct_tried
+                nonlocal r, direct_tried, direct_instance
+                r, direct_tried = None, True
                 direct = await direct_engine(t)
                 if not direct:
                     return None
-                base, mid, auth = direct
-                direct_tried = True
+                base, mid, auth, direct_instance = direct
                 req = gateway.build_request("POST", f"{base}/v1/{path}", content=json.dumps({**data, "model": mid}).encode(),
                                             headers={**passthrough, **auth, "Content-Type": "application/json"})
-                r = await gateway.send(req, stream=True)
+                try:
+                    r = await gateway.send(req, stream=True)
+                except httpx.HTTPError as exc:
+                    direct_cache.pop((t["machine"], t["profile"]), None)
+                    record_engine_result(peers, t["machine"], t["profile"], direct_instance, False, type(exc).__name__)
+                    raise
+                healthy = r.status_code not in (401, 403, 404, 502, 503, 504)
+                if not healthy:
+                    direct_cache.pop((t["machine"], t["profile"]), None)
+                record_engine_result(peers, t["machine"], t["profile"], direct_instance, healthy,
+                                     None if healthy else f"HTTP {r.status_code}")
                 return r
 
             try:
@@ -539,10 +551,11 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                             req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
                                                         headers={**passthrough, **auth, "Content-Type": "application/json"})
                             r = await gateway.send(req, stream=True)
-                        except httpx.ConnectError:
+                        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadError, httpx.RemoteProtocolError):
                             # online is still cached but the gateway is already refusing (its manager is on its way
                             # out before the poll flips it offline): go straight to the engine, not to a backup
                             r = None
+                            record_manager_failure(peers, t["machine"])
                         # no answer (refused) or an old peer with no gateway (404): fall through to its engine
                         if r is None or r.status_code == 404:
                             if r is not None:
@@ -550,7 +563,7 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                                     await r.aclose()
                             await send_direct()
                     else:
-                        # gateway down (its manager is restarting); the engine is likely still up
+                        # Manager offline: use the independently monitored engine.
                         await send_direct()
                     if r is None:
                         errors.append(f"{t['machine']}/{t['profile']}: gateway down, engine not reachable")
@@ -569,7 +582,7 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                     r = await gateway.send(req, stream=True)
                 if t["machine"]:
                     served_engine = r.headers.get("x-hangar-engine") or served_engine
-                if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 404)):
+                if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 403, 404)):
                     # a gateway that answered but is on its way out: last-ditch try its engine before the next target
                     if t["machine"] and not direct_tried:
                         with anyio.CancelScope(shield=True):
@@ -577,7 +590,7 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                         if not await send_direct():
                             errors.append(f"{t['machine']}/{t['profile']}: gateway down, engine not reachable")
                             continue
-                        if r.status_code in (401, 404, 502, 503, 504):
+                        if r.status_code in (401, 403, 404, 502, 503, 504):
                             errors.append(f"{t['machine']}/{t['profile']}: HTTP {r.status_code}")
                             continue
                     else:
@@ -629,6 +642,12 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                             meter.feed(chunk, time.time())
                             yield chunk
                         done = True
+                        if direct_tried and r.status_code < 400:
+                            record_engine_result(peers, t["machine"], t["profile"], direct_instance, True)
+                    except httpx.HTTPError as exc:
+                        if direct_tried:
+                            record_engine_result(peers, t["machine"], t["profile"], direct_instance, False, type(exc).__name__)
+                        raise
                     finally:
                         await finish()
                 response = UpstreamResponse(relay(), on_close=finish, status_code=r.status_code, media_type=r.headers.get("content-type"),

@@ -26,8 +26,9 @@ def _norm(p: str) -> str:
     return os.path.normcase(os.path.normpath(p.strip('"')))
 
 
-# "[strata] thinking: 5466 of max 64000 tokens, 42.7 tok/s, 231 s" (also answering / writing a tool call: <name>)
-GEN = re.compile(r"\[strata\] (?P<phase>.+?): (?P<n>[\d,]+) of max [\d,]+ tokens, (?P<tps>[\d.]+) tok/s")
+# Thinking may use "of budget 12288 (max 16384)"; other generation phases use "of max 16384".
+GEN = re.compile(r"\[strata\]\s+(?P<phase>.+?):\s*(?P<n>[\d,]+)\s+of\s+(?:max|budget)\s+[\d,]+"
+                 r"(?:\s+\(max\s+[\d,]+\))?\s+tokens,\s*(?P<tps>\d+(?:\.\d+)?)\s+tok/s", re.I)
 # "[strata] reading the prompt: 22,982 of 39,584 tokens, 19 s so far"
 READ = re.compile(r"\[strata\] reading the prompt: (?P<n>[\d,]+) of (?P<total>[\d,]+) tokens, (?P<s>\d+) s so far")
 

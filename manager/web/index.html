@@ -1442,7 +1442,7 @@ async function renderMachines() {
   const item = (name, os, online, sm, sub, on) => `<button class="mi ${on ? "on" : ""}" data-machine="${esc(name)}"><span class="dot ${online ? "ok" : "bad"}"></span>
       <span style="min-width:0"><b>${esc(name)}</b><span class="sub">${sub}</span></span><span class="os">${esc(OS[os] || os || "")}</span></button>`;
   $("#mswmenu").innerHTML = item(SELF.name, SELF.os, true, SELF.summary, "this machine · " + runline(SELF.summary), !MACHINE) +
-    PEERS.map(p => item(p.name, (p.machine || {}).os, p.online, p.summary, p.online ? runline(p.summary) : esc(p.error || "offline"), MACHINE === p.name)).join("") +
+    PEERS.map(p => item(p.name, (p.machine || {}).os, p.online, p.summary, p.online ? runline(p.summary) : p.reachable_engines?.length ? "manager offline · engine reachable" : esc(p.error || "offline"), MACHINE === p.name)).join("") +
     `<hr><button class="mi" data-act="mshare"><span></span><span>Share this machine…</span><span></span></button><button class="mi" data-act="maddshow"><span></span><span>+ Add machine…</span><span></span></button>`;
   // the fleet panel shows every machine, whichever one is being viewed
   $("#fleetsec").hidden = false;
@@ -1482,9 +1482,10 @@ async function renderMachines() {
     const modelLine = sm => (sm.running || []).length ? sm.running.map(r => `<div class="machine-profile"><div class="machine-profile-name">${esc(r.profile)}</div><div class="machine-profile-meta">${contextBadge(r)}${r.version ? `<span class="tag" title="Inference engine version">${esc(r.engine)} ${esc(r.version)}</span>` : ""}${r.gen_tps ? `<span class="num">${r.gen_tps.toFixed(1)} tok/s</span>` : ""}</div></div>`).join("") : `<span class="muted">Idle</span>`;
     const card = (name, os, online, sm, err, isSelf, src, peer) => {
       const hub = online && sm && sm.engines === 0;
+      const direct = !online && (peer?.reachable_engines || []).length > 0;
       const selected = (MACHINE || SELF.name) === name;
       const profiles = (sm?.running || []).map(r => r.profile).join(", ");
-      const header = `<div class="machine-heading"><div class="mh2"><button type="button" class="machine-select" data-machine="${isSelf ? "" : esc(name)}" aria-pressed="${selected}" title="${esc(`View ${name}${profiles ? ": " + profiles : ""}`)}"><span class="dot ${online ? "ok" : "bad"}"></span><span class="machine-name">${esc(name)}</span><span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}</button>
+      const header = `<div class="machine-heading"><div class="mh2"><button type="button" class="machine-select" data-machine="${isSelf ? "" : esc(name)}" aria-pressed="${selected}" title="${esc(`View ${name}${profiles ? ": " + profiles : ""}`)}"><span class="dot ${online ? "ok" : direct ? "warn" : "bad"}"></span><span class="machine-name">${esc(name)}</span><span class="tag">${esc(OS[os] || os || "?")}</span>${isSelf ? `<span class="tag">this</span>` : ""}</button>
         ${!isSelf && src === "managed" ? `<details class="machine-actions" data-machine-menu="${esc(name)}"><summary aria-label="Options for ${esc(name)}">⋯</summary><div class="machine-menu"><button type="button" class="btn ghost sm danger" data-act="mremove" data-name="${esc(name)}">Remove machine</button></div></details>` : ""}</div>${hangarVersion(sm?.hangar, isSelf ? null : SELF.summary?.hangar, online)}</div>`;
       let body;
       if (hub) {
@@ -1496,6 +1497,9 @@ async function renderMachines() {
         const gl = sm.gpu_list?.length ? sm.gpu_list : sm.gpu ? [{ name: sm.gpu, vram_used_mib: sm.vram_used_mib, vram_total_mib: sm.vram_total_mib, util_percent: sm.gpu_util_percent, unified: sm.unified }] : [];
         body = `<div class="run">${modelLine(sm)}</div><div class="machine-gpus">${gpuBars(gl)}</div>
           <div class="machine-resources">${metric("GPU memory", gl.length ? memory(sm.vram_used_mib, sm.vram_total_mib) : "–")}${metric("RAM", memory(sm.ram_used_mib, sm.ram_total_mib))}${metric("CPU", pc(sm.cpu_percent))}${metric("GPU load", pc(sm.gpu_util_percent))}</div>`;
+      } else if (direct) {
+        const running = (sm?.running || []).filter(r => peer.reachable_engines.includes(r.profile)).map(r => ({ ...r, gen_tps: null }));
+        body = `<div class="run"><span class="warn-t">Manager offline · engine reachable</span>${modelLine({ running })}</div><div class="machine-gpus machine-gateway">Inference continues directly. Management and live resource readings are unavailable.</div>`;
       } else {
         body = `<div class="run bad-t">${esc(err || "Offline")}</div>`;
       }
@@ -1509,7 +1513,8 @@ async function renderMachines() {
     const releases = new Set(onlineBuilds.filter(Boolean).map(h => h.version));
     const mixed = revisions.size > 1 || releases.size > 1;
     const unknown = onlineBuilds.filter(h => !h?.revision).length;
-    $("#fleetmeta").textContent = `${PEERS.filter(p => p.online).length + 1} of ${PEERS.length + 1} online${mixed ? " · different Hangar builds" : ""}${unknown ? ` · ${unknown} version${unknown > 1 ? "s" : ""} unconfirmed` : ""}`;
+    const directMachines = PEERS.filter(p => !p.online && p.reachable_engines?.length).length;
+    $("#fleetmeta").textContent = `${PEERS.filter(p => p.online).length + 1} of ${PEERS.length + 1} managers online${directMachines ? ` · ${directMachines} serving directly` : ""}${mixed ? " · different Hangar builds" : ""}${unknown ? ` · ${unknown} version${unknown > 1 ? "s" : ""} unconfirmed` : ""}`;
   }
   renderFleet(res.fleet);
 }
@@ -1648,7 +1653,7 @@ function renderRoles(rs) {
   const stc = st => ({ ready: "ok", starting: "warn", offline: "bad", unknown: "bad" }[st] || "");
   const chip = (t, extra) => `<span class="tchip ${t.serving ? "serving" : ""}" title="${esc(t.state || "")}${t.busy ? " · busy with a request" : ""}${t.started_by_hangar ? " · started by Hangar as a backup" : ""}"><span class="dot ${stc(t.state)}"></span><span class="m">${esc(t.machine || MACHINE || "this")}</span><span class="p">${esc(t.profile)}</span>${extra || ""}</span>`;
   $("#roles").innerHTML = rs.map(r => {
-    const ts = r.targets.map((t, i) => chip(t, (t.busy && t.state === "ready" ? `<span class="k" style="color:var(--warn)">busy</span>` : "") + (i ? `<span class="k">${t.auto_start ? "backup · auto" : "backup"}</span>` : ""))).join(r.spill ? `<span class="arr" title="while one is busy, requests go to a free one">⇄</span>` : `<span class="arr">→</span>`);
+    const ts = r.targets.map((t, i) => chip(t, (t.manager_online === false && t.state === "ready" ? `<span class="k warn-t" title="Manager offline; engine reachable directly">direct</span>` : "") + (t.busy && t.state === "ready" ? `<span class="k" style="color:var(--warn)">busy</span>` : "") + (i ? `<span class="k">${t.auto_start ? "backup · auto" : "backup"}</span>` : ""))).join(r.spill ? `<span class="arr" title="while one is busy, requests go to a free one">⇄</span>` : `<span class="arr">→</span>`);
     // what happens when every target is down: main answers (shown always, lit when it is answering)
     let fb = "";
     if (r.fallback && r.serving) fb = `<span class="arr">→</span>${chip({ ...r.serving, state: "ready", serving: true }, `<span class="k">${r.name === "main" ? "running" : "fallback · answering"}</span>`)}`;

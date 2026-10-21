@@ -10,6 +10,13 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.3.0 — 2026-10-21
+
+- Keep routing directly to healthy peer engines while their manager is offline, without a fixed grace window.
+- Check engine health in the background and refresh it from direct requests; recover normal routing when the manager returns.
+- Use direct engine health for backup supervision and spill routing, with separate manager/engine status in the dashboard.
+- Show Strata's reported tok/s during budgeted thinking as well as answering and tool-call generation.
+
 ## 0.2.0 — 2026-10-21
 
 - Show running Hangar versions and Git revisions on machine cards and the selected machine's resource panel.

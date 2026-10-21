@@ -168,6 +168,50 @@ def send_wake(lan: list[dict], prefer_ip: str | None = None) -> list[str]:
     return sent
 
 
+def engine_connection(peer_url: str, engine: dict) -> tuple[str, dict]:
+    host = httpx.URL(peer_url).host
+    host = f"[{host}]" if ":" in host else host
+    key = (engine.get("running") or {}).get("engine_key") or ""
+    return f"http://{host}:{engine['port']}", {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def engine_instance(engine: dict) -> tuple:
+    run = engine.get("running") or {}
+    return engine.get("port"), run.get("pid"), run.get("started")
+
+
+def engine_health(state: dict, profile: str) -> dict | None:
+    health = (state.get("direct") or {}).get(profile) or {}
+    if health and any(
+        (e.get("running") or {}).get("profile") == profile
+        and (e.get("running") or {}).get("state") in ("ready", "starting")
+        and engine_instance(e) == health.get("instance")
+        for e in (state.get("status") or {}).get("engines") or []):
+        return health
+    return None
+
+
+def engine_reachable(state: dict, profile: str) -> bool:
+    return bool((engine_health(state, profile) or {}).get("online"))
+
+
+def record_engine_result(peers, machine: str, profile: str, instance: tuple,
+                         online: bool, error: str | None = None):
+    with getattr(peers, "lock", contextlib.nullcontext()):
+        state = peers.state.get(machine)
+        if state is None:
+            return
+        health = {"online": online, "error": error, "checked": time.time(), "instance": instance}
+        peers.state[machine] = {**state, "direct": {**(state.get("direct") or {}), profile: health}}
+
+
+def record_manager_failure(peers, machine: str):
+    with getattr(peers, "lock", contextlib.nullcontext()):
+        state = peers.state.get(machine)
+        if state is not None:
+            peers.state[machine] = {**state, "online": False, "error": "gateway connection failed"}
+
+
 class Peers:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -426,6 +470,11 @@ class Peers:
             st, err = r.json(), None
         except (httpx.HTTPError, ValueError) as e:
             st, err = None, str(e) if isinstance(e, ValueError) else f"unreachable ({type(e).__name__})"
+        with self.lock:
+            previous = self.state.get(name) or {}
+            cached = previous.get("status") or {}
+            failed = any(not h.get("online") for h in (previous.get("direct") or {}).values())
+        direct = self._probe_engines(p, st or cached) if st is None or failed else {}
         lan = ((st or {}).get("machine") or {}).get("lan")
         # a Hangar too old to report its network cards: look for the MAC in the ARP table (now and then)
         if (st and "lan" not in (st.get("machine") or {}) and not p.get("lan")
@@ -441,8 +490,37 @@ class Peers:
             if current is None or (current["url"], current.get("token")) != (p["url"], p.get("token")):
                 return
             old = self.state.get(name, {})
+            # A request may have completed while the background health check was running.
+            for profile, health in (old.get("direct") or {}).items():
+                if health.get("checked", 0) > max(t0, (direct.get(profile) or {}).get("checked", 0)):
+                    direct[profile] = health
             self.state[name] = {"online": st is not None, "error": err, "status": st or old.get("status"),
+                                "direct": direct,
                                 "seen": time.time() if st else old.get("seen"), "latency_ms": round((time.time() - t0) * 1000)}
+
+    def _probe_engines(self, peer: dict, status: dict) -> dict:
+        results = {}
+        for engine in status.get("engines") or []:
+            run = engine.get("running") or {}
+            if run.get("state") not in ("ready", "starting") or not engine.get("port"):
+                continue
+            base, auth = engine_connection(peer["url"], engine)
+            try:
+                response = self.client.get(base + "/health", headers=auth)
+                if response.status_code == 404:
+                    response = self.client.get(base + "/v1/models", headers=auth)
+                online = response.status_code == 200
+                error = None if online else f"HTTP {response.status_code}"
+                if online:
+                    with contextlib.suppress(ValueError):
+                        body = response.json()
+                        if isinstance(body, dict) and body.get("loaded") is False:
+                            online, error = False, "model loading"
+            except httpx.HTTPError as exc:
+                online, error = False, type(exc).__name__
+            results[run["profile"]] = {"online": online, "error": error, "checked": time.time(),
+                                       "instance": engine_instance(engine)}
+        return results
 
     def public(self) -> list[dict]:
         out = []
@@ -450,8 +528,13 @@ class Peers:
             with self.lock:
                 s = dict(self.state.get(name) or {"online": False, "error": "not checked yet"})
             st = s.pop("status", None) or {}
+            direct = s.pop("direct", {})
+            reachable = [profile for profile in direct if engine_reachable({"status": st, "direct": direct}, profile)]
             wake = {"known": bool(p.get("lan")), "auto": bool(p.get("wake")), "sent": self.woken.get(name)}
             out.append({"name": name, "url": p["url"], "source": p["source"], **s, "wake": wake,
+                        "reachable_engines": reachable,
+                        "engine_health": {profile: {k: v for k, v in health.items() if k != "instance"}
+                                          for profile, health in direct.items()},
                         "machine": st.get("machine") or {"name": name}, "summary": summary(st) if st else None})
         return out
 

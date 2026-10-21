@@ -148,8 +148,12 @@ as `Authorization: Bearer` or `x-api-key`); the model name is the role.
   stops a backup it started after 10 minutes without requests.
 - On a machine where `main` takes the whole GPU (Strata here), set no backup: the role falls back to `main`, which
   is already loaded.
-- A peer's target goes through that peer's own gateway with its token (its engine keys stay there); a peer on an
-  older Hangar is reached on its engine's port directly.
+- A peer's target normally goes through that peer's own gateway. If its manager stops answering, the hub uses
+  the last reported engine endpoint and engine key directly. Background health checks keep that engine available
+  for as long as it remains ready, with no fixed expiry; failed engines are skipped until a health check confirms
+  recovery. A reachable engine does not trigger unnecessary backup starts. Normal routing resumes when the manager
+  returns. The dashboard distinguishes **manager offline · engine reachable** from an unavailable engine;
+  management actions and fresh resource readings require the manager. Existing streams are never replayed on another engine.
 
 **Use running model as main** is enabled by default in each machine's **Roles** panel. `main` follows the most
 recently started ready model on each configured target machine, retaining primary and backup order. Without saved
