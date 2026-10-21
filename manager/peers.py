@@ -469,14 +469,14 @@ def summary(st: dict) -> dict:
             # hold the last burst's speed for minutes after the engine goes quiet
             g = (rs.get("live") or {}).get("gen_tps") or (rs.get("instant") or {}).get("gen_tps")
             running.append({"engine": e["name"], "profile": run["profile"], "state": run["state"], "port": e["port"],
-                            "gen_tps": g, "context": run.get("context"),
+                            "gen_tps": g, "context": run.get("context"), "version": e.get("version"),
                             "context_source": run.get("context_source"),
                             "launched_context": run.get("launched_context"),
                             "configured_context": run.get("configured_context")})
     def best(g):   # the sidecar's honest load (power / limit) when it reports this card, else kernel time
         return g.get("load_percent") if g.get("load_percent") is not None else g.get("util_percent")
     loads = [v for g in gpus if (v := best(g)) is not None]
-    return {"running": running, "engines": len(st.get("engines") or []),
+    return {"running": running, "engines": len(st.get("engines") or []), "hangar": st.get("hangar"),
             "gen_tps": sum(x["gen_tps"] or 0 for x in running),
             "vram_used_mib": sum(g.get("vram_used_mib") or 0 for g in gpus),
             "vram_total_mib": sum(g.get("vram_total_mib") or 0 for g in gpus),

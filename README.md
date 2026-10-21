@@ -6,6 +6,10 @@ Start, stop, switch, update and watch the local LLM engines on one Windows PC wi
 it from a web page (works on a phone), an MCP server (for Claude or any other MCP client), a REST API, and the `hangar`
 command line.
 
+Hangar uses semantic versions starting with **0.2.0**. Run `hangar --version` for the local client's
+version. The dashboard shows each running manager's version and exact Git revision; `/api/ping` and the OpenAPI
+document also report the server's release. Release notes are in [CHANGELOG.md](CHANGELOG.md).
+
 - **Engines are plugins.** llama.cpp (`llama-server`) and [Strata](https://github.com/Niko1221/Strata) are built in,
   and a generic `command` plugin runs any program that listens on a port. Adding an engine means writing one file in
   `manager/engines/`.
@@ -221,6 +225,12 @@ profiles use the same GGUF numbers (with sliding-window models such as Gemma the
 replaced by measured use after a run.
 
 ### Several machines (peers)
+
+Machine cards show the running Hangar release and Git revision, flag different builds across online machines,
+and list inference engine versions separately. **Updated** is the first recorded manager start for that build;
+**Started** is the current manager start. Update history begins when this feature is first installed and is kept
+in `data/version.json`. Pulling new code takes effect in this display after the manager restarts. Older peers
+remain usable and show **version unavailable** until updated.
 
 Each machine runs its own Hangar; peering lets one dashboard, CLI and MCP server see and control all of them — say a
 Windows PC with CUDA and a Mac with MLX.

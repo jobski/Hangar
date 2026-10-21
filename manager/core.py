@@ -32,6 +32,7 @@ from .peers import machine_info
 from .downloads import Downloader
 from .engines import Engine, Profile
 from .stats import CounterTracker, Store
+from .version import runtime_version
 
 CREATE_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 BREAKAWAY = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
@@ -139,6 +140,7 @@ class Manager:
         gpumonitor.configure((self.cfg.get("gpumonitor") or {}).get("base_url", ""))
         self.data_dir: Path = self.cfg["manager"]["data_dir"]
         self.logs_dir: Path = self.cfg["manager"]["logs_dir"]
+        self.hangar = runtime_version(self.data_dir)
         self.store = Store(self.data_dir / "stats.db")
         self._reasoning_cache: dict = {}
         self.lock = threading.RLock()            # guards instances / profiles
@@ -1330,7 +1332,8 @@ class Manager:
         warn = []
         if snap["ram_percent"] >= self.cfg["resources"]["warn_ram_percent"]:
             warn.append(f"RAM is {snap['ram_percent']:.0f}% used")
-        return {"time": time.time(), "machine": machine_info(self.cfg), "budget": self.budget_public(),
+        return {"time": time.time(), "machine": machine_info(self.cfg), "hangar": self.hangar,
+                "budget": self.budget_public(),
                 "engines": engines, "resources": snap, "warnings": warn,
                 "job": self.current_job.public(10) if self.current_job else None,
                 "queued": self.queue.qsize(),

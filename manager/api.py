@@ -74,7 +74,8 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         await mgr.mcp_client.aclose()
         mgr.shutdown()
 
-    app = FastAPI(title="Hangar", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
+    app = FastAPI(title="Hangar", version=mgr.hangar["version"], lifespan=lifespan,
+                  docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.mgr = mgr
 
     @app.middleware("http")
@@ -119,7 +120,7 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
 
     @app.get("/api/ping")
     def ping():
-        return {"ok": True, "service": "hangar"}
+        return {"ok": True, "service": "hangar", "version": mgr.hangar["version"]}
 
     # ---- reading
     @app.get("/api/status")

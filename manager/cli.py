@@ -1,6 +1,7 @@
 """hangar: the manager from a terminal, on this PC or any other. (llmctl still works as an alias.)
 
     hangar login http://my-pc:9000 <token>    remember where the manager is (saved in ~/.hangar.json)
+    hangar --version                       this client's Hangar release
     hangar status | profiles | plan <profile>
     hangar start <profile> [--force] [--no-update | --update]
     hangar start last [engine]    what that engine (or the last one stopped) ran last
@@ -563,6 +564,10 @@ NEEDS_ARG = {"plan", "start", "switch", "restart", "update", "rollback", "logs",
 def main(argv=None) -> int:
     global ON
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv in (["--version"], ["-V"]):
+        from . import __version__
+        print(f"Hangar {__version__}")
+        return 0
     if "--on" in argv:
         i = argv.index("--on")
         if i + 1 >= len(argv):
