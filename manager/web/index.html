@@ -948,7 +948,7 @@ async function renderLibrary() {
 }
 
 // ---- connect: configs for coding agents (the models) and MCP clients (this manager)
-const CN_MODELS = [["opencode", "opencode"], ["qwen", "Qwen Code"], ["pi", "Pi"], ["codex", "Codex CLI"], ["claude", "Claude Code"], ["aider", "Aider"], ["continue", "Continue"], ["generic", "Any OpenAI app"]];
+const CN_MODELS = [["opencode", "opencode"], ["qwen", "Qwen Code"], ["pi", "Pi"], ["omp", "Oh My Pi"], ["codex", "Codex CLI"], ["claude", "Claude Code"], ["aider", "Aider"], ["continue", "Continue"], ["generic", "Any OpenAI app"]];
 let cnKind = store.get("llmm-cnkind", "models"), cnClient = store.get("llmm-cnclient", "opencode"), cnHost = store.get("llmm-cnhost", "127.0.0.1"), cnSnip = null, CN_READY = false;
 async function renderConnectHosts() {
   const epoch = machineEpoch;

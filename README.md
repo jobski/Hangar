@@ -379,11 +379,14 @@ Tools: `status`, `list_profiles`, `plan`, `start`, `switch_model`, `stop`, `rest
 ### Connecting coding agents and other apps
 
 The **Connect** section of the web page (and `hangar connect`) gives ready-to-paste settings for the running
-models: opencode, Qwen Code, Pi, Codex CLI, Claude Code, Aider, Continue, or any OpenAI-compatible app. The second tab
+models: opencode, Qwen Code, Pi, Oh My Pi (omp), Codex CLI, Claude Code, Aider, Continue, or any OpenAI-compatible app.
+Each role is named after the model serving it now (`main → strata-iq3_s on my-pc`), and `/v1/models` reports the same
+name with its context size, so a client shows what actually answers. The second tab
 does the same for this manager's MCP server (Claude Code, Claude Desktop, Codex, Qwen Code, Gemini CLI, opencode,
 Cursor, VS Code). Pick the address the other machine should use (Tailscale name/IP, LAN, or 127.0.0.1 for this PC).
-For opencode, Qwen Code and Pi, "Write to this PC" merges the settings into that tool's config file and keeps a
-backup. Over MCP, the `client_config` tool returns the same snippets.
+For opencode, Qwen Code, Pi and omp, "Write to this PC" merges the settings into that tool's config file and keeps a
+backup: models are updated by id and keep their other settings (sampling, timeouts). `hangar connect <client> --apply`
+writes the config on the machine you run it on, so it works against a remote manager too. Over MCP, the `client_config` tool returns the same snippets.
 
 ```
 hangar hosts                              hangar connect opencode --host 100.101.102.103

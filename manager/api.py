@@ -347,11 +347,11 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         # the roles, through this Hangar's gateway: the model name is the role (main, helper, ...)
         for r in roles.public():
             if r["targets"] or r["name"] == "main":
-                ctx = roles.context(r["name"])
+                served = role_served(r)
                 entries.append({"profile": f"role-{r['name']}", "engine": "hangar", "provider": "hangar",
                                 "provider_name": "Hangar roles", "base": f"http://{host}:{port}", "api_key": token,
-                                "model": r["name"], "name": f"{r['name']} (Hangar role)", "context": ctx,
-                                "output": min(16384, max(1024, ctx // 4)), "vision": False, "reasoning": False,
+                                "model": r["name"], "name": served["name"], "context": served["context"],
+                                "output": served["output"], "vision": False, "reasoning": served["reasoning"],
                                 "env_key": "HANGAR_TOKEN"})
         return clients.MODEL_CLIENTS[client](entries, env)
 
@@ -413,7 +413,12 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
 
     @app.get("/v1/models")
     def gateway_models():
-        data = [{"id": r["name"], "object": "model", "owned_by": "hangar-role"} for r in roles.public()]
+        data = []
+        for r in roles.public():
+            served = role_served(r)
+            data.append({"id": r["name"], "object": "model", "owned_by": "hangar-role", "name": served["name"],
+                         "context_length": served["context"], "max_output_tokens": served["output"],
+                         "served_by": served["served_by"], "fallback": r["fallback"]})
         data += [{"id": i.profile, "object": "model", "owned_by": "hangar-profile"} for i in mgr.instances.values()]
         return {"object": "list", "data": data}
 
@@ -455,6 +460,17 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         profile = mgr.profiles.get(target["profile"])
         engine = mgr.engines.get(profile.engine) if profile else None
         return engine.plugin if engine else None
+
+    def role_served(r: dict) -> dict:
+        """What a role's requests reach right now (from roles.public()), named so a client shows the real model."""
+        s, ctx = r["serving"], roles.context(r["name"])
+        served_by = f"{s['machine'] or machine_info(mgr.cfg)['name']}/{s['profile']}" if s else None
+        if not s:
+            name = f"{r['name']} (nothing up)"
+        else:
+            name = f"{r['name']} → {s['profile']} on {served_by.split('/', 1)[0]}" + (" (fallback)" if r["fallback"] else "")
+        return {"name": name, "served_by": served_by, "context": ctx, "output": min(16384, max(1024, ctx // 4)),
+                "reasoning": bool(s) and target_engine(s) in ("strata", "maya")}
 
     @app.post("/v1/{path:path}")
     async def gateway_call(path: str, request: Request):
