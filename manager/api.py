@@ -403,8 +403,8 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
     gateway = gateway or httpx.AsyncClient(timeout=httpx.Timeout(10, read=None))   # generations can stream for many minutes
     # requests being generated right now, keyed by a counter; only the event loop touches it, so no lock
     inflight: dict[int, dict] = {}
-    direct_cache: dict[tuple, tuple] = {}   # (machine, profile) -> (base_url, model_id): a peer engine's model id is
-                                            # stable, so probe /v1/models once instead of on every relayed request
+    # Keep one model ID per target, invalidated when its endpoint or engine instance changes.
+    direct_cache: dict[tuple, tuple[tuple, str]] = {}
     inflight_seq = itertools.count()
 
     app.state.inflight = inflight
@@ -431,7 +431,9 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         host = f"[{host}]" if ":" in host else host
         base = f"http://{host}:{port}"
         ck = (t["machine"], t["profile"])
-        mid = direct_cache.get(ck)
+        engine_id = (base, run.get("pid"), run.get("started"))
+        cached = direct_cache.get(ck)
+        mid = cached[1] if cached and cached[0] == engine_id else None
         if mid is None:
             try:
                 ids = [m["id"] for m in (await gateway.get(base + "/v1/models", headers=auth, timeout=5)).json().get("data", [])]
@@ -439,7 +441,8 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                 return None
             if not ids:
                 return None
-            mid = direct_cache[ck] = ids[0]      # stable for the life of the engine: probe once, reuse from here on
+            mid = ids[0]
+            direct_cache[ck] = (engine_id, mid)
         return (base, mid, auth)
 
     def target_engine(target):

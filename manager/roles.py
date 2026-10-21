@@ -287,7 +287,7 @@ class Roles:
         """While the first ready target is busy: a free one that can take the request goes first - the one this
         client used last if it is free (its prompt is cached there), else the first in order. A free target whose
         context is too small for the request is not used for it."""
-        ready = [t for t in own if self.target_state(t) == "ready"]
+        ready = [t for t in own if self.routable(t)]
         if not ready or not self.busy(ready[0]):
             return own                                  # the first choice is free: the usual order
         free = [t for t in ready[1:] if not self.busy(t) and self.fits(t, need)]
