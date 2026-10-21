@@ -28,6 +28,7 @@ from .stats import RequestMeter, client_name, merge_series, merge_summaries, req
 WEB = Path(__file__).parent / "web"
 TOO_LONG = re.compile(r"context|too long|too many tokens|exceed|n_ctx|maximum", re.I)
 OPEN_PATHS = {"/", "/favicon.svg", "/api/ping", "/manifest.webmanifest"}
+DRAIN_BUDGET_S = 25          # on shutdown, let in-flight requests finish within this before uvicorn exits cleanly
 
 
 class UpstreamResponse(StreamingResponse):
@@ -47,11 +48,13 @@ class UpstreamResponse(StreamingResponse):
                     await self.on_close()
 
 
-def create_app(mgr: Manager | None = None) -> FastAPI:
+def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles: Roles | None = None,
+               gateway: httpx.AsyncClient | None = None) -> FastAPI:
+    """Build the app. peers/roles/gateway are injectable for tests; production calls create_app()."""
     mgr = mgr or Manager()
     token = config_mod.token(mgr.cfg)
-    peers = mgr.peers = Peers(mgr.cfg)
-    roles = mgr.roles = Roles(mgr, peers)
+    peers = mgr.peers = peers or Peers(mgr.cfg)
+    roles = mgr.roles = roles or Roles(mgr, peers)
     mcp = build_mcp(mgr)
     # the token check below protects /mcp; the Host-header check would block access by Tailscale name or LAN IP
     mcp_app = mcp.streamable_http_app(streamable_http_path="/mcp", stateless_http=True, host="0.0.0.0",
@@ -397,9 +400,11 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
 
     routing_lock = anyio.Lock()
     wake_limiter = anyio.CapacityLimiter(8)
-    gateway = httpx.AsyncClient(timeout=httpx.Timeout(10, read=None))   # generations can stream for many minutes
+    gateway = gateway or httpx.AsyncClient(timeout=httpx.Timeout(10, read=None))   # generations can stream for many minutes
     # requests being generated right now, keyed by a counter; only the event loop touches it, so no lock
     inflight: dict[int, dict] = {}
+    direct_cache: dict[tuple, tuple] = {}   # (machine, profile) -> (base_url, model_id): a peer engine's model id is
+                                            # stable, so probe /v1/models once instead of on every relayed request
     inflight_seq = itertools.count()
 
     app.state.inflight = inflight
@@ -425,11 +430,17 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
         host = httpx.URL(peers.get(t["machine"])["url"]).host
         host = f"[{host}]" if ":" in host else host
         base = f"http://{host}:{port}"
-        try:
-            ids = [m["id"] for m in (await gateway.get(base + "/v1/models", headers=auth, timeout=5)).json().get("data", [])]
-        except (httpx.HTTPError, ValueError, AttributeError, TypeError, KeyError):
-            return None
-        return (base, ids[0], auth) if ids else None
+        ck = (t["machine"], t["profile"])
+        mid = direct_cache.get(ck)
+        if mid is None:
+            try:
+                ids = [m["id"] for m in (await gateway.get(base + "/v1/models", headers=auth, timeout=5)).json().get("data", [])]
+            except (httpx.HTTPError, ValueError, AttributeError, TypeError, KeyError):
+                return None
+            if not ids:
+                return None
+            mid = direct_cache[ck] = ids[0]      # stable for the life of the engine: probe once, reuse from here on
+        return (base, mid, auth)
 
     def target_engine(target):
         if target["machine"]:
@@ -516,17 +527,23 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
             try:
                 if t["machine"]:
                     if (peers.state.get(t["machine"]) or {}).get("online"):
-                        p = peers.get(t["machine"])
-                        url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
-                        auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client,
-                                "X-Hangar-Caller": caller}
-                        req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
-                                                    headers={**passthrough, **auth, "Content-Type": "application/json"})
-                        r = await gateway.send(req, stream=True)
-                        # old peers have no gateway (404); a restarting one refuses or 5xx's: fall through to its engine
-                        if r.status_code == 404:
-                            with anyio.CancelScope(shield=True):
-                                await r.aclose()
+                        try:
+                            p = peers.get(t["machine"])
+                            url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
+                            auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client,
+                                    "X-Hangar-Caller": caller}
+                            req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
+                                                        headers={**passthrough, **auth, "Content-Type": "application/json"})
+                            r = await gateway.send(req, stream=True)
+                        except httpx.ConnectError:
+                            # online is still cached but the gateway is already refusing (its manager is on its way
+                            # out before the poll flips it offline): go straight to the engine, not to a backup
+                            r = None
+                        # no answer (refused) or an old peer with no gateway (404): fall through to its engine
+                        if r is None or r.status_code == 404:
+                            if r is not None:
+                                with anyio.CancelScope(shield=True):
+                                    await r.aclose()
                             await send_direct()
                     else:
                         # gateway down (its manager is restarting); the engine is likely still up
@@ -575,7 +592,8 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                     await log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code, engine=served_engine, error=request_error(body, r.status_code))
                     return Response(body, status_code=r.status_code, media_type=r.headers.get("content-type"),
                                     headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}",
-                                             "X-Hangar-Engine": served_engine or ""})
+                                             "X-Hangar-Engine": served_engine or "",
+                                             **({"X-Hangar-Route": "direct"} if direct_tried else {})})
                 roles.note_used(t, model, (client, caller))
                 meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
                 seq = next(inflight_seq)
@@ -612,6 +630,7 @@ def create_app(mgr: Manager | None = None) -> FastAPI:
                 response = UpstreamResponse(relay(), on_close=finish, status_code=r.status_code, media_type=r.headers.get("content-type"),
                                              headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}",
                                                       "X-Hangar-Engine": served_engine or "",
+                                                      **({"X-Hangar-Route": "direct"} if direct_tried else {}),
                                                       "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
                 relaying = True
                 return response
@@ -813,4 +832,7 @@ def serve():
     mgr = Manager()
     m = mgr.cfg["manager"]
     print(f"Hangar on http://{m['host']}:{m['port']}  (token in {m['data_dir'] / 'token.txt'})", flush=True)
-    uvicorn.run(create_app(mgr), host=m["host"], port=int(m["port"]), log_level="warning")
+    # on SIGTERM: stop accepting, let in-flight requests (which can stream for minutes) finish within this budget,
+    # then exit cleanly - instead of waiting forever and being SIGKILLed by systemd mid-stream.
+    uvicorn.run(create_app(mgr), host=m["host"], port=int(m["port"]), log_level="warning",
+                timeout_graceful_shutdown=int(m.get("shutdown_grace_s", DRAIN_BUDGET_S)))

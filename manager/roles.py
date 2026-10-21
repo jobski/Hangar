@@ -151,11 +151,6 @@ class Roles:
             if state is None:
                 return "stopped"
             return "ready" if state == "ready" else "starting"
-        # the gateway stopped answering (its manager is restarting; the engine is almost certainly still up):
-        # stay routable from the last known status for a grace window so the hub can relay straight to the engine.
-        if (state := self._peer_engine_state(st, t["profile"])) == "ready" and \
-                time.time() - (st.get("seen") or 0) < PEER_DIRECT_GRACE_S:
-            return "ready"
         return "offline"
 
     def target_state(self, t: dict) -> str:
@@ -168,6 +163,20 @@ class Roles:
                 return "starting"
         return state
 
+    def _grace_ready(self, t: dict) -> bool:
+        """The peer's gateway has stopped answering, but its last status still showed this profile ready and that was
+        within the grace window: almost certainly a manager restart with the engine still up, so a hub may still reach
+        it directly. Health (supervision, wake, backup) is still 'offline' - this only keeps it *routable*."""
+        st = self.peers.state.get(t["machine"]) or {}
+        return (not st.get("online")
+                and self._peer_engine_state(st, t["profile"]) == "ready"
+                and time.time() - (st.get("seen") or 0) < PEER_DIRECT_GRACE_S)
+
+    def routable(self, t: dict) -> bool:
+        """Can a request go to this target right now: it is ready, or its gateway is mid-restart and the hub can
+        still relay to its engine. Use for routing (candidates/opened); use target_state for health."""
+        return self.target_state(t) == "ready" or (t["machine"] and self._grace_ready(t))
+
     def candidates(self, model: str, need: int = 0, who: tuple | None = None) -> list[dict]:
         """Who should answer a request for this model name, best first. A role gives its targets that are ready, then
         the main role's, then anything running here, then on peers. A profile id (or profile:<id>) gives just it.
@@ -176,14 +185,14 @@ class Roles:
         if model.startswith("profile:") or (model not in roles and model in self.mgr.profiles):
             pid = model.split(":", 1)[1] if model.startswith("profile:") else model
             t = {"machine": "", "profile": pid}
-            return [t] if self.target_state(t) == "ready" else []
+            return [t] if self.routable(t) else []
         if model not in roles and model != "main":
             return []
         out, seen = [], set()
 
         def add(t):
             k = (t["machine"], t["profile"])
-            if k not in seen and self.target_state(t) == "ready":
+            if k not in seen and self.routable(t):
                 seen.add(k)
                 out.append({"machine": t["machine"], "profile": t["profile"]})
         own = (roles.get(model) or {}).get("targets", [])
@@ -342,7 +351,7 @@ class Roles:
     def opened(self, t: dict):
         k = (t["machine"], t["profile"])
         with self.lock:
-            if self._target_state(t) != "ready":
+            if self._target_state(t) != "ready" and not self._grace_ready(t):
                 return False
             self.inflight[k] = self.inflight.get(k, 0) + 1
             return True
