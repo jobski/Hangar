@@ -16,6 +16,7 @@ resources:
   vram_reserve_mib: 0            # nothing runs here, so no GPU to keep spare
   ram_reserve_mib: 256
   vram_release_timeout_s: 60
+  drain_timeout_s: 180         # before a switch stops a model, its reply in progress may run on this long
   sample_interval_s: 5
   warn_ram_percent: 92
 

@@ -75,6 +75,10 @@ class Engine:
     def launch(self, profile: Profile) -> Launch:
         raise NotImplementedError
 
+    def stop_cleanly(self, pid: int, log: Log) -> bool:
+        """Ask the running process to end on its own terms; True once it has. False: the core ends it."""
+        return False
+
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 

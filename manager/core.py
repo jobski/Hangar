@@ -116,6 +116,7 @@ class Instance:
     last_activity: float = field(default_factory=time.time)   # last time it generated or had a request running
     totals: dict = field(default_factory=lambda: collections.defaultdict(float))   # since this start
     window: collections.deque = field(default_factory=lambda: collections.deque(maxlen=720))  # (t, delta dict)
+    scrape_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)   # one reader of its counters at a time
 
     def alive(self) -> bool:
         try:
@@ -166,6 +167,7 @@ class Manager:
         self.snap: dict = resources.snapshot()
         self.history: collections.deque = collections.deque(maxlen=720)     # system samples, ~1 h at 5 s
         self.pending_usage: dict = {}                                         # (minute, engine, profile) -> deltas
+        self.unsampled = collections.defaultdict(float)   # tokens counted between collector ticks (a drain), for the next chart point
         self.stop_flag = threading.Event()
         self._profiles_at = 0.0
         self._estimate_cache = {}
@@ -316,9 +318,11 @@ class Manager:
         with self.lock:
             for job in self.jobs.values():
                 if getattr(job, "start_profile", None) == p.id and job.state in ("queued", "running"):
-                    return job
+                    if self._superseded(job, p) is None:      # a conflicting start queued after it would lose: queue afresh
+                        return job
             job = self.submit("start", f"start {p.id}", lambda job: self._start(job, p, force, update))
-            job.start_profile = p.id
+            job.start_profile = p.id                                # dedup matches plain starts by id
+            job.start_target = p
             return job
 
     def stop_idle(self, engine: str, profile: str) -> Job:
@@ -405,7 +409,10 @@ class Manager:
             cfg["alias"] = pid
         p = eng.make_profile(pid, cfg)
         p.source, p.description = "custom", f"{base.description} (custom run: {json.dumps(overrides)[:120]})"
-        return self.submit("start", f"custom run of {base.id}", lambda job: self._start(job, p, force, update))
+        with self.lock:                                             # publish and target it as one step, as start() does
+            job = self.submit("start", f"custom run of {base.id}", lambda job: self._start(job, p, force, update))
+            job.start_target = p                                    # a custom run joins last-switch-wins
+        return job
 
     # ---- profiles managed from the UI/API (profiles.yaml)
     def save_profile(self, pid: str, data: dict, overwrite: bool = True) -> str:
@@ -722,6 +729,9 @@ class Manager:
             with self.lock:
                 self.transient[p.id] = p
         eng = self.engines[p.engine]
+        newer = self._superseded(job, p)
+        if newer:
+            raise Refused(f"a newer start of {newer} is queued and would stop {p.id} again at once")
         self.refresh_profiles(force=True)
         plan = self.plan(p.id, force)
         job.write(f"plan: policy {plan['policy']}, needs ~{plan['needs']['vram_mib']:.0f} MiB VRAM / "
@@ -737,6 +747,16 @@ class Manager:
         previous = {n: self.profiles.get(self.instances[n].profile) for n in plan["will_stop"] if n in self.instances}
         try:
             for name in plan["will_stop"]:
+                self._drain(job, name)
+                newer = self._superseded(job, p)          # a newer start can queue while the drain waits
+                if newer:
+                    with self.lock:                       # it was ready before _drain marked it: back in service
+                        inst = self.instances.get(name)
+                        if inst and inst.state == "stopping":
+                            inst.state = "ready"
+                    if inst:
+                        job.write(f"a newer start of {newer} is queued: giving way, leaving {inst.profile} running")
+                    raise Refused(f"a newer start of {newer} is queued and would stop {p.id} again at once")
                 self._stop(job, name, f"making room for {p.id}")
             if previous:
                 self._wait_vram_released(job)
@@ -860,8 +880,67 @@ class Manager:
         if job:
             job.write(f"stopping {inst.profile} ({reason})")
         if inst.alive():
-            _kill_tree(inst.pid)
+            eng = self.engines.get(engine)
+            if not (eng and eng.stop_cleanly(inst.pid, job.write if job else lambda line: None)):
+                _kill_tree(inst.pid)
         self._forget(engine, reason, expected=inst)
+
+    def _superseded(self, job: Job, p: Profile) -> str | None:
+        """A start queued after this one that would stop this profile again at once (last switch wins): its id.
+        A later start that then fails its own checks still wins: the last request runs or says why, never an older one."""
+        with self.lock:
+            order = list(self.job_order)                        # a deque cannot be sliced
+            later = order[order.index(job.id) + 1:] if job.id in order else []
+            survivors = []                                      # the later starts that will run, newest first
+            for jid in reversed(later):                         # one pass: a refused start cancels nothing
+                other = self.jobs.get(jid)
+                newer = getattr(other, "start_target", None) if other and other.state == "queued" else None
+                if newer and not any(_replaces(s, newer) for s in survivors):
+                    survivors.append(newer)
+            return next((s.id for s in reversed(survivors) if _replaces(s, p)), None)
+
+    def _drain(self, job: Job, engine: str):
+        """Before a start stops this engine: refuse it new requests and let the reply in progress end (bounded)."""
+        with self.lock:
+            inst = self.instances.get(engine)
+            if not inst or inst.state != "ready":
+                return
+            inst.state = "stopping"                     # the gateways stop sending it requests from here
+        limit = float(self.cfg["resources"].get("drain_timeout_s", 180))
+        end, said = time.time() + limit, False
+        while self._answering(inst):                    # lock-free: the reply we wait for takes roles.lock to end
+            if time.time() >= end:
+                job.write(f"{inst.profile} is still answering after {limit:.0f} s: stopping it anyway")
+                return
+            if not said:
+                job.write(f"letting {inst.profile} finish its reply first (up to {limit:.0f} s)")
+                said = True
+            time.sleep(1)
+        if said:
+            job.write(f"{inst.profile} finished its reply")
+
+    def _answering(self, inst: Instance) -> bool:
+        """A request open there through a gateway here, or the engine's own gauge read now (the sampler skips a
+        stopping instance, so its stored gauges go stale)."""
+        roles = getattr(self, "roles", None)
+        open_here = False
+        if roles:
+            with roles.lock:
+                open_here = bool(roles.inflight.get(("", inst.profile)))   # read it here, never scrape under this lock
+        eng = self.engines.get(inst.engine)
+        with inst.scrape_lock:                                # the collector reads these counters too
+            try:
+                cur = eng.scrape() if eng and inst.alive() else None
+            except Exception:  # noqa: BLE001 - an engine that cannot say is treated as idle
+                cur = None
+            if cur and inst.tracker:
+                d = inst.tracker.delta(cur)
+                if d:
+                    self._account(inst, d, time.time())
+                    with self.lock:                    # the sampler skips a stopping instance: hold the tokens over
+                        for k in ("gen_tokens", "prompt_tokens"):
+                            self.unsampled[k] += d.get(k, 0)
+        return open_here or any(v for k, v in (cur or {}).items() if k.endswith("requests_processing"))
 
     def _forget(self, engine: str, reason: str, expected: Instance | None = None) -> bool:
         with self.lock:
@@ -1131,27 +1210,40 @@ class Manager:
                 inst.context_checked = time.time()
                 if ctx:
                     inst.context, inst.context_source = ctx, "runtime"
-            cur = eng.scrape() if inst.state == "ready" else None
+            cur = d = None
+            if inst.state == "ready":
+                with inst.scrape_lock:
+                    if inst.state == "ready":                 # a drain may have taken it out of service meanwhile
+                        cur = eng.scrape()
+                        if cur is not None:
+                            inst.gauges = {k.split(":", 1)[1]: v for k, v in cur.items()
+                                           if k.endswith(("requests_processing", "requests_deferred", "model_loaded"))}
+                            d = inst.tracker.delta(cur)
             if cur is None:
                 continue
-            inst.gauges = {k.split(":", 1)[1]: v for k, v in cur.items()
-                           if k.endswith(("requests_processing", "requests_deferred", "model_loaded"))}
-            d = inst.tracker.delta(cur)
             if d or inst.gauges.get("requests_processing"):
                 inst.last_activity = snap["time"]
-            self._maybe_idle_stop(inst)
+            self._maybe_idle_stop(inst)                       # outside the lock: it can submit a job
             if d:
-                with self.lock:
-                    for k, v in d.items():
-                        inst.totals[k] += v
-                    inst.window.append((snap["time"], d))
-                    key = (int(snap["time"] // 60), inst.engine, inst.profile)
-                    acc = self.pending_usage.setdefault(key, collections.defaultdict(float))
-                    for k, v in d.items():
-                        acc[k] += v
+                self._account(inst, d, snap["time"])
                 point["gen_tokens"] += d.get("gen_tokens", 0)
                 point["prompt_tokens"] += d.get("prompt_tokens", 0)
+        with self.lock:                                        # a drain's tokens join this point, then reset
+            point["gen_tokens"] += self.unsampled["gen_tokens"]
+            point["prompt_tokens"] += self.unsampled["prompt_tokens"]
+            self.unsampled.clear()
         self.history.append(point)
+
+    def _account(self, inst: Instance, d: dict, t: float):
+        """Add a counter delta to the instance's totals and the usage history."""
+        with self.lock:
+            for k, v in d.items():
+                inst.totals[k] += v
+            inst.window.append((t, d))
+            key = (int(t // 60), inst.engine, inst.profile)
+            acc = self.pending_usage.setdefault(key, collections.defaultdict(float))
+            for k, v in d.items():
+                acc[k] += v
 
     def _setting(self, inst: Instance, key: str, default=None):
         """A per-profile setting, falling back to the engine's config."""
@@ -1402,6 +1494,11 @@ def _redact_command(cmd: list[str]) -> list[str]:
         else:
             out.append(arg)
     return out
+
+
+def _replaces(newer: Profile, older: Profile) -> bool:
+    """Starting newer stops older at once, or does its work (the same profile asked again)."""
+    return newer.id == older.id or newer.policy == "exclusive" or newer.engine == older.engine
 
 
 def _kill_tree(pid: int, timeout: float = 15):

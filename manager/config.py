@@ -53,6 +53,7 @@ DEFAULTS = {
         "vram_reserve_mib": 512,       # keep this much VRAM spare when deciding whether something fits
         "ram_reserve_mib": 4096,
         "vram_release_timeout_s": 60,  # after a stop, how long to wait for the driver to hand VRAM back
+        "drain_timeout_s": 180,        # before a switch stops a model, how long its reply in progress may run on
         "sample_interval_s": 5,
         "warn_ram_percent": 92,
     },

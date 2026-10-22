@@ -1,5 +1,6 @@
 """Maya profiles through the engine, custom-run, client and library integration paths."""
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -13,6 +14,7 @@ import psutil
 from manager import clients, models
 from manager.core import Instance, Manager
 from manager.engines import create
+from manager.engines.maya import CTRL_C_ON
 from manager.engines.strata import StrataEngine
 from manager.stats import CounterTracker
 
@@ -68,7 +70,9 @@ class MayaTest(unittest.TestCase):
         original = self.config.read_bytes()
         custom = mgr.run_custom(self.profile.id, {"ctx": 8192, "args_add": ["--parallel", "2"]})
         launch = self.engine.launch(custom)
-        self.assertEqual(launch.cmd[1:4], [str(self.root / "maya.py"), "--plain", "--yes"])
+        i = launch.cmd.index(str(self.root / "maya.py"))
+        self.assertEqual(launch.cmd[i:i + 3], [str(self.root / "maya.py"), "--plain", "--yes"])
+        self.assertEqual(launch.cmd[1:i], ["-c", CTRL_C_ON] if os.name == "nt" else [])
         self.assertIn("8082", launch.cmd)
         self.assertNotIn("--engine", launch.cmd)
         generated = Path(launch.cmd[launch.cmd.index("--config") + 1])

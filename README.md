@@ -16,10 +16,13 @@ document also report the server's release. Release notes are in [CHANGELOG.md](C
 - **Resource-aware.** Before anything starts, the manager checks free VRAM and RAM against what the profile needs.
   It starts from an estimate and, after each run, uses the peak it measured. Each profile has a policy for what
   happens when something else is running: `exclusive` stops the others first, `coexist` runs alongside them if it
-  fits, `refuse` won't start. Switching waits for the GPU memory to be released, checks the new engine is healthy, and
+  fits, `refuse` won't start. Switching first lets the running model finish its reply in progress (up to
+  `resources.drain_timeout_s`, 180 s; requests for it meanwhile get `503` with `Retry-After` and
+  `X-Hangar-State: stopping`), waits for the GPU memory to be released, checks the new engine is healthy, and
   restores what ran before if the start fails.
 - **One action at a time.** Every start, stop, update or rollback is a job in a single queue, so remote requests
-  never collide.
+  never collide. When starts pile up, the last one asked for wins: an earlier start that a newer one would undo at
+  once is dropped, even while the outgoing model is still finishing its reply.
 - **Updates.** llama.cpp updates from the official GitHub builds; the old build is kept for one-click rollback.
   Strata updates through its own `UPDATE.bat`. By default each engine checks for updates before it starts, at most
   every 6 hours; an update the background check already found is installed on the next start, and a failed update
@@ -200,6 +203,9 @@ be set up through `START-MAYA.bat --setup --no-start` (Linux: `./maya.sh --setup
 and shared settings APIs. Profiles default to exclusive GPU use. Vision, context overrides, live progress and
 client configuration are supported. Profile `server_args` are passed to `maya.py` and must be flags it accepts.
 Maya updates remain managed through Maya's own launcher/dashboard; Hangar's Update action is disabled for it.
+Maya keeps its conversations across a switch: Hangar starts it with `STRATA_GLM_SLOT_KEEP=1` and stops it cleanly
+(on Windows after asking it to set the conversation it holds aside on disk), so returning to a long conversation
+reads only what is new. A profile can turn this off with `keep_conversations: false`.
 On Linux, the default Python is `.venv/bin/python`; `python` in the engine config can override it on any platform.
 
 ### Reasoning effort
