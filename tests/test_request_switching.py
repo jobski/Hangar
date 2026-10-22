@@ -708,3 +708,31 @@ class CliSwitchTest(unittest.TestCase):
         with patch("manager.cli.time.monotonic", lambda: next(clock)), self.assertRaises(SystemExit):
             self.run_switch([{"state": "switching"}, {"state": "refused", "reason": "out of memory"}],
                             ["starting", "stopped", "stopped", "stopped"])
+
+
+class SwitchingRoleNameTest(unittest.TestCase):
+    def test_a_switching_role_is_named_after_its_own_model_even_while_a_fallback_answers(self):
+        d = Path(tempfile.mkdtemp())
+        mgr = Manager({"manager": {"host": "127.0.0.1", "port": 9000, "data_dir": d, "logs_dir": d},
+                       "resources": {"sample_interval_s": 5}, "engines": {}})
+        roles = FakeRoles([])
+        roles.public = lambda: [{"name": "glm", "switch": True, "fallback": True, "targets": [],
+                                 "saved_targets": [{"machine": "pc", "profile": "maya-m"}],
+                                 "serving": {"machine": "pc", "profile": "strata-q"}}]
+        roles.context = lambda name: 131072
+        client = TestClient(create_app(mgr, peers=FakePeers(), roles=roles))
+        names = [m.get("name") for m in client.get("/v1/models", headers={"Authorization": "Bearer testtok"}).json()["data"]]
+        self.assertIn("glm → maya-m on pc (switches)", names)
+
+    def test_main_following_the_running_model_keeps_the_served_name(self):
+        d = Path(tempfile.mkdtemp())
+        mgr = Manager({"manager": {"host": "127.0.0.1", "port": 9000, "data_dir": d, "logs_dir": d},
+                       "resources": {"sample_interval_s": 5}, "engines": {}})
+        roles = FakeRoles([])
+        roles.public = lambda: [{"name": "main", "switch": True, "follow_running": True, "fallback": False,
+                                 "targets": [], "saved_targets": [{"machine": "pc", "profile": "a"}],
+                                 "serving": {"machine": "pc", "profile": "b"}}]
+        roles.context = lambda name: 131072
+        client = TestClient(create_app(mgr, peers=FakePeers(), roles=roles))
+        names = [m.get("name") for m in client.get("/v1/models", headers={"Authorization": "Bearer testtok"}).json()["data"]]
+        self.assertIn("main → b on pc", names)
