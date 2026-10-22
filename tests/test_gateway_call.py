@@ -62,6 +62,9 @@ class FakeRoles:
     def starting(self, model):
         return False
 
+    def stopping(self, model):
+        return False
+
 
 def engine_ok(req):
     """A mock response standing in for a peer's engine: /v1/models lists one model, generation returns a body."""

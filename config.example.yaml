@@ -13,6 +13,7 @@ resources:
   ram_reserve_mib: 4096
   # memory_budget_gb: 48       # cap on what Hangar's engines use (VRAM + RAM); also settable from the dashboard
   vram_release_timeout_s: 60
+  drain_timeout_s: 180         # before a switch stops a model, its reply in progress may run on this long
   sample_interval_s: 5
   warn_ram_percent: 92
 

@@ -140,11 +140,12 @@ class Roles:
         return None
 
     def _target_state(self, t: dict) -> str:
-        """ready | starting | stopped (the machine is up, the profile is not running) | offline | unknown"""
+        """ready | starting | stopping (finishing its reply before a switch) | stopped (the machine is up, the profile
+        is not running) | offline | unknown"""
         if not t["machine"]:
             for name, inst in list(self.mgr.instances.items()):
                 if inst.profile == t["profile"]:
-                    return "ready" if inst.state == "ready" else "starting"
+                    return inst.state if inst.state in ("ready", "stopping") else "starting"
             return "stopped" if t["profile"] in self.mgr.profiles else "unknown"
         st = self.peers.state.get(t["machine"]) or {}
         if st.get("online"):
@@ -154,7 +155,7 @@ class Roles:
             state = self._peer_engine_state(st, t["profile"])
             if state is None:
                 return "stopped"
-            return "ready" if state == "ready" else "starting"
+            return state if state in ("ready", "stopping") else "starting"
         return "ready" if engine_reachable(st, t["profile"]) else "offline"
 
     def target_state(self, t: dict) -> str:
@@ -250,6 +251,20 @@ class Roles:
                        for st in self.peers.state.values() if st.get("online")
                        for e in (st.get("status") or {}).get("engines") or [])
         return any(self.target_state(t) == "starting" for t in self._chain(model))
+
+    def stopping(self, model: str) -> bool:
+        """A target for this request is being stopped for a switch: worth a quick retry, not a wait."""
+        roles = self.all()
+        if model.startswith("profile:") or (model not in roles and model in self.mgr.profiles):
+            pid = model.split(":", 1)[1] if model.startswith("profile:") else model
+            return self.target_state({"machine": "", "profile": pid}) == "stopping"
+        if model == "main" and not (roles.get("main") or {}).get("targets"):       # no main role: anything stopping
+            if any(i.state == "stopping" for i in list(self.mgr.instances.values())):
+                return True
+            return any((e.get("running") or {}).get("state") == "stopping"
+                       for st in self.peers.state.values() if st.get("online")
+                       for e in (st.get("status") or {}).get("engines") or [])
+        return any(self.target_state(t) == "stopping" for t in self._chain(model))
 
     def wait_for(self, model: str, machines: list[str], timeout: float = WAKE_WAIT_S) -> list[dict]:
         """For a request nothing can answer yet, after waking machines or while a target starts: wait for one to

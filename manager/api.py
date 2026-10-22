@@ -472,6 +472,12 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         return {"name": name, "served_by": served_by, "context": ctx, "output": min(16384, max(1024, ctx // 4)),
                 "reasoning": bool(s) and target_engine(s) in ("strata", "maya")}
 
+    def stopping_reply(model: str) -> JSONResponse:
+        """A target finishing its reply before a switch stops it: a hub must retry, not route around the drain."""
+        return JSONResponse({"error": {"type": "unavailable", "message": f"the model for {model!r} is being "
+                                       "stopped to make room for another one: try again shortly"}},
+                            status_code=503, headers={"Retry-After": "10", "X-Hangar-State": "stopping"})
+
     @app.post("/v1/{path:path}")
     async def gateway_call(path: str, request: Request):
         """OpenAI / Anthropic API calls for a role (or a profile): sent to the first target that is up, the next one
@@ -505,8 +511,13 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         # rough size of the request in tokens (~4 bytes each) plus what it may generate: a spill target must fit it
         need = len(raw) // 4 + max(0, max_tokens)
         cands = await anyio.to_thread.run_sync(roles.candidates, model, need, (client, caller))
+        # a target on its way up is worth waiting for even while another stops: a 503 would only make clients loop
         if not cands and (woken or await anyio.to_thread.run_sync(roles.starting, model)):
             cands = await anyio.to_thread.run_sync(roles.wait_for, model, woken, limiter=wake_limiter)
+        if not cands and await anyio.to_thread.run_sync(roles.stopping, model):
+            # its model is finishing a reply before a switch stops it: say so at once, never hold the request
+            await log(status=503, error="stopping")
+            return stopping_reply(model)
         if not cands:
             names = ", ".join(r["name"] for r in roles.public())
             why = (f"woke {', '.join(woken)}, but nothing could answer within {WAKE_WAIT_S} s (a model may still be "
@@ -518,6 +529,7 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         passthrough = {k: v for k, v in request.headers.items() if k.lower() in ("accept", "anthropic-version", "anthropic-beta")}
         errors = []
         attempted = set()
+        drained = False               # a target answered that it is draining for a switch
         while True:
             async with routing_lock:
                 cands = await anyio.to_thread.run_sync(roles.candidates, model, need, (client, caller))
@@ -600,7 +612,8 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                     served_engine = r.headers.get("x-hangar-engine") or served_engine
                 if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 403, 404)):
                     # a gateway that answered but is on its way out: last-ditch try its engine before the next target
-                    if t["machine"] and not direct_tried:
+                    # (not when the peer is draining that engine for a switch: going direct would bypass the drain)
+                    if t["machine"] and not direct_tried and r.headers.get("x-hangar-state") != "stopping":
                         with anyio.CancelScope(shield=True):
                             await r.aclose()
                         if not await send_direct():
@@ -610,6 +623,8 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                             errors.append(f"{t['machine']}/{t['profile']}: HTTP {r.status_code}")
                             continue
                     else:
+                        if r.headers.get("x-hangar-state") == "stopping":
+                            drained = True    # its cached state may still say ready, so trust the answer we got
                         body = bytearray()
                         async for chunk in r.aiter_bytes():
                             body.extend(chunk[:8192 - len(body)])
@@ -681,6 +696,10 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                     if r is not None:
                         with anyio.CancelScope(shield=True):
                             await r.aclose()
+        if drained or await anyio.to_thread.run_sync(roles.stopping, model):
+            # it began draining while we routed, or a target said so: same 503, so a hub retries rather than going direct
+            await log(status=503, error="stopping")
+            return stopping_reply(model)
         await log(status=502, error="; ".join(errors)[:500])
         return JSONResponse({"error": {"type": "unavailable", "message": f"every target for {model!r} failed: "
                                        + "; ".join(errors)}}, status_code=502)

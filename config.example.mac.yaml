@@ -17,6 +17,7 @@ resources:
   # memory_budget_gb: 15       # what Hangar's engines may use here; new profiles get the largest context that fits
   ram_reserve_mib: 4096
   vram_release_timeout_s: 30
+  drain_timeout_s: 180         # before a switch stops a model, its reply in progress may run on this long
   sample_interval_s: 5
   warn_ram_percent: 92
 
