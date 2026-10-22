@@ -44,7 +44,7 @@ class FakeRoles:
     def candidates(self, model, need=0, who=None):
         return [dict(t) for t in self._targets]
 
-    def opened(self, t):
+    def opened(self, t, switching=False):
         return True
 
     def closed(self, t):
@@ -61,6 +61,9 @@ class FakeRoles:
 
     def starting(self, model):
         return False
+
+    def switch_target(self, model):
+        return None
 
     def stopping(self, model):
         return False

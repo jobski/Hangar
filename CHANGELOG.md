@@ -10,6 +10,17 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.6.0 — 2026-10-22
+
+- Add switching roles: a request for one loads its model on its machine (stopping what holds the GPU) and waits for it,
+  with loading progress every 10 s on a stream that opencode, Qwen Code and omp all accept; progress is stripped from
+  the history they send back. A hub relays the request to that machine and labels any fallback answer.
+- Keep a switched-in model for a minimum turn, back off after a failed start, return an idle one to the machine's home
+  model, and bound the wait (`/api/switching`, `hangar switching set ...`).
+- Set it all up in one action (`hangar switching setup <machine> <thinker> <coder>`, `POST /api/switching/setup`) and
+  write the clients' plan/build/small slots with Connect (opencode agents, omp `modelRoles`).
+- `hangar switch <role>` and `POST /api/warm` load a role's model ahead of the first request.
+
 ## 0.5.0 — 2026-10-22
 
 - Let a running model finish its reply before a switch stops it (`resources.drain_timeout_s`, 180 s); requests for it

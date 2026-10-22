@@ -14,6 +14,8 @@ import threading
 import time
 from pathlib import Path
 
+from .switching import PROGRESS
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage (
   minute INTEGER NOT NULL, engine TEXT NOT NULL, profile TEXT NOT NULL,
@@ -399,6 +401,7 @@ def _req_rates(r: dict):
 
 
 # a streamed chunk with generated text: OpenAI content/reasoning that is not empty, or an Anthropic content delta
+_PROGRESS = PROGRESS.encode()
 _TOKEN = re.compile(rb'"(?:content|reasoning_content|reasoning)":\s*"[^"]|"type":\s*"content_block_delta"')
 
 
@@ -439,9 +442,9 @@ class RequestMeter:
     def feed(self, chunk: bytes, now: float):
         if not chunk:
             return
-        self.first = self.first or now
         self.last = now
         if not self.sse:
+            self.first = self.first or now
             if len(self.body) < self.MAX_BODY:
                 self.body += chunk[:self.MAX_BODY - len(self.body)]
             return
@@ -450,8 +453,9 @@ class RequestMeter:
         if len(self.rest) > self.MAX_BODY:
             self.rest = b""
         for line in lines:
-            if not line.startswith(b"data:"):
+            if not line.startswith(b"data:") or _PROGRESS in line:     # a switch's loading progress is not the model's
                 continue
+            self.first = self.first or now
             if self.token_at is None and _TOKEN.search(line):
                 self.token_at = now
             if b'"usage"' in line or b'"timings"' in line or b'"error"' in line:

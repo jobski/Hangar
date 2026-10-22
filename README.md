@@ -208,6 +208,27 @@ Maya keeps its conversations across a switch: Hangar starts it with `STRATA_GLM_
 reads only what is new. A profile can turn this off with `keep_conversations: false`.
 On Linux, the default Python is `.venv/bin/python`; `python` in the engine config can override it on any platform.
 
+### Model switching (a thinker and a coder on one GPU)
+
+Two models that cannot share a machine — say a heavy thinker for planning and review and a lighter coder — can each
+have a **switching role**. A request for that role loads its model on its machine, stopping what holds the GPU there,
+and waits for it: a streamed request gets a short `[hangar:switch] loading … 34 s of ~75 s` line every 10 s (sent as
+thinking, the one form opencode, Qwen Code and omp all wait for, and stripped from what they send back), then the
+answer. Background roles never switch, so only the model you pick moves the GPU.
+
+```
+hangar switching setup my-pc maya-maya-m strata-iq3_s   # roles glm (thinker) and qwen (coder), main -> the coder
+hangar connect opencode --host hub --apply             # plan agent -> glm, build agent -> qwen, small -> helper
+hangar connect omp --host hub --apply                  # omp roles: default qwen, plan/slow glm, smol/task/commit helper
+hangar switch glm                                      # load it ahead of the first request
+```
+
+The machine that owns the models decides: a model just loaded keeps the GPU for its minimum turn (2 min), a start
+that fails backs off (15 s doubling to 5 min), an idle switched-in model hands back to the machine's home model after
+15 min, and a request waits at most 10 min (`hangar switching set min_turn_minutes=… return_home_minutes=…
+max_wait_s=…`, or `/api/switching`). A hub relays a switching role's request to that machine and labels any other
+answer `X-Hangar-Fallback`. The Roles page shows which roles switch and turns it on per role.
+
 ### Reasoning effort
 
 How hard a thinking model thinks before it answers. A running engine that supports it shows **Reasoning: <level>**

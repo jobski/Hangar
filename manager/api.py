@@ -23,8 +23,9 @@ from .core import Manager
 from .mcp_server import build as build_mcp
 from .peers import (Peers, engine_connection, engine_instance, fleet, machine_info, make_code,
                     normalize_url, record_engine_result, record_manager_failure, summary)
-from .roles import WAKE_WAIT_S, Roles
+from .roles import ROLE_NAME, WAKE_WAIT_S, Roles
 from .stats import RequestMeter, client_name, merge_series, merge_summaries, request_error
+from .switching import keepalive, stream_error, strip_progress
 
 WEB = Path(__file__).parent / "web"
 TOO_LONG = re.compile(r"context|too long|too many tokens|exceed|n_ctx|maximum", re.I)
@@ -353,7 +354,10 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                                 "model": r["name"], "name": served["name"], "context": served["context"],
                                 "output": served["output"], "vision": False, "reasoning": served["reasoning"],
                                 "env_key": "HANGAR_TOKEN"})
-        return clients.MODEL_CLIENTS[client](entries, env)
+        snip = clients.MODEL_CLIENTS[client](entries, env)
+        mapping = mgr._settings().get("switching_roles") or {}
+        names = {r["name"] for r in roles.public()}
+        return clients.with_roles(snip, client, {k: v for k, v in mapping.items() if v in names})
 
     @app.get("/api/connect/models")
     def connect_models(client: str, host: str = "127.0.0.1", profiles: str | None = None, env: bool = False):
@@ -392,8 +396,73 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
 
     @app.post("/api/roles")
     def roles_save(name: str = Body(..., embed=True), targets: list[dict] = Body(..., embed=True),
-                   spill: bool | None = Body(None, embed=True)):
-        return guard(roles.save, name, targets, spill)
+                   spill: bool | None = Body(None, embed=True), switch: bool | None = Body(None, embed=True)):
+        return guard(roles.save, name, targets, spill, switch)
+
+    @app.get("/api/switching")
+    def switching_get():
+        return {**mgr.switching(), "roles": mgr._settings().get("switching_roles") or {}}
+
+    @app.post("/api/switching/setup")
+    async def switching_setup(thinker: str = Body(..., embed=True), coder: str = Body(..., embed=True),
+                              machine: str = Body("", embed=True), thinker_role: str = Body("glm", embed=True),
+                              coder_role: str = Body("qwen", embed=True), small_role: str = Body("helper", embed=True)):
+        """Model switching in one action: a switching role for a thinker and one for a coder on one machine, main on
+        the coder (no longer following whatever runs), and the coder as that machine's home model."""
+        def run():
+            machine_ = (machine or "").strip().lower()
+            # checked before the first write, so a rejected setup leaves the routing as it was
+            plan_r, build_r, small_r = ((rn or "").strip().lower() for rn in (thinker_role, coder_role, small_role))
+            for rn in (plan_r, build_r, small_r):
+                if not ROLE_NAME.match(rn):
+                    raise ValueError(f"not a role name: {rn!r} (a lowercase word, e.g. plan or helper)")
+            if plan_r == build_r:
+                raise ValueError("the thinker and the coder need different role names")
+            if "main" in (plan_r, build_r):
+                raise ValueError("main is set to the coder by this setup and never switches: name the roles otherwise")
+            # the small role takes clients' background work: on a switching model it would swap the thinker out
+            if small_r in (plan_r, build_r) or (mgr._settings().get("roles") or {}).get(small_r, {}).get("switch"):
+                raise ValueError(f"the small role {small_r!r} must not switch models: background work would unload "
+                                 "the thinker")
+            if thinker == coder:
+                raise ValueError("the thinker and the coder are two different models")
+            if machine_:
+                try:
+                    ids = {p["id"] for p in roles._peer(machine_, "GET", "profiles").json()}
+                except (httpx.HTTPError, KeyError) as e:
+                    raise ValueError(f"could not ask {machine_} for its profiles: {e}") from None
+                missing = [pid for pid in (thinker, coder) if pid not in ids]
+                if missing:
+                    raise ValueError(f"no profile {', '.join(missing)} on {machine_}")
+            else:
+                missing = [pid for pid in (thinker, coder) if pid not in mgr.profiles]
+                if missing:
+                    raise ValueError(f"no profile {', '.join(missing)} on this machine")
+            roles.save(plan_r, [{"machine": machine_, "profile": thinker}], switch=True)
+            roles.save(build_r, [{"machine": machine_, "profile": coder}], switch=True)
+            roles.save("main", [{"machine": machine_, "profile": coder}], switch=False)
+            roles.set_follows_running(False)
+            if machine_:
+                try:
+                    roles._peer(machine_, "POST", "switching", json={"home": coder})
+                except httpx.HTTPError as e:
+                    raise ValueError(f"the roles are saved, but {machine_} did not take its home model: {e}") from None
+            else:
+                mgr.set_switching({"home": coder})
+            mapping = {"plan": plan_r, "build": build_r, "small": small_r}
+            me = machine_info(mgr.cfg)["name"]
+            with mgr.settings_lock:
+                s = mgr._settings()
+                s["switching_roles"] = mapping
+                mgr.write_settings(s)
+            mgr.store.event("switch", f"model switching set up: {plan_r} -> {machine_ or me}/{thinker}, "
+                                      f"{build_r} -> {machine_ or me}/{coder} (home)")
+            return {**mapping, "home": f"{machine_ or me}/{coder}", "roles": roles.public()}
+        return await anyio.to_thread.run_sync(lambda: guard(run))
+
+    @app.post("/api/switching")
+    def switching_set(changes: dict = Body(...)):
+        return guard(mgr.set_switching, changes)
 
     @app.delete("/api/roles/{name}")
     def roles_delete(name: str):
@@ -478,6 +547,38 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                                        "stopped to make room for another one: try again shortly"}},
                             status_code=503, headers={"Retry-After": "10", "X-Hangar-State": "stopping"})
 
+    async def warm_model(model: str):
+        """Bring a switching role's (or a profile's) model up before the first request, by the same rules."""
+        st = await anyio.to_thread.run_sync(roles.switch_target, model)
+        if st and st["machine"]:
+            p = peers.get(st["machine"])
+            r = await gateway.post(f"{p['url']}/v1/hangar/warm", json={"model": f"profile:{st['profile']}"},
+                                   headers={"Authorization": f"Bearer {p['token']}", "X-Hangar-Switch": model}, timeout=30)
+            return JSONResponse(r.json(), status_code=r.status_code)
+        if not st and (model in roles.all() or model == "main"):
+            # a role that needs no switch: say truthfully whether it can answer, waking its machines as a request would
+            woken = await anyio.to_thread.run_sync(roles.wake_for, model)
+            if await anyio.to_thread.run_sync(roles.candidates, model):
+                return {"model": model, "state": "ready"}
+            return {"model": model, "state": "waking" if woken else "unavailable", "woken": woken}
+        pid = st["profile"] if st else model.split(":", 1)[1] if model.startswith("profile:") else model
+        if pid not in mgr.profiles:
+            if model in roles.all():
+                return {"model": model, "state": "ready"}        # a role whose model is up, or one that never switches
+            raise HTTPException(404, f"no switching role or profile called {model!r} here")
+        res = await anyio.to_thread.run_sync(mgr.request_switch, pid)
+        return {"model": model, "profile": pid, "state": res["state"], "reason": res.get("reason"),
+                "wait_s": round(res.get("wait_s", 0)), "job": res["job"].id if res.get("job") else None}
+
+    @app.post("/v1/hangar/warm")
+    async def gateway_warm(request: Request, model: str = Body(..., embed=True)):
+        return await warm_model(model)
+
+    # the CLI sends only /api/... calls to the machine picked by --on, so warming a peer needs this one too
+    @app.post("/api/warm")
+    async def api_warm(model: str = Body(..., embed=True)):
+        return await warm_model(model)
+
     @app.post("/v1/{path:path}")
     async def gateway_call(path: str, request: Request):
         """OpenAI / Anthropic API calls for a role (or a profile): sent to the first target that is up, the next one
@@ -507,202 +608,361 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                                       duration_s=time.time() - t0, **kw))
             except Exception:  # noqa: BLE001 - the log never fails a request
                 pass
-        woken = await anyio.to_thread.run_sync(roles.wake_for, model)
-        # rough size of the request in tokens (~4 bytes each) plus what it may generate: a spill target must fit it
-        need = len(raw) // 4 + max(0, max_tokens)
-        cands = await anyio.to_thread.run_sync(roles.candidates, model, need, (client, caller))
-        # a target on its way up is worth waiting for even while another stops: a 503 would only make clients loop
-        if not cands and (woken or await anyio.to_thread.run_sync(roles.starting, model)):
-            cands = await anyio.to_thread.run_sync(roles.wait_for, model, woken, limiter=wake_limiter)
-        if not cands and await anyio.to_thread.run_sync(roles.stopping, model):
-            # its model is finishing a reply before a switch stops it: say so at once, never hold the request
-            await log(status=503, error="stopping")
-            return stopping_reply(model)
-        if not cands:
-            names = ", ".join(r["name"] for r in roles.public())
-            why = (f"woke {', '.join(woken)}, but nothing could answer within {WAKE_WAIT_S} s (a model may still be "
-                   "loading there: try again shortly)") if woken else (f"a model for {model!r} is still starting: try again "
-                   "shortly") if roles.starting(model) else f"nothing is up to serve {model!r}"
-            await log(status=503, error="woke " + ", ".join(woken) if woken else "nothing up")
-            return JSONResponse({"error": {"type": "unavailable", "message": f"{why} (roles: {names}; or a running "
-                                           "profile's id)"}}, status_code=503)
-        passthrough = {k: v for k, v in request.headers.items() if k.lower() in ("accept", "anthropic-version", "anthropic-beta")}
-        errors = []
-        attempted = set()
-        drained = False               # a target answered that it is draining for a switch
-        while True:
-            async with routing_lock:
-                cands = await anyio.to_thread.run_sync(roles.candidates, model, need, (client, caller))
-                cands = [t for t in cands if (t["machine"], t["profile"]) not in attempted]
-                if not cands:
-                    break
-                t = cands[0]
-                attempted.add((t["machine"], t["profile"]))
-                if not roles.opened(t):
-                    continue
-            r, relaying = None, False
-            served_engine = target_engine(t)
-            direct_tried = False
-            direct_instance = None
+        data = strip_progress(data)
+        # a switching role whose model is not up: its machine switches and holds the request, a hub relays it there
+        forced, switch_pid, local_role = [], None, False
+        st = await anyio.to_thread.run_sync(roles.switch_target, model)
+        if st and st["machine"]:
+            forced = [st]
+        elif st:
+            switch_pid, local_role = st["profile"], True       # this machine owns the role's model: fallbacks are ours
+        elif request.headers.get("x-hangar-switch") and model.startswith("profile:"):
+            switch_pid = model.split(":", 1)[1]
+        if switch_pid and switch_pid not in mgr.profiles:
+            switch_pid = None
 
-            async def send_direct():
-                """Relay to this target's engine straight (its gateway is down or has none). Sets r, or None."""
-                nonlocal r, direct_tried, direct_instance
-                r, direct_tried = None, True
-                direct = await direct_engine(t)
-                if not direct:
-                    return None
-                base, mid, auth, direct_instance = direct
-                req = gateway.build_request("POST", f"{base}/v1/{path}", content=json.dumps({**data, "model": mid}).encode(),
-                                            headers={**passthrough, **auth, "Content-Type": "application/json"})
-                try:
-                    r = await gateway.send(req, stream=True)
-                except httpx.HTTPError as exc:
-                    direct_cache.pop((t["machine"], t["profile"]), None)
-                    record_engine_result(peers, t["machine"], t["profile"], direct_instance, False, type(exc).__name__)
-                    raise
-                healthy = r.status_code not in (401, 403, 404, 502, 503, 504)
-                if not healthy:
-                    direct_cache.pop((t["machine"], t["profile"]), None)
-                record_engine_result(peers, t["machine"], t["profile"], direct_instance, healthy,
-                                     None if healthy else f"HTTP {r.status_code}")
-                return r
+        def fallback_header(t):
+            """Answered by another target than the one a switch asked for: say so."""
+            f = forced[0] if forced else None
+            return {"X-Hangar-Fallback": f"{f['machine']}/{f['profile']}"} if f and t != f else {}
 
-            try:
-                if t["machine"]:
-                    if (peers.state.get(t["machine"]) or {}).get("online"):
-                        try:
-                            p = peers.get(t["machine"])
-                            url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
-                            auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client,
-                                    "X-Hangar-Caller": caller}
-                            req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
-                                                        headers={**passthrough, **auth, "Content-Type": "application/json"})
-                            r = await gateway.send(req, stream=True)
-                        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadError, httpx.RemoteProtocolError):
-                            # online is still cached but the gateway is already refusing (its manager is on its way
-                            # out before the poll flips it offline): go straight to the engine, not to a backup
-                            r = None
-                            record_manager_failure(peers, t["machine"])
-                        # no answer (refused) or an old peer with no gateway (404): fall through to its engine
-                        if r is None or r.status_code == 404:
-                            if r is not None:
-                                with anyio.CancelScope(shield=True):
-                                    await r.aclose()
-                            await send_direct()
-                    else:
-                        # Manager offline: use the independently monitored engine.
-                        await send_direct()
-                    if r is None:
-                        errors.append(f"{t['machine']}/{t['profile']}: gateway down, engine not reachable")
+        async def route():
+            """Send the request to the first target that is up (a forced one first), the next when one fails."""
+            woken = await anyio.to_thread.run_sync(roles.wake_for, model)
+            # rough size of the request in tokens (~4 bytes each) plus what it may generate: a spill target must fit it
+            need = len(raw) // 4 + max(0, max_tokens)
+            cands = list(forced) or await anyio.to_thread.run_sync(roles.candidates, model, need, (client, caller))
+            # a target on its way up is worth waiting for even while another stops: a 503 would only make clients loop
+            if not cands and (woken or await anyio.to_thread.run_sync(roles.starting, model)):
+                cands = await anyio.to_thread.run_sync(roles.wait_for, model, woken, limiter=wake_limiter)
+            if not cands and await anyio.to_thread.run_sync(roles.stopping, model):
+                # its model is finishing a reply before a switch stops it: say so at once, never hold the request
+                await log(status=503, error="stopping")
+                return stopping_reply(model)
+            if not cands:
+                names = ", ".join(r["name"] for r in roles.public())
+                why = (f"woke {', '.join(woken)}, but nothing could answer within {WAKE_WAIT_S} s (a model may still be "
+                       "loading there: try again shortly)") if woken else (f"a model for {model!r} is still starting: try again "
+                       "shortly") if roles.starting(model) else f"nothing is up to serve {model!r}"
+                await log(status=503, error="woke " + ", ".join(woken) if woken else "nothing up")
+                return JSONResponse({"error": {"type": "unavailable", "message": f"{why} (roles: {names}; or a running "
+                                               "profile's id)"}}, status_code=503)
+            passthrough = {k: v for k, v in request.headers.items() if k.lower() in ("accept", "anthropic-version", "anthropic-beta")}
+            errors = []
+            attempted = set()
+            drained = False               # a target answered that it is draining for a switch
+            while True:
+                async with routing_lock:
+                    normal = await anyio.to_thread.run_sync(roles.candidates, model, need, (client, caller))
+                    # the forced target first, but its fallbacks stay behind it: it may not fit the request
+                    cands = [t for t in forced if (t["machine"], t["profile"]) not in attempted] + \
+                        [t for t in normal if t not in forced]
+                    cands = [t for t in cands if (t["machine"], t["profile"]) not in attempted]
+                    if not cands:
+                        break
+                    t = cands[0]
+                    attempted.add((t["machine"], t["profile"]))
+                    if not roles.opened(t, switching=t in forced):
                         continue
-                else:
-                    ents = await anyio.to_thread.run_sync(lambda: clients.model_entries(
-                        mgr, [t["profile"]], "127.0.0.1", include_custom=True))
-                    if not ents:
-                        errors.append(f"here/{t['profile']}: profile no longer available")
-                        continue
-                    e = ents[0]
-                    url, mid = f"{e['base']}/v1/{path}", e["model"]
-                    auth = {"Authorization": f"Bearer {e['api_key']}"} if e["api_key"] else {}
-                    req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
+                r, relaying = None, False
+                served_engine = target_engine(t)
+                direct_tried = False
+                direct_instance = None
+
+                async def send_direct():
+                    """Relay to this target's engine straight (its gateway is down or has none). Sets r, or None."""
+                    nonlocal r, direct_tried, direct_instance
+                    r, direct_tried = None, True
+                    direct = await direct_engine(t)
+                    if not direct:
+                        return None
+                    base, mid, auth, direct_instance = direct
+                    req = gateway.build_request("POST", f"{base}/v1/{path}", content=json.dumps({**data, "model": mid}).encode(),
                                                 headers={**passthrough, **auth, "Content-Type": "application/json"})
-                    r = await gateway.send(req, stream=True)
-                if t["machine"]:
-                    served_engine = r.headers.get("x-hangar-engine") or served_engine
-                if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 403, 404)):
-                    # a gateway that answered but is on its way out: last-ditch try its engine before the next target
-                    # (not when the peer is draining that engine for a switch: going direct would bypass the drain)
-                    if t["machine"] and not direct_tried and r.headers.get("x-hangar-state") != "stopping":
-                        with anyio.CancelScope(shield=True):
-                            await r.aclose()
-                        if not await send_direct():
+                    try:
+                        r = await gateway.send(req, stream=True)
+                    except httpx.HTTPError as exc:
+                        direct_cache.pop((t["machine"], t["profile"]), None)
+                        record_engine_result(peers, t["machine"], t["profile"], direct_instance, False, type(exc).__name__)
+                        raise
+                    healthy = r.status_code not in (401, 403, 404, 502, 503, 504)
+                    if not healthy:
+                        direct_cache.pop((t["machine"], t["profile"]), None)
+                    record_engine_result(peers, t["machine"], t["profile"], direct_instance, healthy,
+                                         None if healthy else f"HTTP {r.status_code}")
+                    return r
+
+                try:
+                    if t["machine"]:
+                        if (peers.state.get(t["machine"]) or {}).get("online"):
+                            try:
+                                p = peers.get(t["machine"])
+                                url, mid = f"{p['url']}/v1/{path}", f"profile:{t['profile']}"
+                                auth = {"Authorization": f"Bearer {p['token']}", "X-Hangar-Via": via or me, "X-Hangar-Client": client,
+                                        "X-Hangar-Caller": caller,
+                                        **({"X-Hangar-Switch": model} if t in forced else {})}
+                                req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
+                                                            headers={**passthrough, **auth, "Content-Type": "application/json"})
+                                r = await gateway.send(req, stream=True)
+                            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadError, httpx.RemoteProtocolError):
+                                # online is still cached but the gateway is already refusing (its manager is on its way
+                                # out before the poll flips it offline): go straight to the engine, not to a backup
+                                r = None
+                                record_manager_failure(peers, t["machine"])
+                            # no answer (refused) or an old peer with no gateway (404): fall through to its engine
+                            if r is None or r.status_code == 404:
+                                if r is not None:
+                                    with anyio.CancelScope(shield=True):
+                                        await r.aclose()
+                                await send_direct()
+                        else:
+                            # Manager offline: use the independently monitored engine.
+                            await send_direct()
+                        if r is None:
                             errors.append(f"{t['machine']}/{t['profile']}: gateway down, engine not reachable")
                             continue
-                        if r.status_code in (401, 403, 404, 502, 503, 504):
-                            errors.append(f"{t['machine']}/{t['profile']}: HTTP {r.status_code}")
-                            continue
                     else:
-                        if r.headers.get("x-hangar-state") == "stopping":
-                            drained = True    # its cached state may still say ready, so trust the answer we got
-                        body = bytearray()
-                        async for chunk in r.aiter_bytes():
-                            body.extend(chunk[:8192 - len(body)])
-                            if len(body) >= 8192:
-                                break
-                        errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {request_error(bytes(body), r.status_code)}")
-                        continue
-                if r.status_code in (400, 413) and len(cands) > 1:
-                    body = await r.aread()
-                    if TOO_LONG.search(body[:4096].decode("utf-8", "replace")):
-                        errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {request_error(body, r.status_code)}")
-                        continue
-                    await log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code, engine=served_engine, error=request_error(body, r.status_code))
-                    return Response(body, status_code=r.status_code, media_type=r.headers.get("content-type"),
-                                    headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}",
-                                             "X-Hangar-Engine": served_engine or "",
-                                             **({"X-Hangar-Route": "direct"} if direct_tried else {})})
-                roles.note_used(t, model, (client, caller))
-                meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
-                seq = next(inflight_seq)
-                inflight[seq] = {"started": time.time(), "model": model, "client": client, "caller": caller,
-                                 "machine": t["machine"] or me, "profile": t["profile"], "engine": served_engine,
-                                 "meter": meter}
-                done, finished = False, False
+                        ents = await anyio.to_thread.run_sync(lambda: clients.model_entries(
+                            mgr, [t["profile"]], "127.0.0.1", include_custom=True))
+                        if not ents:
+                            errors.append(f"here/{t['profile']}: profile no longer available")
+                            continue
+                        e = ents[0]
+                        url, mid = f"{e['base']}/v1/{path}", e["model"]
+                        auth = {"Authorization": f"Bearer {e['api_key']}"} if e["api_key"] else {}
+                        req = gateway.build_request("POST", url, content=json.dumps({**data, "model": mid}).encode(),
+                                                    headers={**passthrough, **auth, "Content-Type": "application/json"})
+                        r = await gateway.send(req, stream=True)
+                    if t["machine"]:
+                        served_engine = r.headers.get("x-hangar-engine") or served_engine
+                    if r.status_code in (502, 503, 504) or (t["machine"] and r.status_code in (401, 403, 404)):
+                        # a gateway that answered but is on its way out: last-ditch try its engine before the next target
+                        # (not when the peer is draining that engine for a switch: going direct would bypass the drain)
+                        if t["machine"] and not direct_tried and r.headers.get("x-hangar-state") != "stopping":
+                            with anyio.CancelScope(shield=True):
+                                await r.aclose()
+                            if not await send_direct():
+                                errors.append(f"{t['machine']}/{t['profile']}: gateway down, engine not reachable")
+                                continue
+                            if r.status_code in (401, 403, 404, 502, 503, 504):
+                                errors.append(f"{t['machine']}/{t['profile']}: HTTP {r.status_code}")
+                                continue
+                        else:
+                            if r.headers.get("x-hangar-state") == "stopping":
+                                drained = True    # its cached state may still say ready, so trust the answer we got
+                            body = bytearray()
+                            async for chunk in r.aiter_bytes():
+                                body.extend(chunk[:8192 - len(body)])
+                                if len(body) >= 8192:
+                                    break
+                            errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {request_error(bytes(body), r.status_code)}")
+                            continue
+                    if r.status_code in (400, 413) and len(cands) > 1:
+                        body = await r.aread()
+                        if TOO_LONG.search(body[:4096].decode("utf-8", "replace")):
+                            errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {request_error(body, r.status_code)}")
+                            continue
+                        await log(machine=t["machine"] or me, profile=t["profile"], status=r.status_code, engine=served_engine, error=request_error(body, r.status_code))
+                        return Response(body, status_code=r.status_code, media_type=r.headers.get("content-type"),
+                                        headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}",
+                                                 "X-Hangar-Engine": served_engine or "", **fallback_header(t),
+                                                 **({"X-Hangar-Route": "direct"} if direct_tried else {})})
+                    roles.note_used(t, model, (client, caller))
+                    meter = RequestMeter(t0, "text/event-stream" in r.headers.get("content-type", ""))
+                    seq = next(inflight_seq)
+                    inflight[seq] = {"started": time.time(), "model": model, "client": client, "caller": caller,
+                                     "machine": t["machine"] or me, "profile": t["profile"], "engine": served_engine,
+                                     "meter": meter}
+                    done, finished = False, False
 
-                async def finish(r=r, t=t, meter=meter, served_engine=served_engine, seq=seq):
-                    nonlocal finished
-                    if finished:
-                        return
-                    finished = True
-                    inflight.pop(seq, None)
-                    roles.closed(t)
-                    with anyio.CancelScope(shield=True):
-                        await r.aclose()
-                    measurements = meter.result()
-                    error = ("closed before the end" if not done else
-                             f"HTTP {r.status_code}: {meter.error}" if r.status_code >= 400 and meter.error else
-                             request_error(bytes(meter.body), r.status_code) if r.status_code >= 400 else meter.error)
-                    await log(machine=t["machine"] or me, profile=t["profile"], engine=served_engine,
-                              status=r.status_code, error=error, **measurements)
-
-                async def relay(r=r, t=t, meter=meter):
-                    nonlocal done
-                    try:
-                        async for chunk in r.aiter_bytes():
-                            meter.feed(chunk, time.time())
-                            yield chunk
-                        done = True
-                        if direct_tried and r.status_code < 400:
-                            record_engine_result(peers, t["machine"], t["profile"], direct_instance, True)
-                    except httpx.HTTPError as exc:
-                        if direct_tried:
-                            record_engine_result(peers, t["machine"], t["profile"], direct_instance, False, type(exc).__name__)
-                        raise
-                    finally:
-                        await finish()
-                response = UpstreamResponse(relay(), on_close=finish, status_code=r.status_code, media_type=r.headers.get("content-type"),
-                                             headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}",
-                                                      "X-Hangar-Engine": served_engine or "",
-                                                      **({"X-Hangar-Route": "direct"} if direct_tried else {}),
-                                                      "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-                relaying = True
-                return response
-            except (httpx.HTTPError, KeyError) as ex:
-                errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {type(ex).__name__}")
-            finally:
-                if not relaying:
-                    roles.closed(t)
-                    if r is not None:
+                    async def finish(r=r, t=t, meter=meter, served_engine=served_engine, seq=seq):
+                        nonlocal finished
+                        if finished:
+                            return
+                        finished = True
+                        inflight.pop(seq, None)
+                        roles.closed(t)
                         with anyio.CancelScope(shield=True):
                             await r.aclose()
-        if drained or await anyio.to_thread.run_sync(roles.stopping, model):
-            # it began draining while we routed, or a target said so: same 503, so a hub retries rather than going direct
-            await log(status=503, error="stopping")
-            return stopping_reply(model)
-        await log(status=502, error="; ".join(errors)[:500])
-        return JSONResponse({"error": {"type": "unavailable", "message": f"every target for {model!r} failed: "
-                                       + "; ".join(errors)}}, status_code=502)
+                        measurements = meter.result()
+                        error = ("closed before the end" if not done else
+                                 f"HTTP {r.status_code}: {meter.error}" if r.status_code >= 400 and meter.error else
+                                 request_error(bytes(meter.body), r.status_code) if r.status_code >= 400 else meter.error)
+                        await log(machine=t["machine"] or me, profile=t["profile"], engine=served_engine,
+                                  status=r.status_code, error=error, **measurements)
+
+                    async def relay(r=r, t=t, meter=meter):
+                        nonlocal done
+                        try:
+                            async for chunk in r.aiter_bytes():
+                                meter.feed(chunk, time.time())
+                                yield chunk
+                            done = True
+                            if direct_tried and r.status_code < 400:
+                                record_engine_result(peers, t["machine"], t["profile"], direct_instance, True)
+                        except httpx.HTTPError as exc:
+                            if direct_tried:
+                                record_engine_result(peers, t["machine"], t["profile"], direct_instance, False, type(exc).__name__)
+                            raise
+                        finally:
+                            await finish()
+                    response = UpstreamResponse(relay(), on_close=finish, status_code=r.status_code, media_type=r.headers.get("content-type"),
+                                                 headers={"X-Hangar-Served-By": f"{t['machine'] or me}/{t['profile']}",
+                                                          "X-Hangar-Engine": served_engine or "", **fallback_header(t),
+                                                          **({"X-Hangar-Route": "direct"} if direct_tried else {}),
+                                                          "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                    relaying = True
+                    return response
+                except (httpx.HTTPError, KeyError) as ex:
+                    errors.append(f"{t['machine'] or 'here'}/{t['profile']}: {type(ex).__name__}")
+                finally:
+                    if not relaying:
+                        roles.closed(t)
+                        if r is not None:
+                            with anyio.CancelScope(shield=True):
+                                await r.aclose()
+            if drained or await anyio.to_thread.run_sync(roles.stopping, model):
+                # it began draining while we routed, or a target said so: same 503, so a hub retries rather than going direct
+                await log(status=503, error="stopping")
+                return stopping_reply(model)
+            await log(status=502, error="; ".join(errors)[:500])
+            return JSONResponse({"error": {"type": "unavailable", "message": f"every target for {model!r} failed: "
+                                           + "; ".join(errors)}}, status_code=502)
+
+        async def switch_progress(pid: str):
+            """While its model comes up: ("tick", text) about every 10 s, then ("ready", None) or ("error", why)."""
+            p, sw = mgr.profiles[pid], mgr.switching()
+            label = p.description or pid
+            began, last = time.time(), 0.0
+            deadline = began + float(sw["max_wait_s"])
+            eta = (await anyio.to_thread.run_sync(mgr.needs, p)).get("load_seconds") or 75
+            job = None               # our own start: asking again would queue a fresh one and supersede this one
+            while time.time() < deadline:
+                if job is not None and job.done_event.is_set():
+                    if job.state == "done":
+                        yield ("ready", None)                       # routing says so if it is somehow not up
+                        return
+                    if (job.error or "").startswith("a newer start"):
+                        yield "error", f"a newer switch on {me} replaced this one ({job.error})"
+                        return
+                    res = await anyio.to_thread.run_sync(mgr.request_switch, pid)   # once: it notes the back-off
+                    yield "error", res["reason"] if res["state"] == "refused" else (job.error or job.state)
+                    return
+                if job is None:
+                    res = await anyio.to_thread.run_sync(mgr.request_switch, pid)
+                    if res["state"] in ("ready", "refused"):
+                        yield ("ready", None) if res["state"] == "ready" else ("error", res["reason"])
+                        return
+                    job = res.get("job")                            # still "waiting": its turn ends, so keep asking
+                if time.time() - last >= 10:
+                    last = time.time()
+                    yield "tick", (f"loading {label} on {me} - {last - began:.0f} s of ~{eta:.0f} s" if job else
+                                   f"{res['reason']} ({res['wait_s']:.0f} s left), then loading {label}")
+                await anyio.sleep(1 if job else max(0.5, min(2.0, res.get("wait_s", 2))))
+            yield "error", f"{label} did not come up within {float(sw['max_wait_s']):.0f} s"
+
+        def label_fallback(resp, pid: str):
+            """A switch here was wanted but another target answered: say which one it wanted."""
+            if getattr(resp, "headers", None) is not None and resp.headers.get("x-hangar-served-by") != f"{me}/{pid}":
+                resp.headers["X-Hangar-Fallback"] = f"{me}/{pid}"
+            return resp
+
+        async def switch_then(pid: str):
+            """Bring this machine's model up for the request, holding it meanwhile, then route it as usual.
+            Once the wait has begun (headers sent), a failure can only end the stream: a hub cannot fall back from it
+            (a local role still tries its own fallbacks, inside the stream). Deliberate: for a model the client picked,
+            a clear "did not start" beats a different model answering mid-stream as if nothing happened."""
+            if not data.get("stream"):
+                async for kind, why in switch_progress(pid):
+                    if kind == "ready":
+                        return label_fallback(await route(), pid)    # it may still go to a backup (too long for it)
+                    if kind == "error":
+                        if local_role:
+                            # our own role's request: its other targets and fallbacks still get their turn
+                            return label_fallback(await route(), pid)
+                        await log(status=503, error=why[:500])
+                        return JSONResponse({"error": {"type": "unavailable", "message": why}}, status_code=503,
+                                            headers={"Retry-After": "15", "X-Hangar-Switching-To": f"{me}/{pid}"})
+
+            progress = switch_progress(pid)
+            kind, text = await progress.__anext__()      # the first event decides the response: still time to answer properly
+            if kind == "ready":                          # up already: the engine's real status codes reach the hub
+                return label_fallback(await route(), pid)
+            if kind == "error":
+                if local_role:
+                    return label_fallback(await route(), pid)
+                await log(status=503, error=text[:500])
+                return JSONResponse({"error": {"type": "unavailable", "message": text}}, status_code=503,
+                                    headers={"Retry-After": "15", "X-Hangar-Switching-To": f"{me}/{pid}"})
+
+            async def relay_into_stream(resp):
+                """A routed answer inside this open stream: its bytes, or its error, then end."""
+                if not isinstance(resp, StreamingResponse):  # routing failed after all: its error, in the stream
+                    try:
+                        message = (json.loads(resp.body or b"{}").get("error") or {}).get("message")
+                    except ValueError:
+                        message = None
+                    yield stream_error(path, message or f"HTTP {resp.status_code}")
+                    return
+                if resp.status_code >= 400:
+                    # an engine error would otherwise ride inside this 200 stream: read it and end the stream
+                    parts, size = [], 0
+                    try:
+                        async for chunk in resp.body_iterator:
+                            parts.append(chunk)
+                            size += len(chunk)
+                            if size >= 8192:
+                                break
+                    finally:
+                        with anyio.CancelScope(shield=True):
+                            await resp.body_iterator.aclose()
+                            if isinstance(resp, UpstreamResponse):
+                                await resp.on_close()
+                    body = b"".join(parts).decode("utf-8", "replace").strip()
+                    try:
+                        message = (json.loads(body or "{}").get("error") or {}).get("message")
+                    except (ValueError, AttributeError):
+                        message = None
+                    yield stream_error(path, message or body or f"HTTP {resp.status_code}")
+                    return
+                try:
+                    async for chunk in resp.body_iterator:
+                        yield chunk
+                finally:
+                    with anyio.CancelScope(shield=True):
+                        await resp.body_iterator.aclose()
+                        if isinstance(resp, UpstreamResponse):
+                            await resp.on_close()
+
+            async def events():
+                try:
+                    yield keepalive(path, model, text)   # the tick we took to make the decision
+                    async for kind, why in progress:
+                        if kind == "tick":
+                            yield keepalive(path, model, why)
+                            continue
+                        if kind == "error":
+                            if local_role:
+                                # our own role's model failed mid-wait: its other targets still get their turn
+                                async for chunk in relay_into_stream(await route()):
+                                    yield chunk
+                                return
+                            await log(status=503, error=why[:500])
+                            yield stream_error(path, why)
+                            return
+                        async for chunk in relay_into_stream(await route()):
+                            yield chunk
+                        return
+                finally:
+                    with anyio.CancelScope(shield=True):
+                        await progress.aclose()          # the client went away mid-wait: stop asking
+            return StreamingResponse(events(), media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                                              "X-Hangar-Switching-To": f"{me}/{pid}"})
+
+        if switch_pid:
+            return await switch_then(switch_pid)
+        return await route()
 
     def request_filters(client: str | None = None, caller: str | None = None, engine: str | None = None,
                         model: str | None = None, machine: str | None = None, profile: str | None = None,
