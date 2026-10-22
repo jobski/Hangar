@@ -10,6 +10,16 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.5.0 — 2026-10-22
+
+- Let a running model finish its reply before a switch stops it (`resources.drain_timeout_s`, 180 s); requests for it
+  meanwhile get `503` with `Retry-After` and `X-Hangar-State: stopping`, and a hub no longer relays around the drain.
+- Drop a queued start that a newer conflicting start would undo at once (last switch wins), re-checked after the drain;
+  custom runs take part, and a start that is itself dropped cancels nothing.
+- Keep Maya's conversations across restarts and stop Maya cleanly through a new engine stop hook; on Windows it first
+  sets the conversation it holds aside on disk.
+- Count tokens generated during a drain in usage and on the activity chart.
+
 ## 0.4.0 — 2026-10-22
 
 - Name each role after the model serving it in `/v1/models` and the Connect configs, flagging a fallback, with its context size.
