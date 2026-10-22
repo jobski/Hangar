@@ -9,7 +9,8 @@
     hangar switching [set k=v ... | setup <machine> <thinker> <coder>]   request-driven model switching
     hangar stop <engine|all> | restart <engine>
     hangar check [engine] | update <engine> | rollback <engine>
-    hangar logs <engine> [lines] [-f]      -f keeps printing new lines (Ctrl+C to stop)
+    hangar logs [engine] [lines] [-f]      -f keeps printing new lines (Ctrl+C to stop); no engine: the whole
+                                           machine - every engine and Hangar's events, following across switches
     hangar jobs | job <id> | events
     hangar stats [day|week|month|year|all]
     hangar requests [period] [--by target|client|caller|model|machine] [--latest]   what the gateway (/v1) passed on
@@ -282,17 +283,21 @@ def cmd_rollback(a):
 
 
 def cmd_logs(a):
+    """hangar logs [engine] [lines] [-f]: one engine's log, or (no engine) the whole machine's - every engine and
+    Hangar's events, each line tagged, so -f keeps following across a switch from one engine to another."""
     follow = "-f" in a or "--follow" in a
     pl = [x for x in a if x not in ("-f", "--follow")]
-    if not pl:
-        sys.exit("usage: hangar logs <engine> [lines] [-f]")
-    lines = int(pl[1]) if len(pl) > 1 else 100
+    engine = pl[0] if pl and not pl[0].isdigit() else None
+    nums = [x for x in pl if x.isdigit()]
+    lines = int(nums[0]) if nums else 100
+    snapshot, stream = ((f"/api/logs/{engine}", f"/api/logs/{engine}/stream") if engine else
+                        ("/api/machine-log", "/api/machine-log/stream"))
     if not follow:
-        print(_call("GET", f"/api/logs/{pl[0]}", params={"lines": lines}))
+        print(_call("GET", snapshot, params={"lines": lines}))
         return
     url, tok = _conn()
     try:
-        with httpx.stream("GET", url + _path(f"/api/logs/{pl[0]}/stream"), params={"lines": lines},
+        with httpx.stream("GET", url + _path(stream), params={"lines": lines},
                           headers={"Authorization": f"Bearer {tok}"}, timeout=httpx.Timeout(10, read=None)) as r:
             if r.status_code >= 400:
                 r.read()

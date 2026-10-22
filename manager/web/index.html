@@ -483,7 +483,7 @@ details.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); 
     </div>
     <div class="cols">
       <div style="display:grid;gap:16px;min-width:0">
-        <div class="panel"><div class="ph"><h3 id="engtitle">Engines</h3><span class="sp"></span><span class="meta" id="engmeta"></span></div><div id="engines"></div></div>
+        <div class="panel"><div class="ph"><h3 id="engtitle">Engines</h3><span class="sp"></span><span class="meta" id="engmeta"></span><button class="btn sm ghost" data-act="logs" data-e="*" title="Every engine's log and Hangar's events in one live view: it follows a switch from one engine to the next">Machine log</button></div><div id="engines"></div></div>
         <div class="panel"><div class="ph"><h3>Recent events</h3><span class="sp"></span><button class="btn ghost sm" data-view="activity">All activity →</button></div><div class="feed" id="ovevents"></div></div>
       </div>
       <div class="panel"><div class="ph"><h3>Machine</h3><span class="sp"></span><button class="btn ghost sm" data-act="budget" id="budgetbtn" title="How much memory Hangar's engines may use here">Budget</button></div>
@@ -1279,15 +1279,17 @@ function flushLog() {
   if (atEnd) pre.scrollTop = pre.scrollHeight;
 }
 function logState(txt, cls) { const s = $("#logstate"); if (s) { s.innerHTML = `<span class="dot ${cls}"></span>${txt}`; } }
+// engine "*": the whole machine - every engine's log and Hangar's events, following across switches
+const logPath = engine => engine === "*" ? "/api/machine-log/stream?lines=400" : `/api/logs/${encodeURIComponent(engine)}/stream?lines=400`;
 async function streamLog(engine) {
-  dialog(`${engine} · log`, `<div class="row" style="margin-bottom:10px"><span id="logstate" class="pill"></span><span class="sp"></span>
+  dialog(`${engine === "*" ? "machine" : engine} · log`, `<div class="row" style="margin-bottom:10px"><span id="logstate" class="pill"></span><span class="sp"></span>
       <button class="btn sm" data-act="logpause">Pause</button><button class="btn sm" data-act="logcopy">${ICON.copy}Copy</button><button class="btn sm" data-act="logpop" data-e="${esc(engine)}" title="Move this log to its own window">${ICON.popout}Pop out</button></div>
     <pre class="term tall" id="logpre"></pre>`, true);
   logPaused = false; logPending = "";
   logState("live", "ok");
   const ctl = logAbort = new AbortController();
   try {
-    const r = await fetch(route(`/api/logs/${encodeURIComponent(engine)}/stream?lines=400`), { headers: { "Authorization": "Bearer " + TOKEN }, signal: ctl.signal, cache: "no-store" });
+    const r = await fetch(route(logPath(engine)), { headers: { "Authorization": "Bearer " + TOKEN }, signal: ctl.signal, cache: "no-store" });
     if (!r.ok) throw new Error((await r.text()) || r.statusText);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
     for (;;) {

@@ -98,6 +98,14 @@ class Store:
     def events(self, limit=100):
         return self.q("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
 
+    def events_since(self, after_id, limit=200):
+        """Events written after this id, oldest first (None: none yet, only the id to follow from)."""
+        if after_id is None:
+            r = self.q("SELECT MAX(id) AS m FROM events")
+            return [], (r[0]["m"] or 0) if r else 0
+        rows = self.q("SELECT * FROM events WHERE id>? ORDER BY id LIMIT ?", (after_id, limit))
+        return rows, (rows[-1]["id"] if rows else after_id)
+
     # ---- sessions
     def session_start(self, engine, profile, adopted=False, config_key=None) -> int:
         return self.x("INSERT INTO sessions(engine,profile,started,adopted,config_key) VALUES(?,?,?,?,?)",

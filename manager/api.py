@@ -142,6 +142,26 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         pts = list(mgr.history)
         return pts[-max(1, minutes * 60 // mgr.cfg["resources"]["sample_interval_s"]):]
 
+    @app.get("/api/machine-log", response_class=PlainTextResponse)
+    def machine_log(lines: int = 200):
+        """Every engine's log and Hangar's events, the last lines of each, each line tagged."""
+        return mgr.machine_log(None, min(max(lines, 1), 5000), snapshot=True)[0]
+
+    @app.get("/api/machine-log/stream")
+    async def machine_log_stream(request: Request, lines: int = 200):
+        """The machine as it runs: whichever engine is writing, and Hangar's events, until the client disconnects."""
+        async def follow():
+            text, state = await anyio.to_thread.run_sync(mgr.machine_log, None, min(max(lines, 1), 5000))
+            yield text
+            while not await request.is_disconnected():
+                await anyio.sleep(0.5)
+                text, state = await anyio.to_thread.run_sync(mgr.machine_log, state, lines)
+                if text:
+                    yield text
+
+        return StreamingResponse(follow(), media_type="text/plain; charset=utf-8",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     @app.get("/api/logs/{engine}", response_class=PlainTextResponse)
     def logs(engine: str, lines: int = 200):
         guard(mgr.engine, engine)

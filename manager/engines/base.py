@@ -75,6 +75,10 @@ class Engine:
     def launch(self, profile: Profile) -> Launch:
         raise NotImplementedError
 
+    def extra_logs(self, profile: Profile) -> list[Path]:
+        """Log files the engine writes itself, beside the output the core captures (followed in the machine log)."""
+        return []
+
     def stop_cleanly(self, pid: int, log: Log) -> bool:
         """Ask the running process to end on its own terms; True once it has. False: the core ends it."""
         return False

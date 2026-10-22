@@ -67,8 +67,9 @@
     const LOG_MAX = 5000;
     let logAbort = null, logPaused = false, logPending = "";
 
-    document.title = (machine ? machine + " · " : "") + engine + " · log";
-    $("#title").textContent = machine ? machine + " · " + engine : engine;
+    const label = engine === "*" ? "machine" : engine;      // "*": every engine and Hangar's events
+    document.title = (machine ? machine + " · " : "") + label + " · log";
+    $("#title").textContent = machine ? machine + " · " + label : label;
 
     function logState(txt, cls) { $("#state").innerHTML = `<span class="dot ${cls}"></span>${txt}`; }
     function flushLog() {
@@ -83,9 +84,8 @@
       if (atEnd) pre.scrollTop = pre.scrollHeight;
     }
     // Mirror the dashboard's route(): a peer's log is proxied through this host.
-    const path = machine
-      ? `/api/peers/${encodeURIComponent(machine)}/logs/${encodeURIComponent(engine)}/stream?lines=400`
-      : `/api/logs/${encodeURIComponent(engine)}/stream?lines=400`;
+    const own = engine === "*" ? "machine-log/stream?lines=400" : `logs/${encodeURIComponent(engine)}/stream?lines=400`;
+    const path = machine ? `/api/peers/${encodeURIComponent(machine)}/${own}` : `/api/${own}`;
 
     async function stream() {
       if (!engine || !TOKEN) { logState("no token", "bad"); return; }

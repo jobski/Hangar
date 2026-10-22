@@ -132,6 +132,13 @@ class StrataEngine(Engine):
         cmd += [str(a) for a in profile.cfg.get("server_args", [])]
         return Launch(cmd=cmd, cwd=str(self.dir), env={k: str(v) for k, v in (profile.cfg.get("env") or {}).items()})
 
+    def extra_logs(self, profile):
+        log = self._run_config(profile).get("log")      # the engine's own log (the run config's "log")
+        if not log:
+            return []
+        path = Path(log)
+        return [path if path.is_absolute() else self.dir / path]
+
     def _server_command(self, config):
         return [str(self.python), str(self.dir / "serve" / "server.py"), "--engine", "strata",
                 "--config", str(config), "--port", str(self.port)]

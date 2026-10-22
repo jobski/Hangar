@@ -435,13 +435,19 @@ hangar download qwen3:8b --ollama     hangar downloads
 hangar custom tiel-coder-35b --ctx 65536 -- --temp 0.6
 hangar autostart on                   (start with Windows; off to stop)
 hangar logs strata -f                 (follow the log live; Ctrl+C stops)
+hangar logs -f                        (the whole machine: every engine's log and Hangar's events, one tagged
+                                       stream that follows a switch from one engine to the next; --on <machine>)
 hangar start last [engine]            (start what that engine ran last; also a Run button on a stopped engine's card)
 hangar requests day                   hangar requests --latest
 hangar wake pc                        hangar wake pc --auto on
 ```
 
 REST: everything is under `/api` (interactive docs at `/api/docs`). Actions return a job; add `?wait=60` to wait for
-it. `GET /api/logs/<engine>/stream` follows an engine log as plain text until you disconnect.
+it. `GET /api/logs/<engine>/stream` follows an engine log as plain text until you disconnect;
+`GET /api/machine-log/stream` follows the whole machine - every engine's log (and the own log of an engine that keeps
+one, such as Maya's), plus Hangar's events, each line tagged `[strata]`, `[maya]`, `[maya:engine]` or `[hangar]`, with
+switches, stops, starts and crashes as distinct banners. The dashboard's **Machine log** button (Engines panel) shows
+the same.
 
 ### Unfinished downloads
 

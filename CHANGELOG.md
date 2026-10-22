@@ -10,6 +10,15 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.7.0 — 2026-10-23
+
+- Add the machine log: every engine's log, the own log of an engine that keeps one (Maya's, Strata's), and Hangar's
+  events as one tagged stream that follows a switch from one engine to the next without picking a log
+  (`GET /api/machine-log[/stream]`, `hangar logs [-f]` with no engine, the dashboard's Machine log button).
+- Show model changes as banners in it, telling a switch apart from a plain stop or start, a return home or a crash.
+- Follow logs without losing or garbling lines: rotation, unfinished lines, characters split across reads, and
+  engines starting or exiting while the stream opens.
+
 ## 0.6.1 — 2026-10-22
 
 - Name a switching role after its own model (`glm → maya-maya-m on my-pc (switches)`) in `/v1/models` and client

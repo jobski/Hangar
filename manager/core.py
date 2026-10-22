@@ -5,6 +5,7 @@ single worker thread, so two remote requests can never race each other; each job
 """
 from __future__ import annotations
 
+import codecs
 import collections
 import dataclasses
 import json
@@ -1430,21 +1431,81 @@ class Manager:
         The file is opened per call, not held, so the rotation at engine start (a rename) still works on Windows.
         A new file (rotated, or the engine moved to another log) is read from its start."""
         path = self.log_path(engine)
-        try:
-            st = path.stat()
-        except OSError:
-            return (("\n".join(self.tail_log(engine, lines)) + "\n").encode() if pos is None else b""), 0, None
-        cur = (str(path), st.st_dev, st.st_ino)     # not ctime: Windows tunnelling copies it onto a re-created file
         if pos is None:
-            return ("\n".join(self.tail_log(engine, lines)) + "\n").encode(), st.st_size, cur
-        if cur != ident or st.st_size < pos:
-            pos = 0
-        if st.st_size == pos:
-            return b"", pos, cur
-        with open(path, "rb") as f:
-            f.seek(pos)
-            data = f.read(min(st.st_size - pos, 2**20))
-        return data, pos + len(data), cur
+            tail, offset, end, ident = _tail_file(path, lines)
+            if ident is None:
+                return ("\n".join(self.tail_log(engine, lines)) + "\n").encode(), 0, None
+            # no history asked for: from the very end, so an old unfinished last line is not played back as new
+            return ("\n".join(tail) + "\n").encode(), offset if lines > 0 else end, ident
+        return _follow_file(path, pos, ident)[:3]
+
+    def machine_log(self, state: dict | None, lines: int = 200, snapshot: bool = False) -> tuple[str, dict]:
+        """One step of following the whole machine: every engine's log, the own log of an engine that keeps one,
+        and Hangar's events, each line tagged - a switch from one engine to another shows without picking a log.
+        state=None opens with recent events and the last lines of what runs now; then only what is new."""
+        first = state is None
+        state = state if state is not None else {"files": {}, "event": None, "partial": {}, "decoders": {}}
+        out: list[str] = []
+        if first:
+            recent = list(reversed(self.store.events(min(lines, 40))))
+            state["event"] = recent[-1]["id"] if recent else 0    # none yet: the very first one is new
+            out += [_event_line(e) for e in recent]
+        else:
+            new, state["event"] = self.store.events_since(state["event"])
+            out += [_event_line(e) for e in new]
+        with self.lock:                                # one consistent view: a start can add a profile meanwhile
+            engines, profiles = list(self.engines.items()), list(self.profiles.values())
+        # every engine's log, and the own log of every profile that keeps one - known from the start, so a model that
+        # starts later shows from its first line
+        sources: dict[str, list] = {}                  # path -> [label, path, owners]: one entry per file
+        for name, eng in engines:
+            sources.setdefault(str(self.log_path(name)), [name, self.log_path(name), []])[2].append((name, None))
+            for prof in [p for p in profiles if p.engine == name]:
+                for path in (eng.extra_logs(prof) if hasattr(eng, "extra_logs") else []):
+                    sources.setdefault(str(path), [f"{name}:engine", path, []])[2].append((name, prof.id))
+        state.setdefault("since", time.time())
+        if first:
+            # see what runs, read every opening, see again: an engine started in between is seen running (its
+            # start-up lines are in what was read) or wrote after the end that was read (and comes next poll)
+            with self.lock:
+                before = {n: i.profile for n, i in self.instances.items()}
+            opened = {key: _tail_file(path, max(1, lines), whole=snapshot) for key, (_, path, _) in sources.items()}
+            with self.lock:
+                after = {n: i.profile for n, i in self.instances.items()}
+            for key, (label, path, owners) in sources.items():
+                tail, offset, end, ident = opened[key]
+                # running before or after the read: one that exits meanwhile still shows its last words
+                live = any(n in r and (pid is None or r[n] == pid) for r in (before, after) for n, pid in owners)
+                if live or snapshot:                   # a snapshot shows a stopped engine's last words too
+                    out += [f"[{label}] {line}" for line in tail]
+                state["files"][key] = [offset if live else end, ident]   # an idle log's last line is old news
+            return ("\n".join(out) + "\n") if out else "", state
+        for label, path, _ in sources.values():
+            key = str(path)
+            if key not in state["files"]:
+                try:                                   # found later: from its start if written since we began
+                    fresh = path.stat().st_mtime >= state["since"]
+                except OSError:
+                    fresh = True
+                _, _, end, ident = _tail_file(path, 0)    # end and identity from one handle
+                state["files"][key] = [0 if fresh else end, ident]
+            pos, ident = state["files"][key]
+            data, pos, ident, restarted = _follow_file(path, pos, ident)
+            state["files"][key] = [pos, ident]
+            if restarted:                              # rotated or truncated: what was pending belonged to the old file
+                held, _ = state["partial"].pop(key, ("", 0))
+                if held.strip():
+                    out.append(f"[{label}] {held}")
+                state["decoders"].pop(key, None)
+            dec = state["decoders"].setdefault(key, codecs.getincrementaldecoder("utf-8")("replace"))
+            held, since = state["partial"].pop(key, ("", time.time()))
+            *done, rest = re.split(r"\r\n|\n|\r", held + dec.decode(data))   # \r: progress rewritten in place
+            if rest and not data and time.time() - since >= 2:
+                done, rest = done + [rest], ""             # a line left unfinished shows after a moment anyway
+            if rest:
+                state["partial"][key] = (rest, since if held and not done else time.time())   # the rest comes next
+            out += [f"[{label}] {line}" for line in done if line.strip()]
+        return ("\n".join(out) + "\n") if out else "", state
 
     def tail_log(self, engine: str, lines: int = 100) -> list[str]:
         inst = self.instances.get(engine)
@@ -1612,6 +1673,104 @@ def _redact_command(cmd: list[str]) -> list[str]:
         else:
             out.append(arg)
     return out
+
+
+def _file_ident(path: Path):
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (str(path), st.st_dev, st.st_ino)     # not ctime: Windows tunnelling copies it onto a re-created file
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _follow_file(path: Path, pos: int, ident) -> tuple[bytes, int, object, bool]:
+    """New bytes of a file since pos (opened per call, so a rename can rotate it): (data, new pos, identity, whether
+    this is a new or shorter file, read from its start). Identity and size come from the handle that is read."""
+    try:
+        with open(path, "rb") as f:
+            st = os.fstat(f.fileno())
+            cur = (str(path), st.st_dev, st.st_ino)   # not ctime: Windows tunnelling copies it onto a re-created file
+            restarted = cur != ident or st.st_size < pos
+            if restarted:
+                pos = 0
+            if st.st_size == pos:
+                return b"", pos, cur, restarted
+            f.seek(pos)
+            data = f.read(min(st.st_size - pos, 2**20))
+    except OSError:
+        return b"", 0, None, ident is not None
+    return data, pos + len(data), cur, restarted
+
+
+def _tail_file(path: Path, lines: int, whole: bool = False) -> tuple[list[str], int, int, object]:
+    """The last complete lines, the offset after them, the end of the file and its identity - all from one handle, so
+    a write or a rotation meanwhile is not lost. The offset stops before an unfinished last line (or a character cut
+    in half), which a running engine is still writing and is then read whole with what follows."""
+    try:
+        with open(path, "rb") as f:
+            st = os.fstat(f.fileno())
+            start = max(0, st.st_size - 256 * 1024)
+            f.seek(start)
+            data = f.read(st.st_size - start)
+    except OSError:
+        return [], 0, 0, None
+    cut = max(data.rfind(b"\n"), data.rfind(b"\r")) + 1          # 0: no complete line in what was read
+    done = data if whole else data[:cut]           # whole: a snapshot shows it all; else the unfinished stays pending
+    if not whole and not cut and start:            # one unfinished line longer than the window: find where it starts
+        start = _line_start(path, start)
+        done = b""
+    return (done.decode("utf-8", errors="replace").splitlines()[-lines:] if lines > 0 else [], start + len(done),
+            st.st_size,
+            (str(path), st.st_dev, st.st_ino))
+
+
+def _line_start(path: Path, before: int, limit: int = 4 * 2**20) -> int:
+    """Where the line running into offset `before` begins: after the last line break before it (up to `limit` back)."""
+    try:
+        with open(path, "rb") as f:
+            pos = before
+            while pos > 0 and before - pos < limit:
+                step = min(64 * 1024, pos)
+                f.seek(pos - step)
+                chunk = f.read(step)
+                cut = max(chunk.rfind(b"\n"), chunk.rfind(b"\r"))
+                if cut >= 0:
+                    return pos - step + cut + 1
+                pos -= step
+            return pos
+    except OSError:
+        return before
+
+
+def _event_line(e: dict) -> str:
+    """An event in the machine log: model changes as banners - a switch apart from a plain stop or start - every line
+    tagged, so a multi-line message (a failed start's log) keeps its source."""
+    kind, msg = e.get("kind") or "", e.get("message") or ""
+    first, *rest = msg.splitlines() or [""]
+    m = re.match(r"(\S+): making room for (\S+)", first)
+    if kind == "stop" and m:
+        first = f"──── ⇄ switching {m.group(1)} → {m.group(2)} ────"
+    elif kind == "switch":
+        first = f"──── ⇄ {first} ────"
+    elif kind == "stop":
+        first = f"──── ■ stopped {first} ────"
+    elif kind == "start":
+        first = f"▶ {first}"
+    elif kind == "ready":
+        first = f"──── ✓ {first} ────"
+    elif kind == "crash":
+        first = f"──── ✗ {first} ────"
+    else:
+        first = f"{kind}: {first}"
+    stamp = time.strftime("%H:%M:%S", time.localtime(e["ts"]))
+    return "\n".join([f"[hangar] {stamp} {first}"] + [f"[hangar]   {line}" for line in rest])
 
 
 def _replaces(newer: Profile, older: Profile) -> bool:
