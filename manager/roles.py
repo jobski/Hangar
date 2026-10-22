@@ -91,7 +91,7 @@ class Roles:
                 targets.append(target)
         return {**roles, "main": {**main, "targets": targets}}
 
-    def save(self, name: str, targets: list[dict], spill: bool | None = None) -> dict:
+    def save(self, name: str, targets: list[dict], spill: bool | None = None, switch: bool | None = None) -> dict:
         name = (name or "").strip().lower()
         if not ROLE_NAME.match(name):
             raise ValueError("a role name is a lowercase word, e.g. main or helper")
@@ -110,12 +110,17 @@ class Roles:
             raise ValueError("a role needs at least one target")
         with self.mgr.settings_lock:
             s = self._settings()
+            old = (s.get("roles") or {}).get(name, {})
             if spill is None:                                   # not given: keep what the role had
-                spill = bool((s.get("roles") or {}).get(name, {}).get("spill"))
-            s.setdefault("roles", {})[name] = {"targets": clean, **({"spill": True} if spill else {})}
+                spill = bool(old.get("spill"))
+            if switch is None:
+                switch = bool(old.get("switch"))
+            s.setdefault("roles", {})[name] = {"targets": clean, **({"spill": True} if spill else {}),
+                                               **({"switch": True} if switch else {})}
             self._write(s)
         self.mgr.store.event("roles", f"role {name}: " + " > ".join(_label(t) for t in clean)
-                             + ("; a busy target's requests go to a free one" if spill else ""))
+                             + ("; a busy target's requests go to a free one" if spill else "")
+                             + ("; a request switches its machine to it" if switch else ""))
         return self.public()
 
     def delete(self, name: str):
@@ -252,6 +257,23 @@ class Roles:
                        for e in (st.get("status") or {}).get("engines") or [])
         return any(self.target_state(t) == "starting" for t in self._chain(model))
 
+    def switch_target(self, model: str) -> dict | None:
+        """A switching role whose own model is not up: the target its machine should switch to (None: route as
+        usual). Never for main while it follows the running model - it would chase whatever the switch loaded.
+        An online peer switches even when its engine probe fails: a model there may be loading."""
+        if model == "main" and self.follows_running():
+            return None
+        role = (self._settings().get("roles") or {}).get(model) or {}
+        targets = role.get("targets") or []
+        if not role.get("switch") or not targets:
+            return None
+        t = {"machine": targets[0].get("machine", ""), "profile": targets[0]["profile"]}
+        if self.target_state(t) in ("ready", "unknown"):          # up already, or a profile that no longer exists
+            return None
+        if t["machine"] and not (self.peers.state.get(t["machine"]) or {}).get("online"):
+            return None                                           # peer down: the normal route wakes it and falls back
+        return t
+
     def stopping(self, model: str) -> bool:
         """A target for this request is being stopped for a switch: worth a quick retry, not a wait."""
         roles = self.all()
@@ -360,10 +382,11 @@ class Roles:
                     and (((e["running"].get("stats") or {}).get("gauges") or {}).get("requests_processing")))
                    for e in st.get("engines") or [])
 
-    def opened(self, t: dict):
+    def opened(self, t: dict, switching: bool = False):
+        """Reserve a request there; switching: its machine will bring the model up and hold the request meanwhile."""
         k = (t["machine"], t["profile"])
         with self.lock:
-            if self._target_state(t) != "ready":
+            if not switching and self._target_state(t) != "ready":
                 return False
             self.inflight[k] = self.inflight.get(k, 0) + 1
             return True
@@ -585,6 +608,7 @@ class Roles:
                              "serving": bool(serving) and (serving["machine"], serving["profile"]) == k})
             fallback = serving and not any(r["serving"] for r in rows)
             out.append({"name": name, "targets": rows, "saved_targets": (saved_roles.get(name) or {}).get("targets", []), "implicit": bool(role.get("implicit")), "spill": bool(role.get("spill")),
+                        "switch": bool((saved_roles.get(name) or {}).get("switch")),
                         **({"follow_running": self.follows_running()} if name == "main" else {}),
                         "serving": serving, "fallback": bool(fallback),
                         "down_for": round(time.time() - self.down_since[name]) if name in self.down_since else None})

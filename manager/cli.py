@@ -5,7 +5,8 @@
     hangar status | profiles | plan <profile>
     hangar start <profile> [--force] [--no-update | --update]
     hangar start last [engine]    what that engine (or the last one stopped) ran last
-    hangar switch <profile>       (same as start)
+    hangar switch <profile|role>  start a profile; a role: bring its model up, switching its machine if needed
+    hangar switching [set k=v ... | setup <machine> <thinker> <coder>]   request-driven model switching
     hangar stop <engine|all> | restart <engine>
     hangar check [engine] | update <engine> | rollback <engine>
     hangar logs <engine> [lines] [-f]      -f keeps printing new lines (Ctrl+C to stop)
@@ -197,6 +198,67 @@ def cmd_start(a):
         print(f"starting {e['last']['profile']} again on {e['name']}")
         a = [e["last"]["profile"]] + [x for x in a[1:] if x.startswith("--")]
     return _follow(_call("POST", "/api/start", json=_start_args(a)))
+
+
+def cmd_switch(a):
+    """A role name: bring its model up (switching its machine if the role switches), following it until it is up or
+    fails, exiting non-zero then; a profile: start it."""
+    if not (a and not a[0].startswith("-") and a[0] != "last" and a[0] in {r["name"] for r in _call("GET", "/api/roles")}):
+        return cmd_start(a)
+    role, began, last_reason, stalled = a[0], time.monotonic(), None, None
+
+    def target_state():
+        r = next((r for r in _call("GET", "/api/roles") if r["name"] == role), None)
+        return ((r or {}).get("targets") or [{}])[0].get("state")
+    while time.monotonic() - began < 600:
+        # "waiting" schedules nothing (another model keeps its minimum turn): ask again. "switching": a start is
+        # queued, so follow the target's state - asking again could queue a second one
+        r = _call("POST", "/api/warm", json={"model": role})
+        state = r.get("state")
+        if state == "waiting":
+            if r.get("reason") != last_reason:
+                print(f"{role}: waiting - {r.get('reason')}" + (f" (about {r['wait_s']} s)" if r.get("wait_s") else ""))
+                last_reason = r.get("reason")
+            time.sleep(min(max(r.get("wait_s") or 5, 2), 15))
+            continue
+        if state != "switching":
+            break
+        print(f"{role}: switching its machine to it")
+        while time.monotonic() - began < 600:
+            time.sleep(3)
+            now = target_state()
+            if now == "ready":
+                print(f"{role}: ready")
+                return
+            stalled = None if now in ("starting", "stopping") else (stalled or time.monotonic())
+            if stalled and time.monotonic() - stalled > 20:     # the start ended without the model up: why
+                r = _call("POST", "/api/warm", json={"model": role})
+                state = r.get("state")
+                break
+        break
+    else:
+        r, state = {"reason": "still not up after 600 s; it may yet come up"}, "timeout"
+    print(f"{role}: {state}" + (f" - {r['reason']}" if r.get("reason") else ""))
+    if state not in ("ready",):
+        sys.exit(1)
+
+
+def cmd_switching(a):
+    """hangar switching | switching set key=value ... | switching setup <machine> <thinker> <coder>"""
+    if not a:
+        print(json.dumps(_call("GET", "/api/switching"), indent=2))
+    elif a[0] == "set" and len(a) > 1:
+        changes = {}
+        for kv in a[1:]:
+            k, _, v = kv.partition("=")
+            changes[k] = None if v in ("", "none") else (float(v) if v.replace(".", "", 1).isdigit() else v)
+        print(json.dumps(_call("POST", "/api/switching", json=changes), indent=2))
+    elif a[0] == "setup" and len(a) == 4:
+        r = _call("POST", "/api/switching/setup", json={"machine": a[1], "thinker": a[2], "coder": a[3]})
+        print(f"{r['plan']} -> {a[1]}/{a[2]}, {r['build']} -> {a[1]}/{a[3]} (home), main -> the coder; "
+              f"then: hangar connect opencode|omp|qwen --apply")
+    else:
+        sys.exit("usage: hangar switching [set key=value ... | setup <machine> <thinker-profile> <coder-profile>]")
 
 
 def cmd_stop(a):
@@ -552,7 +614,7 @@ def cmd_login(a):
     print(_call("GET", "/api/status") and "connected")
 
 
-COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "start": cmd_start, "switch": cmd_start,
+COMMANDS = {"status": cmd_status, "profiles": cmd_profiles, "plan": cmd_plan, "start": cmd_start, "switch": cmd_switch, "switching": cmd_switching,
             "stop": cmd_stop, "restart": cmd_restart, "check": cmd_check, "update": cmd_update,
             "rollback": cmd_rollback, "logs": cmd_logs, "jobs": cmd_jobs, "job": cmd_job, "events": cmd_events,
             "stats": cmd_stats, "requests": cmd_requests, "wake": cmd_wake, "login": cmd_login, "models": cmd_models, "search": cmd_search, "files": cmd_files,

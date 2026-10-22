@@ -340,7 +340,7 @@ class FakeRoles:
     def stopping(self, model):
         return self._stopping
 
-    def opened(self, t):
+    def opened(self, t, switching=False):
         return True
 
     def closed(self, t):
@@ -357,6 +357,9 @@ class FakeRoles:
 
     def starting(self, model):
         return False
+
+    def switch_target(self, model):
+        return None
 
 
 class DrainingRoles(FakeRoles):

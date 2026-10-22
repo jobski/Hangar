@@ -37,6 +37,9 @@ from .version import runtime_version
 CREATE_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 BREAKAWAY = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
 WINDOWS = os.name == "nt"
+# request-driven switching on this machine (settings.json "switching"): the model it returns to, how long a switched-in
+# model keeps the GPU before another request may take it, when an idle one hands back, how long a request waits
+SWITCHING = {"home": None, "min_turn_minutes": 2, "return_home_minutes": 15, "max_wait_s": 600}
 
 
 class Refused(Exception):
@@ -168,6 +171,8 @@ class Manager:
         self.history: collections.deque = collections.deque(maxlen=720)     # system samples, ~1 h at 5 s
         self.pending_usage: dict = {}                                         # (minute, engine, profile) -> deltas
         self.unsampled = collections.defaultdict(float)   # tokens counted between collector ticks (a drain), for the next chart point
+        self.switch_jobs: dict[str, Job] = {}                 # profile -> the last start a request asked for
+        self.switch_backoff: dict[str, tuple] = {}            # profile -> (until, why, seconds) after a failed start
         self.stop_flag = threading.Event()
         self._profiles_at = 0.0
         self._estimate_cache = {}
@@ -1252,7 +1257,120 @@ class Manager:
             return p.cfg[key]
         return (self.cfg["engines"].get(inst.engine) or {}).get(key, default)
 
+    # ---- request-driven switching
+    def switching(self) -> dict:
+        return {**SWITCHING, **(self._settings().get("switching") or {})}
+
+    def set_switching(self, changes: dict) -> dict:
+        unknown = set(changes) - set(SWITCHING)
+        if unknown:
+            raise ValueError(f"unknown switching setting {', '.join(sorted(unknown))}; one of {', '.join(SWITCHING)}")
+        if changes.get("home") and changes["home"] not in self.profiles:
+            raise ValueError(f"no profile {changes['home']} on this machine")
+        for k in ("min_turn_minutes", "return_home_minutes", "max_wait_s"):
+            if k not in changes:
+                continue
+            try:
+                value = float(changes[k])
+            except (TypeError, ValueError):
+                raise ValueError(f"{k} must be a number") from None
+            if not (1 if k == "max_wait_s" else 0) <= value <= 24 * 60 * (60 if k == "max_wait_s" else 1):
+                raise ValueError(f"{k} out of range")              # a zero wait would answer 503 even when it is up
+        with self.settings_lock:
+            s = self._settings()
+            s["switching"] = {**(s.get("switching") or {}), **changes}
+            self.write_settings(s)
+        self.store.event("switch", "switching settings: " + ", ".join(f"{k} {v}" for k, v in changes.items()))
+        return self.switching()
+
+    def request_switch(self, profile_id: str) -> dict:
+        """A request wants this profile running. {"state": ready | switching (job) | waiting (wait_s, reason: the
+        model in its way keeps its minimum turn) | refused (reason, wait_s: a failed start backing off)}."""
+        p = self.profile(profile_id)
+        with self.lock:                             # checking and queueing are one step: two requests never both pass
+            return self._request_switch(p, time.time())
+
+    def _request_switch(self, p: Profile, now: float) -> dict:
+        with self.lock:
+            inst = next((i for i in self.instances.values() if i.profile == p.id), None)
+            if inst and inst.state == "ready":
+                self.switch_backoff.pop(p.id, None)     # it runs: whatever failed before is history
+                self.switch_jobs.pop(p.id, None)
+                return {"state": "ready"}
+            last = self.switch_jobs.get(p.id)
+            if last and last.finished is not None:
+                if last.state == "done":
+                    self.switch_backoff.pop(p.id, None)
+                elif not (last.error or "").startswith("a newer start") and not getattr(last, "backoff_noted", False):
+                    seconds = min(300.0, max(15.0, self.switch_backoff.get(p.id, (0, "", 7.5))[2] * 2))
+                    self.switch_backoff[p.id] = (now + seconds, last.error or last.state, seconds)
+                    last.backoff_noted = True
+            back = self.switch_backoff.get(p.id)
+            if back and now < back[0]:
+                return {"state": "refused", "wait_s": back[0] - now,
+                        "reason": f"{p.id} did not start ({back[1]}); trying again in {back[0] - now:.0f} s"}
+            if not (inst and inst.state == "starting"):     # already on its way: never hold it back
+                turn = float(self.switching()["min_turn_minutes"]) * 60
+                # a queued or running start of another model holds the GPU before it has an instance to show
+                for j in self.jobs.values():
+                    target = getattr(j, "start_target", None)
+                    if j.state in ("queued", "running") and target and target.id != p.id and _replaces(p, target):
+                        return {"state": "waiting", "wait_s": turn,
+                                "reason": f"{target.id} is being loaded, then keeps the GPU for its minimum turn"}
+                for other in self.instances.values():
+                    if other.profile != p.id and (p.policy == "exclusive" or other.engine == p.engine):
+                        if other.state == "starting":       # its turn only starts when it is up: all of it is still ahead
+                            return {"state": "waiting", "wait_s": turn,
+                                    "reason": f"{other.profile} is still loading, then keeps the GPU for its minimum turn"}
+                        if other.state == "ready" and other.ready:
+                            left = other.ready + turn - now
+                            if left > 0:
+                                return {"state": "waiting", "wait_s": left,
+                                        "reason": f"{other.profile} keeps the GPU for its minimum turn"}
+        if inst and inst.state == "starting":
+            # a loading model we did not start (adopted): never restart it, wait for the job that is or get a poll
+            with self.lock:
+                job = next((j for j in self.jobs.values()
+                            if getattr(j, "start_profile", None) == p.id and j.state in ("queued", "running")), None)
+                if job:
+                    self.switch_jobs[p.id] = job
+                    return {"state": "switching", "job": job}
+            return {"state": "waiting", "wait_s": 5, "reason": f"{p.id} is loading"}
+        job = self.start(p.id, False, "skip")
+        with self.lock:
+            self.switch_jobs[p.id] = job
+        return {"state": "switching", "job": job}
+
+    def _maybe_return_home(self, inst: Instance) -> bool:
+        """An idle switched-in model hands the machine back to its home model; True when that was asked for."""
+        sw = self.switching()
+        home, minutes = sw.get("home"), float(sw.get("return_home_minutes") or 0)
+        if not home or not minutes or inst.profile == home or home not in self.profiles:
+            return False
+        if not inst.ready or inst.state != "ready" or self.current_job or not self.queue.empty():
+            return False
+        with self.lock:
+            # home is already up: starting it again would only stop the idle model
+            if any(i.profile == home and i.state in ("ready", "starting") for i in self.instances.values()):
+                return False
+            idle = self.instances.get(inst.engine) is inst and time.time() - max(inst.last_activity, inst.ready) > minutes * 60
+            # the home start stops whatever stands in its way, so none of it may be busy
+            hp = self.profiles[home]
+            if idle and not all(i.state == "ready" and time.time() - max(i.last_activity, i.ready or 0) > minutes * 60
+                                for i in self.instances.values()
+                                if i is not inst and (hp.policy == "exclusive" or i.engine == hp.engine)):
+                return False
+        if not idle:
+            return False
+        res = self.request_switch(home)            # as any switch: one job, and a failing home backs off
+        if res["state"] != "switching":
+            return False
+        self.store.event("switch", f"{inst.profile} idle for {minutes:g} min: back to {home}", inst.engine, inst.profile)
+        return True
+
     def _maybe_idle_stop(self, inst: Instance):
+        if self._maybe_return_home(inst):
+            return
         minutes = float(self._setting(inst, "idle_stop_minutes", 0) or 0)
         if not minutes or not inst.ready or inst.state != "ready" or self.current_job or not self.queue.empty():
             return

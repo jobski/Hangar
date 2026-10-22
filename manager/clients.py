@@ -189,6 +189,34 @@ def gen_omp(entries, use_env):
                      "model with /model."}
 
 
+def with_roles(snip: dict, client: str, mapping: dict) -> dict:
+    """Point a client's own planning/building/small slots at the switching roles (mapping: plan, build, small)."""
+    if not mapping or not snip.get("content"):
+        return snip
+    ref = lambda key: f"hangar/{mapping[key]}" if mapping.get(key) else None
+    if client == "opencode":
+        cfg = json.loads(snip["content"])
+        agents = {name: {"model": ref(key)} for name, key in (("plan", "plan"), ("build", "build")) if ref(key)}
+        if agents:
+            cfg["agent"] = agents
+        if ref("build"):
+            cfg["model"] = ref("build")
+        if ref("small"):
+            cfg["small_model"] = ref("small")
+        return {**snip, "content": json.dumps(cfg, indent=2),
+                "notes": snip["notes"] + " The plan agent uses the thinker and build the coder: switching between "
+                         "them switches the model."}
+    if client == "omp":
+        # omp's roles: everyday work on the coder, planning and thinking on the thinker; side roles never on a
+        # switching model (task: subtasks fire mid-plan and would swap the thinker out)
+        roles_ = {"default": ref("build"), "plan": ref("plan"), "slow": ref("plan"),
+                  "smol": ref("small"), "task": ref("small"), "commit": ref("small")}
+        return {**snip, "model_roles": {k: v for k, v in roles_.items() if v},
+                "notes": snip["notes"] + " Also sets modelRoles in config.yml (default: coder, plan/slow: thinker, "
+                         "smol/task/commit: the small model)."}
+    return snip
+
+
 def _toml_key(k: str) -> str:
     return k if k.replace("-", "").replace("_", "").isalnum() else json.dumps(k)
 
@@ -354,6 +382,11 @@ def apply(kind: str, snippet: dict) -> dict:
         cur = (yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None) or {}
         _merge_providers(cur.setdefault("providers", {}), new["providers"])
         backup = _write_json(path, cur, yaml.safe_dump(cur, sort_keys=False, allow_unicode=True))
+        if snippet.get("model_roles"):                  # omp keeps its roles beside models.yml, in config.yml
+            cfg_path = path.with_name("config.yml")
+            cfg = (yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else None) or {}
+            cfg.setdefault("modelRoles", {}).update(snippet["model_roles"])
+            _write_json(cfg_path, cfg, yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
         return {"file": str(path), "backup": backup}
     new = json.loads(snippet["content"])
     cur = _load_json(path)
@@ -361,6 +394,10 @@ def apply(kind: str, snippet: dict) -> dict:
         cur.setdefault("$schema", "https://opencode.ai/config.json")
         _merge_providers(cur.setdefault("provider", {}), new["provider"])
         cur.setdefault("model", new.get("model"))
+        for name, agent in (new.get("agent") or {}).items():   # only the model of each agent; its prompt etc. stay
+            cur.setdefault("agent", {}).setdefault(name, {}).update(agent)
+        if new.get("small_model"):
+            cur.setdefault("small_model", new["small_model"])
     elif kind == "opencode-mcp":
         cur.setdefault("$schema", "https://opencode.ai/config.json")
         cur.setdefault("mcp", {}).update(new["mcp"])
