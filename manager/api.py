@@ -534,7 +534,11 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         """What a role's requests reach right now (from roles.public()), named so a client shows the real model."""
         s, ctx = r["serving"], roles.context(r["name"])
         served_by = f"{s['machine'] or machine_info(mgr.cfg)['name']}/{s['profile']}" if s else None
-        if not s:
+        # a switching role is named after its own model - not main while it follows the running one (it never switches)
+        own = (r.get("saved_targets") or [None])[0] if r.get("switch") and not r.get("follow_running") else None
+        if own:
+            name = f"{r['name']} → {own['profile']} on {own.get('machine') or machine_info(mgr.cfg)['name']} (switches)"
+        elif not s:
             name = f"{r['name']} (nothing up)"
         else:
             name = f"{r['name']} → {s['profile']} on {served_by.split('/', 1)[0]}" + (" (fallback)" if r["fallback"] else "")

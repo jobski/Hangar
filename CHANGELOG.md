@@ -10,6 +10,11 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.6.1 — 2026-10-22
+
+- Name a switching role after its own model (`glm → maya-maya-m on my-pc (switches)`) in `/v1/models` and client
+  configs, rather than after the fallback answering while that model is not loaded.
+
 ## 0.6.0 — 2026-10-22
 
 - Add switching roles: a request for one loads its model on its machine (stopping what holds the GPU) and waits for it,
