@@ -10,6 +10,21 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.8.0 — 2026-10-23
+
+- Add `/cycle` for omp (`extensions/omp-cycle/`): plan, code, review and fix a task until a fresh review approves it,
+  each phase in its own session on its own switching role (`hangar/glm` plans and reviews, `hangar/qwen` codes and
+  fixes), so the GPU moves between them. The planner and the reviewer only get read-only tools - a review that edits
+  files voids its own approval - and a step answered by a fallback model stops the run unless `--allow-fallback`.
+  Runs are resumable and keep their journal (state, plan, each review, test output) in `~/.omp/agent/cycle/runs/`;
+  models, rounds, tests and reasoning effort live in `~/.omp/agent/cycle.json`. Nothing is committed.
+- Add `scripts/omp-cycle`, the same loop as one command from a terminal: one shared omp session for every step,
+  `--test <cmd>` after each coding step, `--resume last` to carry an interrupted run on, and `--ship` to commit, push,
+  open a PR and merge it - only for an approved run with passing tests, and never on main/master or a detached HEAD.
+- Test the cycle's rules and its git/test handling without omp (`node --test extensions/omp-cycle/`).
+- Refresh the peer routing test for the rule 0.3.0 introduced: direct engine health decides whether a peer stays
+  routable, with no fixed grace window (the test still asked for that window and failed to import ever since).
+
 ## 0.7.0 — 2026-10-23
 
 - Add the machine log: every engine's log, the own log of an engine that keeps one (Maya's, Strata's), and Hangar's

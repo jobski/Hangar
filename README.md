@@ -449,6 +449,46 @@ one, such as Maya's), plus Hangar's events, each line tagged `[strata]`, `[maya]
 switches, stops, starts and crashes as distinct banners. The dashboard's **Machine log** button (Engines panel) shows
 the same.
 
+### The /cycle loop (plan, code, review, fix)
+
+omp does the whole job for you: `/cycle <task>` plans with the thinker, implements it with the coder, then reviews and
+fixes until the review approves - each phase in its own omp session, on its own Hangar role, so the GPU moves between
+them (`hangar/glm` plans and reviews, `hangar/qwen` codes and fixes; `hangar switching setup` names them).
+`extensions/omp-cycle/` is the extension. Put it in `~/.omp/agent/extensions/` (or `<repo>/.omp/extensions/`) and omp
+picks it up; to use it straight from this repository instead, run omp in it with
+`extensions: ["./extensions/omp-cycle"]` in `~/.omp/agent/config.yml` (that path is relative to where omp starts).
+
+```
+/cycle [--rounds N] [--test CMD] [--plan M] [--code M] [--review M] [--fix M] [--timeout MIN] [--allow-fallback] <task>
+/cycle resume [id]        carry on an interrupted run        /cycle status      /cycle cancel
+/cycle settings           edit models, rounds, tests         /cycle set <plan|code|review|fix|rounds|test|timeout|fallback> <value>
+```
+
+The planner and the reviewer only get read-only tools, and a review that edits files voids its own approval. A review
+ends with `VERDICT: APPROVE`, or `CHANGES` plus findings the coder then fixes; the run stops when it approves, after
+`--rounds` rounds, when the same findings come back, or when the tests keep failing. Nothing is committed: the changes
+stay in the working tree for you to look at. Models, rounds, the test command and the per-phase reasoning effort
+(`thinking`, e.g. `{"plan": "high"}`) live in `~/.omp/agent/cycle.json`; a step answered by a fallback model stops the
+run unless `--allow-fallback`. Each run keeps its journal (state, plan, each review, test output) in
+`~/.omp/agent/cycle/runs/<id>/`.
+
+`scripts/omp-cycle` is the same loop as one command from a terminal, sharing one omp session for every step and
+optionally shipping the result itself:
+
+```
+scripts/omp-cycle "add retries to the uploader"                  plan, code, review/fix until approved
+scripts/omp-cycle "..." --test "python -m unittest -q"           run the tests after every coding step
+scripts/omp-cycle "..." --ship                                   then commit, push, open a PR and merge it
+scripts/omp-cycle --resume last                                  carry on this repository's last run
+```
+
+`--ship` refuses to run on main/master (or a detached HEAD), so such a run gets its own `omp/...` branch, and it only
+ships an approved run with passing tests. Logs go to a per-run folder under the system temp directory, printed at the
+start.
+
+The loop's rules (arguments, verdicts, stop rules) and its git and test handling are tested on their own, without omp
+and without a model: `node --test extensions/omp-cycle/` (Node 22.18+; older Node needs `--experimental-strip-types`).
+
 ### Unfinished downloads
 
 Each download keeps a small record (`.hangar-download.json`) in its folder until it completes. When Hangar starts it
