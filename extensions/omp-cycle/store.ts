@@ -1,15 +1,22 @@
 // Everything on disk or in git: settings, the run journal (outside the repo), tree snapshots, diffs, test runs.
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULTS, type RunState, type Settings, truncateMid } from "./contract.ts";
+
+export interface ExecResult {
+	stdout: string;
+	stderr: string;
+	code: number;
+	killed: boolean;
+}
 
 export type Exec = (
 	cmd: string,
 	args: string[],
 	opts?: { cwd?: string; timeout?: number; signal?: AbortSignal },
-) => Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>;
+) => Promise<ExecResult>;
 
 const agentDir = () => process.env.PI_CODING_AGENT_DIR || join(homedir(), ".omp", "agent");
 export const settingsFile = () => join(agentDir(), "cycle.json");
@@ -101,6 +108,7 @@ export function runsFor(cwd: string): RunState[] {
 // ---- git: snapshots and diffs ----------------------------------------------------------------------------------
 
 const MAX_HASHED = 50 * 1024 * 1024;
+const MAX_REPORTED = 1024 * 1024; // a new file bigger than this is described, never read into the report
 
 async function git(exec: Exec, cwd: string, args: string[]): Promise<{ out: string; ok: boolean }> {
 	const r = await exec("git", args, { cwd, timeout: 60_000 });
@@ -124,13 +132,21 @@ async function untracked(exec: Exec, cwd: string): Promise<string[]> {
 /** A hash of the tracked changes since `base` plus the content of every untracked file. */
 export async function snapshot(exec: Exec, cwd: string, base: string): Promise<string> {
 	const h = createHash("sha256");
-	const diff = base === "none" ? await git(exec, cwd, ["diff", "--binary"]) : await git(exec, cwd, ["diff", "--binary", base]);
-	h.update(diff.out).update("\0");
-	for (const f of await untracked(exec, cwd)) {
+	// Without a base commit the work can already be staged, and `git diff` alone would miss it.
+	const [diffs, files] = await Promise.all([
+		base === "none"
+			? Promise.all([git(exec, cwd, ["diff", "--binary"]), git(exec, cwd, ["diff", "--binary", "--cached"])])
+			: Promise.all([git(exec, cwd, ["diff", "--binary", base])]),
+		untracked(exec, cwd),
+	]);
+	for (const d of diffs) h.update(d.out).update("\0");
+	for (const f of files) {
 		h.update(f).update("\0");
 		try {
 			const p = join(cwd, f);
-			if (statSync(p).size > MAX_HASHED) h.update(`size:${statSync(p).size}`);
+			const st = lstatSync(p); // never follow a link: a new file can point at /dev/zero
+			if (!st.isFile()) h.update(st.isSymbolicLink() ? `link:${readlinkSync(p)}` : "not a regular file");
+			else if (st.size > MAX_HASHED) h.update(`size:${st.size}`);
 			else h.update(readFileSync(p));
 		} catch {
 			h.update("unreadable");
@@ -143,13 +159,40 @@ export async function snapshot(exec: Exec, cwd: string, base: string): Promise<s
 /** The status, the diff since `base`, and new files' content (each capped), within `limitBytes` overall. */
 export async function changeReport(exec: Exec, cwd: string, base: string, limitBytes: number, path?: string): Promise<string> {
 	const only = path ? ["--", path] : [];
-	const status = await git(exec, cwd, ["status", "--short", ...only]);
-	const diff = base === "none" ? await git(exec, cwd, ["diff", ...only]) : await git(exec, cwd, ["diff", base, ...only]);
-	const parts = [`$ git status --short\n${status.out.trim() || "(clean)"}`, `$ git diff ${base === "none" ? "" : `${base.slice(0, 10)} `}${path ? `-- ${path}` : ""}\n${diff.out.trim() || "(no changes to tracked files)"}`];
-	for (const f of await untracked(exec, cwd)) {
+	const tail = path ? ` -- ${path}` : "";
+	const none = base === "none";
+	const [status, files, unstaged, staged, since] = await Promise.all([
+		git(exec, cwd, ["status", "--short", ...only]),
+		untracked(exec, cwd),
+		none ? git(exec, cwd, ["diff", ...only]) : Promise.resolve(null),
+		none ? git(exec, cwd, ["diff", "--cached", ...only]) : Promise.resolve(null),
+		none ? Promise.resolve(null) : git(exec, cwd, ["diff", base, ...only]),
+	]);
+	const body = (r: { out: string } | null, empty: string) => (r?.out ?? "").trim() || empty;
+	const parts = none
+		? [
+				`$ git status --short\n${body(status, "(clean)")}`,
+				`$ git diff${tail}\n${body(unstaged, "(no unstaged changes to tracked files)")}`,
+				`$ git diff --cached${tail} (this run has no base commit, so staged work is shown apart)\n${body(staged, "(nothing staged)")}`,
+			]
+		: [
+				`$ git status --short\n${body(status, "(clean)")}`,
+				`$ git diff ${base.slice(0, 10)}${tail}\n${body(since, "(no changes to tracked files)")}`,
+			];
+	for (const f of files) {
 		if (path && f !== path && !f.startsWith(`${path.replace(/\/$/, "")}/`)) continue;
 		try {
-			const text = readFileSync(join(cwd, f), "utf8");
+			const p = join(cwd, f);
+			const st = lstatSync(p); // a link's target could be /dev/zero or a pipe: show the link, never read it
+			if (!st.isFile()) {
+				parts.push(`new ${st.isSymbolicLink() ? `link ${f} -> ${readlinkSync(p)}` : `entry ${f}: not a regular file`}`);
+				continue;
+			}
+			if (st.size > MAX_REPORTED) {
+				parts.push(`new file ${f}: ${st.size} bytes, too large to show here - read it with the read tool`);
+				continue;
+			}
+			const text = readFileSync(p, "utf8");
 			parts.push(`new file ${f}:\n${text.includes("\0") ? "(binary)" : truncateMid(text, 6000)}`);
 		} catch {
 			parts.push(`new file ${f}: (unreadable)`);
@@ -160,8 +203,37 @@ export async function changeReport(exec: Exec, cwd: string, base: string, limitB
 
 // ---- tests -----------------------------------------------------------------------------------------------------
 
+/** A shell that is not there at all (a spawn that failed, or the OS rejecting it) - not a failing test. */
+function shellMissing(x: { code?: number | string; stderr?: string; message?: string }): boolean {
+	if (x.code === "ENOENT" || x.code === "EACCES") return true;
+	if (/enoent|no such file or directory/i.test(x.message ?? "")) return true;
+	return x.code === 127 && (/bash\b[^\n]*(not found|no such file|is not recognized)/i.test(x.stderr ?? "") || /not found: bash/i.test(x.stderr ?? ""));
+}
+
+/** The test command in a login shell; where bash is missing (Hangar runs on Windows too), the same command in that machine's shell. */
 export async function runTests(exec: Exec, cwd: string, cmd: string, timeoutMin: number, signal: AbortSignal) {
-	const r = await exec("bash", ["-lc", cmd], { cwd, timeout: timeoutMin * 60_000, signal });
+	const opts = { cwd, timeout: timeoutMin * 60_000, signal };
+	const shells: Array<[string, string[]]> = [["bash", ["-lc", cmd]], process.platform === "win32" ? ["cmd", ["/c", cmd]] : ["sh", ["-lc", cmd]]];
+	let r: ExecResult | undefined;
+	let missing = "";
+	for (const [bin, args] of shells) {
+		try {
+			const got = await exec(bin, args, opts);
+			if (!shellMissing({ code: got.code, stderr: got.stderr })) {
+				r = got;
+				break;
+			}
+			missing = `${bin}: ${(got.stderr || got.stdout).trim().split("\n")[0] || "not available"}`;
+		} catch (e: unknown) {
+			const err = e as { code?: string; message?: string }; // a spawn failure carries its errno and message
+			if (signal.aborted || !shellMissing({ code: err.code, message: err.message })) throw e;
+			missing = `${bin}: ${err.message ?? e}`;
+		}
+	}
+	if (!r) {
+		const shell = shells[1][0];
+		return { ok: false, killed: false, output: truncateMid(`Could not run the tests: this machine has neither bash nor ${shell} (${missing})`, 6000) };
+	}
 	const out = truncateMid(`${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ""}`.trim(), 6000);
 	return { ok: r.code === 0 && !r.killed, killed: r.killed, output: r.killed ? `${out}\n[killed: timeout or cancelled]` : out };
 }

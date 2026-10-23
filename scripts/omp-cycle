@@ -12,7 +12,7 @@ The steps share one omp session, so each model sees the whole story, and Hangar 
 thinker (default hangar/glm) plans and reviews, the coder (default hangar/qwen) implements and fixes. A review ends with
 `VERDICT: APPROVE` or `VERDICT: CHANGES` and numbered findings; the loop stops when it approves, after --rounds rounds,
 when the same findings come back twice, or when the tests keep failing. Nothing is shipped unless the last review
-approved (and the tests pass); --ship refuses to run on main/master, so a run starting there works on its own branch.
+approved (and the tests pass); --ship refuses to run on main/master or a detached HEAD, so such a run works on its own branch.
 Logs (each prompt and answer) go to a per-run folder, printed at the start.
 If the current folder is not in a git repository, one is initialised there with a main branch.
 """
@@ -29,7 +29,7 @@ import tempfile
 from pathlib import Path
 
 VERDICT = re.compile(r"^\s*\**VERDICT:?\**\s*:?\s*(APPROVE|CHANGES)\b", re.I | re.M)
-PROTECTED = ("main", "master")
+PROTECTED = ("main", "master", "HEAD")      # "HEAD": a detached checkout, which git cannot push to
 
 PLAN = """You are the planner. Plan this task for the repository in the current directory; do NOT edit any files.
 Inspect existing files first, including untracked files. Build on what is already there, preserving existing work
