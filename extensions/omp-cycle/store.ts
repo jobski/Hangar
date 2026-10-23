@@ -203,32 +203,48 @@ export async function changeReport(exec: Exec, cwd: string, base: string, limitB
 
 // ---- tests -----------------------------------------------------------------------------------------------------
 
-/** A shell that is not there at all (a spawn that failed, or the OS rejecting it) - not a failing test. */
-function shellMissing(x: { code?: number | string; stderr?: string; message?: string }): boolean {
-	if (x.code === "ENOENT" || x.code === "EACCES") return true;
-	if (/enoent|no such file or directory/i.test(x.message ?? "")) return true;
-	return x.code === 127 && (/bash\b[^\n]*(not found|no such file|is not recognized)/i.test(x.stderr ?? "") || /not found: bash/i.test(x.stderr ?? ""));
+/** A shell that could not be spawned at all (the errno says so) - never a test command that simply failed. */
+function spawnFailed(x: { code?: string; message?: string }): boolean {
+	return x.code === "ENOENT" || x.code === "EACCES" || /enoent|no such file or directory/i.test(x.message ?? "");
 }
 
-/** The test command in a login shell; where bash is missing (Hangar runs on Windows too), the same command in that machine's shell. */
+/** Can that shell run a no-op? A host that routes exec through a shell can report a missing one as exit 127. */
+async function shellRuns(exec: Exec, cwd: string, bin: string, probe: string[], signal: AbortSignal): Promise<boolean> {
+	try {
+		return (await exec(bin, probe, { cwd, timeout: 15_000, signal })).code === 0;
+	} catch (e: unknown) {
+		if (signal.aborted) throw e;
+		return false;
+	}
+}
+
+/** The test command in a login shell; where bash is missing (Hangar runs on Windows too), in that machine's own shell.
+ * A non-zero exit is the tests' own failure, so only a shell that cannot be started at all falls back. */
 export async function runTests(exec: Exec, cwd: string, cmd: string, timeoutMin: number, signal: AbortSignal) {
 	const opts = { cwd, timeout: timeoutMin * 60_000, signal };
-	const shells: Array<[string, string[]]> = [["bash", ["-lc", cmd]], process.platform === "win32" ? ["cmd", ["/c", cmd]] : ["sh", ["-lc", cmd]]];
+	const win = process.platform === "win32";
+	const shells: Array<[string, string[], string[]]> = [
+		["bash", ["-lc", cmd], ["-c", ":"]],
+		win ? ["cmd", ["/c", cmd], ["/c", "exit 0"]] : ["sh", ["-lc", cmd], ["-c", ":"]],
+	];
 	let r: ExecResult | undefined;
 	let missing = "";
-	for (const [bin, args] of shells) {
+	for (const [bin, args, probe] of shells) {
+		let got: ExecResult;
 		try {
-			const got = await exec(bin, args, opts);
-			if (!shellMissing({ code: got.code, stderr: got.stderr })) {
-				r = got;
-				break;
-			}
-			missing = `${bin}: ${(got.stderr || got.stdout).trim().split("\n")[0] || "not available"}`;
+			got = await exec(bin, args, opts);
 		} catch (e: unknown) {
-			const err = e as { code?: string; message?: string }; // a spawn failure carries its errno and message
-			if (signal.aborted || !shellMissing({ code: err.code, message: err.message })) throw e;
+			const err = e as { code?: string; message?: string }; // a spawn that failed carries its errno and message
+			if (signal.aborted || !spawnFailed(err)) throw e;
 			missing = `${bin}: ${err.message ?? e}`;
+			continue;
 		}
+		// 127 is normally a command the test itself could not find: keep it as a failing test unless the shell is gone.
+		if (got.code !== 127 || got.killed || (await shellRuns(exec, cwd, bin, probe, signal))) {
+			r = got;
+			break;
+		}
+		missing = `${bin}: cannot be started`;
 	}
 	if (!r) {
 		const shell = shells[1][0];

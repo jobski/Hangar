@@ -148,20 +148,46 @@ test("the tests run in bash; where bash is missing, in that machine's own shell"
 	assert.deepEqual(tried[1], process.platform === "win32" ? ["cmd", "/c", "make test"] : ["sh", "-lc", "make test"]);
 });
 
-test("a shell that reports bash as missing also falls back", async () => {
-	const tried: string[] = [];
-	const weird: Exec = async (cmd) => {
-		tried.push(cmd);
+test("a shell that cannot be started reports itself as missing and falls back", async () => {
+	const calls: string[][] = [];
+	const weird: Exec = async (cmd, args) => {
+		calls.push([cmd, ...args]);
 		if (cmd === "bash") {
+			// the host routes exec through a shell, so a missing bash arrives as exit 127, even for a no-op
 			return { stdout: "", stderr: "/usr/bin/env: bash: No such file or directory", code: 127, killed: false };
 		}
 		return { stdout: "ok", stderr: "", code: 0, killed: false } satisfies ExecResult;
 	};
 	const r = await runTests(weird, "/tmp", "make test", 1, idle);
 	assert.equal(r.ok, true);
-	assert.equal(tried.length, 2);
-	assert.equal(tried[0], "bash");
-	assert.notEqual(tried[1], "bash");
+	assert.deepEqual(calls[0], ["bash", "-lc", "make test"]);
+	assert.deepEqual(calls[1], ["bash", "-c", ":"], "the shell is probed before its output is blamed on it");
+	const fallback = process.platform === "win32" ? ["cmd", "/c", "make test"] : ["sh", "-lc", "make test"];
+	assert.deepEqual(calls[2], fallback);
+});
+
+test("a test command that is not installed fails the tests, not the shell", async () => {
+	const calls: string[][] = [];
+	const host: Exec = async (cmd, args) => {
+		calls.push([cmd, ...args]);
+		if (cmd === "bash") {
+			if (args.includes("-c") && args[args.length - 1] === ":") return { stdout: "", stderr: "", code: 0, killed: false };
+			return { stdout: "", stderr: "bash: pytest: command not found", code: 127, killed: false };
+		}
+		return { stdout: "", stderr: "sh: pytest: command not found", code: 127, killed: false } satisfies ExecResult;
+	};
+	const r = await runTests(host, "/tmp", "pytest", 1, idle);
+	assert.equal(r.ok, false);
+	assert.match(r.output, /bash: pytest: command not found/, "the real failure is what reaches the coder");
+	assert.ok(!/neither bash nor/.test(r.output), "the shells are not blamed");
+	assert.deepEqual(calls, [["bash", "-lc", "pytest"], ["bash", "-c", ":"]], "bash is fine, so no fallback run");
+});
+
+test("a missing command is a failing test, whatever shell ran it", async () => {
+	const r = await runTests(sh, "/tmp", "definitely-not-a-command-anywhere-xyz", 1, idle);
+	assert.equal(r.ok, false);
+	assert.equal(r.killed, false);
+	assert.match(r.output, /command not found/);
 });
 
 test("a failing test is a failing test, not a missing shell", async () => {
