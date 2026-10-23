@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""omp-cycle: plan with the thinker, code with the coder, review until approved, then (optionally) ship - all through
+omp and Hangar's switching roles, in the current git repository.
+
+    omp-cycle "add retries to the uploader"                      plan, code, review/fix until approved; changes stay
+    omp-cycle "..." --test "python -m unittest -q"                also run the tests after every coding step
+    omp-cycle "..." --ship                                        then commit, push, open a PR and merge it
+    omp-cycle "..." --dry-run                                     show the steps without running them
+    omp-cycle --resume last                                       carry on this repository's last run where it stopped
+
+The steps share one omp session, so each model sees the whole story, and Hangar switches the GPU between them: the
+thinker (default hangar/glm) plans and reviews, the coder (default hangar/qwen) implements and fixes. A review ends with
+`VERDICT: APPROVE` or `VERDICT: CHANGES` and numbered findings; the loop stops when it approves, after --rounds rounds,
+when the same findings come back twice, or when the tests keep failing. Nothing is shipped unless the last review
+approved (and the tests pass); --ship refuses to run on main/master, so a run starting there works on its own branch.
+Logs (each prompt and answer) go to a per-run folder, printed at the start.
+If the current folder is not in a git repository, one is initialised there with a main branch.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+VERDICT = re.compile(r"^\s*\**VERDICT:?\**\s*:?\s*(APPROVE|CHANGES)\b", re.I | re.M)
+PROTECTED = ("main", "master")
+
+PLAN = """You are the planner. Plan this task for the repository in the current directory; do NOT edit any files.
+Inspect existing files first, including untracked files. Build on what is already there, preserving existing work
+and using its structure and stack. Only start from scratch when the folder has no project files.
+Read what you need, then give a concrete, numbered implementation plan: files to change, what to change, edge cases,
+and how to verify it.
+
+Task: {task}"""
+CODE = """You are the coder. Implement the plan above in this repository, completely. Keep to the repository's style.
+Build on existing files, including untracked files; preserve existing work and avoid replacing the project wholesale.
+{tests}When you are done, summarise what you changed in a few lines."""
+REVIEW = """You are the reviewer. Review the changes made for this task against the plan - run `git diff` and
+`git status` and read the changed files. Do NOT edit any files. Check correctness, edge cases, the plan, and tests.
+End your answer with exactly one final line, either
+VERDICT: APPROVE
+or
+VERDICT: CHANGES
+followed by the findings as a numbered list (only real problems; each with file and what to fix)."""
+FIX = """You are the coder. Fix exactly these review findings, nothing else, then summarise what you changed:
+
+{findings}
+{tests}"""
+RESUME = """You are the coder. This session was interrupted. Carry on implementing the plan above exactly where it was
+left: check what is already done (`git status`, `git diff`, the files), finish the rest, do not start over or redo
+finished parts. If everything is already implemented, say so. {tests}When you are done, summarise what you changed."""
+CONTINUE_CODE = """You ran out of time in the last turn. Carry on exactly where you left off and finish implementing the
+plan; do not start over or redo finished parts. When you are done, summarise what you changed in a few lines."""
+CONTINUE_ANSWER = """You ran out of time in the last turn. Finish your answer, keeping to the format you were asked for."""
+TESTS_FAILED = """The tests fail after your change. Make them pass without weakening them. The command and its output:
+
+$ {cmd}
+{output}"""
+
+
+def run(cmd: list[str], log: Path | None = None, check: bool = True, dry: bool = False, full: bool = False, **kw):
+    """Run a command: its stdout (full: (stdout, stdout+stderr, exit code)); check: stop the cycle if it fails."""
+    shown = " ".join(shlex.quote(c) if len(c) < 120 else shlex.quote(c[:117] + "...") for c in cmd)
+    print(f"  $ {shown}", flush=True)
+    if dry:
+        return ("", "", 0) if full else ""
+    p = subprocess.run(cmd, capture_output=True, text=True, **kw)
+    out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr.strip() else "")
+    if log:
+        log.write_text(f"$ {' '.join(cmd)}\n\n{out}", encoding="utf-8")
+    if check and p.returncode != 0:
+        sys.exit(f"omp-cycle: failed ({p.returncode}): {shown}\n{out[-2000:]}")
+    return (p.stdout or "", out, p.returncode) if full else (p.stdout or "")
+
+
+def git(*args: str, dry: bool = False, check: bool = True) -> str:
+    return run(["git", *args], check=check, dry=dry).strip()
+
+
+RUNS = Path(tempfile.gettempdir()) / "omp-cycle"
+
+
+def find_run(which: str) -> Path:
+    """A run folder to resume: `last` (this repository's latest run) or a path."""
+    if which != "last":
+        path = Path(which).expanduser()
+        if not (path / "sessions").is_dir():
+            sys.exit(f"omp-cycle: {path} is not an omp-cycle run (no sessions folder)")
+        return path
+    runs = sorted((d for d in RUNS.glob(f"{Path.cwd().name}-*") if (d / "sessions").is_dir()),
+                  key=lambda d: d.stat().st_mtime)
+    if not runs:
+        sys.exit(f"omp-cycle: no earlier run for {Path.cwd().name} in {RUNS}")
+    return runs[-1]
+
+
+def saved_task(run: Path) -> str | None:
+    """The task a run was started with: task.txt, or (older runs) the plan prompt's Task: line."""
+    if (run / "task.txt").exists():
+        return (run / "task.txt").read_text(encoding="utf-8").strip()
+    plan = run / "01-plan.prompt.txt"
+    if plan.exists():
+        m = re.search(r"^Task: (.*)", plan.read_text(encoding="utf-8"), re.M | re.S)
+        return m.group(1).strip() if m else None
+    return None
+
+
+class Cycle:
+    def __init__(self, a):
+        self.a = a
+        if a.resume:                                 # an earlier run: its session (the whole history) and its logs
+            self.logs = find_run(a.resume)
+            done = [int(m.group(1)) for f in self.logs.glob("*.txt") if (m := re.match(r"(\d+)-", f.name))]
+            self.step = max(done, default=0)
+        else:
+            stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            self.logs = RUNS / f"{Path.cwd().name}-{stamp}"
+            self.step = 0
+        self.sessions = self.logs / "sessions"
+        self.started = bool(a.resume)                # the first omp call starts the session, the rest continue it
+
+    def omp(self, label: str, prompt: str, model: str, edits: bool) -> str:
+        """One step in the shared session. A step that runs out of time (--step-time) is carried on in the same
+        session - a coding step up to --continues times, a read-only one once - instead of ending the cycle."""
+        before = None if edits or self.a.dry_run else self.tree()
+        out, tries = "", 1 + (self.a.continues if edits else 1)
+        for attempt in range(tries):
+            self.step += 1
+            name = label if attempt == 0 else f"{label}-continued-{attempt}"
+            text = prompt if attempt == 0 else (CONTINUE_CODE if edits else CONTINUE_ANSWER)
+            cmd = ["omp", "-p", "--model", model, "--session-dir", str(self.sessions), "--max-time", self.a.step_time]
+            if self.started:
+                cmd.insert(2, "-c")
+            # tools run unattended in every step (print mode cannot ask); read-only steps are told not to edit, and
+            # an edit they make anyway is reported
+            cmd += ["--auto-approve", text]
+            print(f"\n[{self.step}] {name} ({model})", flush=True)
+            if not self.a.dry_run:
+                (self.logs / f"{self.step:02d}-{name}.prompt.txt").write_text(text, encoding="utf-8")
+            out, combined, code = run(cmd, log=self.logs / f"{self.step:02d}-{name}.txt", check=False,
+                                      dry=self.a.dry_run, full=True)
+            self.started = True
+            for line in out.strip().splitlines()[-6:]:
+                print(f"    | {line[:160]}")
+            if "deadline exceeded" in combined.lower():
+                print(f"    the step ran out of time ({self.a.step_time}): carrying it on in the same session")
+                continue
+            if code != 0:
+                sys.exit(f"omp-cycle: the {name} step failed ({code}):\n{combined[-2000:]}")
+            break
+        else:
+            sys.exit(f"omp-cycle: {label} is still unfinished after {tries} tries of {self.a.step_time}; the session is "
+                     f"kept - carry it on by hand with: omp -c --session-dir {self.sessions} --model {model}")
+        if before is not None and self.tree() != before:
+            print(f"    warning: the {label} step changed files although it was told not to edit")
+        return out
+
+    @staticmethod
+    def tree() -> str:
+        """The working tree's state: what changed and how."""
+        result = subprocess.run(["git", "diff", "HEAD"], capture_output=True, text=True)
+        diff = result.stdout
+        if result.returncode != 0:
+            # Before the first commit, snapshot staged and unstaged changes separately.
+            diff = subprocess.run(["git", "diff", "--cached"], capture_output=True, text=True).stdout
+            diff += subprocess.run(["git", "diff"], capture_output=True, text=True).stdout
+        status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True).stdout
+        return hashlib.sha1((status + diff).encode()).hexdigest()
+
+    def tests(self) -> tuple[bool, str]:
+        if not self.a.test:
+            return True, ""
+        print(f"\n    tests: {self.a.test}", flush=True)
+        if self.a.dry_run:
+            return True, ""
+        p = subprocess.run(self.a.test, shell=True, capture_output=True, text=True)
+        out = ((p.stdout or "") + (p.stderr or ""))[-6000:]
+        print(f"    tests {'pass' if p.returncode == 0 else 'FAIL'}")
+        return p.returncode == 0, out
+
+    def code_step(self, label: str, prompt: str) -> bool:
+        """A coding step, then the tests; one more coding step to fix failing tests. True when they pass."""
+        self.omp(label, prompt, self.a.coder, edits=True)
+        ok, out = self.tests()
+        if not ok:
+            self.omp(f"{label}-tests", TESTS_FAILED.format(cmd=self.a.test, output=out), self.a.coder, edits=True)
+            ok, out = self.tests()
+        return ok
+
+    def main(self) -> int:
+        a = self.a
+        if not a.dry_run:
+            self.sessions.mkdir(parents=True, exist_ok=True)
+            if not a.resume:
+                (self.logs / "task.txt").write_text(a.task, encoding="utf-8")
+        print(f"omp-cycle: thinker {a.thinker}, coder {a.coder}, up to {a.rounds} review rounds; logs {self.logs}")
+        top = git("rev-parse", "--show-toplevel", check=False)
+        if not top:
+            print("not in a git repository: initialising one in the current folder")
+            git("init", "--initial-branch=main", dry=a.dry_run)
+            top = str(Path.cwd())
+        branch = git("symbolic-ref", "--quiet", "--short", "HEAD", check=False) or "HEAD"
+        if a.ship and branch in PROTECTED:
+            slug = re.sub(r"[^a-z0-9]+", "-", a.task.lower()).strip("-")[:40] or "change"
+            branch = f"omp/{slug}-{dt.datetime.now():%Y%m%d-%H%M}"
+            print(f"on a protected branch: working on a new branch {branch}")
+            git("switch", "-c", branch, dry=a.dry_run)
+        tests_hint = f"Run `{a.test}` and make it pass.\n" if a.test else ""
+
+        if a.resume:                                 # the plan is in the session: carry the coding on, then review
+            print(f"resuming {self.logs.name} after step {self.step}: {a.task[:100]}")
+            tests_ok = self.code_step("resume", RESUME.format(tests=tests_hint))
+        else:
+            self.omp("plan", PLAN.format(task=a.task), a.thinker, edits=False)
+            tests_ok = self.code_step("code", CODE.format(tests=tests_hint))
+        approved, last_findings = False, None
+        for rnd in range(1, a.rounds + 1):
+            review = self.omp(f"review-{rnd}", REVIEW, a.thinker, edits=False)
+            m = list(VERDICT.finditer(review))
+            verdict = m[-1].group(1).upper() if m else ("APPROVE" if a.dry_run else "CHANGES")
+            print(f"    verdict: {verdict}" + ("" if m or a.dry_run else " (no VERDICT line: treated as changes)"))
+            if verdict == "APPROVE":
+                approved = True
+                break
+            findings = review[m[-1].end():].strip() if m else review.strip()[-4000:]
+            key = hashlib.sha1(re.sub(r"\s+", " ", findings.lower()).encode()).hexdigest()
+            if key == last_findings:
+                print("    the same findings came back: stopping (the coder cannot resolve them)")
+                break
+            last_findings = key
+            if rnd == a.rounds:
+                break
+            tests_ok = self.code_step(f"fix-{rnd}", FIX.format(findings=findings or "(see the review above)",
+                                                                tests=tests_hint))
+            if not tests_ok:
+                print("    tests still fail after a fix: stopping")
+                break
+
+        changed = git("status", "--porcelain", dry=a.dry_run)
+        print(f"\nresult: {'APPROVED' if approved else 'NOT approved'}; tests {'pass' if tests_ok else 'FAIL'}; "
+              f"{'changes in the working tree' if changed or a.dry_run else 'no changes'}; logs {self.logs}")
+        if not a.ship:
+            return 0 if approved and tests_ok else 1
+        if not (approved and tests_ok):
+            print("not shipping: needs an approved review and passing tests")
+            return 1
+        if not changed and not a.dry_run:
+            print("not shipping: nothing changed")
+            return 1
+        message = a.message or ("" if a.dry_run else self.commit_message())
+        git("add", "-A", dry=a.dry_run)
+        git("commit", "-m", message or a.task[:72], dry=a.dry_run)
+        git("push", "-u", "origin", branch, dry=a.dry_run)
+        body = f"{a.task}\n\nPlanned with {a.thinker}, implemented with {a.coder}, approved by review ({self.step} steps; " \
+               f"logs: {self.logs})."
+        run(["gh", "pr", "create", "--head", branch, "--title", message or a.task[:72], "--body", body],
+            dry=a.dry_run, cwd=top)
+        run(["gh", "pr", "merge", branch, f"--{a.merge_method}", "--delete-branch=false"], dry=a.dry_run, cwd=top)
+        print("shipped: committed, pushed, PR opened and merged")
+        return 0
+
+    def commit_message(self) -> str:
+        """One line from the session's coder; the task itself if it cannot say."""
+        out = self.omp("commit-message", "Write a one-line commit message (imperative, at most 72 characters, no "
+                       "quotes, no trailers) for the changes made in this session. Reply with the line only.",
+                       self.a.coder, edits=False)
+        lines = [l.strip().strip('"`') for l in out.strip().splitlines() if l.strip()]
+        return lines[-1][:72] if lines else ""
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="omp-cycle", description=__doc__.split("\n\n")[0],
+                                formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split("\n\n", 1)[1])
+    p.add_argument("task", nargs="?", help="what to build or change (with --resume: taken from that run)")
+    p.add_argument("--resume", metavar="RUN", help="carry on an earlier run in its own session: `last` (this "
+                   "repository's latest) or its folder; skips planning, finishes the coding, then reviews")
+    p.add_argument("--thinker", default="hangar/glm", help="model that plans and reviews (default hangar/glm)")
+    p.add_argument("--coder", default="hangar/qwen", help="model that implements and fixes (default hangar/qwen)")
+    p.add_argument("--rounds", type=int, default=4, help="most review rounds (default 4)")
+    p.add_argument("--test", help="shell command that must pass after every coding step")
+    p.add_argument("--step-time", default="90m", help="omp --max-time per step (default 90m)")
+    p.add_argument("--continues", type=int, default=3,
+                   help="times a coding step that runs out of --step-time is carried on (default 3)")
+    p.add_argument("--ship", action="store_true", help="after approval: commit, push, open a PR and merge it")
+    p.add_argument("--message", help="commit message (default: one line from the coder)")
+    p.add_argument("--merge-method", choices=("merge", "squash", "rebase"), default="merge")
+    p.add_argument("--dry-run", action="store_true", help="print the steps without running them")
+    a = p.parse_args()
+    if a.resume and not a.task:
+        a.task = saved_task(find_run(a.resume)) or p.error("the run's task is not saved: give it again")
+    if not a.task:
+        p.error("the task is required (or --resume an earlier run)")
+    if a.rounds < 1:
+        p.error("--rounds must be at least 1")
+    return Cycle(a).main()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,8 @@
+{
+  "name": "omp-cycle",
+  "version": "0.1.0",
+  "private": true,
+  "description": "/cycle for omp: plan, code, review and fix until approved, each phase on its own Hangar model",
+  "type": "module",
+  "omp": { "extensions": ["./index.ts"] }
+}
