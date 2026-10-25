@@ -1,7 +1,7 @@
-"""Roles: what a model is *for* - main, helper, ... - and which model fills that role right now.
+"""Roles: what a model is *for* - worker, helper, ... - and which model fills that role right now.
 
 A role is an ordered list of targets, each a profile on this machine or on a peer. Clients ask the gateway (/v1/* on
-this Hangar) for a role by name, e.g. model "helper", and get the first target that is up; when none is, the main
+this Hangar) for a role by name, e.g. model "helper", and get the first target that is up; when none is, the worker
 role, then anything running. Targets after the first are backups: with auto_start, a backup is started once the
 targets before it have been down for a while - only when it fits next to what runs (nothing is stopped for it, and
 the memory budget holds) - and stopped again after it has been idle for a while once the primary is back, if Hangar
@@ -24,6 +24,18 @@ IDLE_STOP_S = 600            # a backup Hangar started is stopped after this lon
 ROLE_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
+def canonical_role(name: str) -> str:
+    return "worker" if name == "main" else name
+
+
+def _definitions(settings: dict) -> dict:
+    roles = dict(settings.get("roles") or {})
+    legacy = roles.pop("main", None)
+    if legacy is not None and "worker" not in roles:
+        roles["worker"] = legacy
+    return roles
+
+
 class Roles:
     def __init__(self, mgr, peers):
         self.mgr, self.peers = mgr, peers
@@ -43,15 +55,39 @@ class Roles:
     def _settings(self) -> dict:
         return self.mgr._settings()
 
+    def migrate_default_role(self):
+        with self.mgr.settings_lock:
+            settings = self._settings()
+            before = json.dumps(settings, sort_keys=True)
+            roles = settings.get("roles") or {}
+            legacy = roles.pop("main", None)
+            if legacy is not None:
+                if "worker" not in roles:
+                    roles["worker"] = legacy
+                else:
+                    targets = roles["worker"].setdefault("targets", [])
+                    for target in legacy.get("targets", []):
+                        if not any((t.get("machine", ""), t["profile"]) ==
+                                   (target.get("machine", ""), target["profile"]) for t in targets):
+                            targets.append(target)
+                settings["roles"] = roles
+            if "main_follows_running" in settings:
+                settings.setdefault("worker_follows_running", settings.pop("main_follows_running"))
+            if "switching_roles" in settings:
+                settings["switching_roles"] = {k: canonical_role(v) for k, v in settings["switching_roles"].items()}
+            if json.dumps(settings, sort_keys=True) != before:
+                self._write(settings)
+
     def follows_running(self) -> bool:
-        return self._settings().get("main_follows_running", True) is not False
+        settings = self._settings()
+        return settings.get("worker_follows_running", settings.get("main_follows_running", True)) is not False
 
     def set_follows_running(self, enabled: bool) -> dict:
         with self.mgr.settings_lock:
             settings = self._settings()
-            settings["main_follows_running"] = enabled
+            settings["worker_follows_running"] = enabled
             self._write(settings)
-        self.mgr.store.event("roles", "main follows the running model" if enabled else "main uses saved profile targets")
+        self.mgr.store.event("roles", "worker follows the running model" if enabled else "worker uses saved profile targets")
         return {"enabled": enabled}
 
     def _current_target(self, machine: str = "") -> dict | None:
@@ -62,7 +98,7 @@ class Roles:
         else:
             peer = self.peers.state.get(machine) or {}
             status = peer.get("status") or {}
-            if status.get("main_follows_running") is False:
+            if status.get("worker_follows_running", status.get("main_follows_running")) is False:
                 return None
             running = [engine["running"] for engine in status.get("engines") or []
                        if (engine.get("running") or {}).get("state") in ("ready", "starting")
@@ -74,12 +110,12 @@ class Roles:
 
     def all(self) -> dict[str, dict]:
         settings = self._settings()
-        roles = settings.get("roles") or {}
-        if settings.get("main_follows_running", True) is False:
+        roles = _definitions(settings)
+        if not self.follows_running():
             return roles
-        main = roles.get("main") or {"targets": [], "implicit": True}
+        worker = roles.get("worker") or {"targets": [], "implicit": True}
         targets = []
-        saved = main.get("targets", [])
+        saved = worker.get("targets", [])
         if not saved:
             current = self._current_target()
             if current:
@@ -89,12 +125,12 @@ class Roles:
             target = {**target, "profile": resolved["profile"]} if resolved else dict(target)
             if not any((t["machine"], t["profile"]) == (target["machine"], target["profile"]) for t in targets):
                 targets.append(target)
-        return {**roles, "main": {**main, "targets": targets}}
+        return {**roles, "worker": {**worker, "targets": targets}}
 
     def save(self, name: str, targets: list[dict], spill: bool | None = None, switch: bool | None = None) -> dict:
-        name = (name or "").strip().lower()
+        name = canonical_role((name or "").strip().lower())
         if not ROLE_NAME.match(name):
-            raise ValueError("a role name is a lowercase word, e.g. main or helper")
+            raise ValueError("a role name is a lowercase word, e.g. worker or helper")
         clean = []
         for i, t in enumerate(targets or []):
             machine = (t.get("machine") or "").strip().lower()
@@ -124,6 +160,7 @@ class Roles:
         return self.public()
 
     def delete(self, name: str):
+        name = canonical_role(name)
         with self.mgr.settings_lock:
             s = self._settings()
             if name not in (s.get("roles") or {}):
@@ -179,14 +216,15 @@ class Roles:
 
     def candidates(self, model: str, need: int = 0, who: tuple | None = None) -> list[dict]:
         """Who should answer a request for this model name, best first. A role gives its targets that are ready, then
-        the main role's, then anything running here, then on peers. A profile id (or profile:<id>) gives just it.
+        the worker role's, then anything running here, then on peers. A profile id (or profile:<id>) gives just it.
         need: the request's rough size in tokens; who: (client, caller), to keep a conversation where it is cached."""
+        model = canonical_role(model)
         roles = self.all()
         if model.startswith("profile:") or (model not in roles and model in self.mgr.profiles):
             pid = model.split(":", 1)[1] if model.startswith("profile:") else model
             t = {"machine": "", "profile": pid}
             return [t] if self.routable(t) else []
-        if model not in roles and model != "main":
+        if model not in roles and model != "worker":
             return []
         out, seen = [], set()
 
@@ -200,7 +238,7 @@ class Roles:
             own = self._spill_order(model, own, need, who)
         for t in own:
             add(t)
-        for t in (roles.get("main") or {}).get("targets", []):
+        for t in (roles.get("worker") or {}).get("targets", []):
             add(t)
         for name, inst in list(self.mgr.instances.items()):        # anything running here
             add({"machine": "", "profile": inst.profile})
@@ -231,25 +269,27 @@ class Roles:
         return woken
 
     def _chain(self, model: str) -> list[dict]:
-        """The targets a request for this model may go to, in order: its role's, then main's. None for a profile
+        """The targets a request for this model may go to, in order: its role's, then worker's. None for a profile
         id or an unknown name (candidates() never sends those to a role)."""
+        model = canonical_role(model)
         roles = self.all()
         if model.startswith("profile:") or (model not in roles and model in self.mgr.profiles):
             return []
-        if model not in roles and model != "main":
+        if model not in roles and model != "worker":
             return []
         targets = list((roles.get(model) or {}).get("targets", []))
-        if model != "main":
-            targets += (roles.get("main") or {}).get("targets", [])
+        if model != "worker":
+            targets += (roles.get("worker") or {}).get("targets", [])
         return targets
 
     def starting(self, model: str) -> bool:
         """A target for this request is on its way up (woken or started a moment ago): worth waiting for."""
+        model = canonical_role(model)
         roles = self.all()
         if model.startswith("profile:") or (model not in roles and model in self.mgr.profiles):
             pid = model.split(":", 1)[1] if model.startswith("profile:") else model
             return self.target_state({"machine": "", "profile": pid}) == "starting"
-        if model == "main" and not (roles.get("main") or {}).get("targets"):       # no main role: anything starting
+        if model == "worker" and not (roles.get("worker") or {}).get("targets"):       # no worker role: anything starting
             if any(i.state == "starting" for i in list(self.mgr.instances.values())):
                 return True
             return any((e.get("running") or {}).get("state") == "starting"
@@ -259,11 +299,12 @@ class Roles:
 
     def switch_target(self, model: str) -> dict | None:
         """A switching role whose own model is not up: the target its machine should switch to (None: route as
-        usual). Never for main while it follows the running model - it would chase whatever the switch loaded.
+        usual). Never for worker while it follows the running model - it would chase whatever the switch loaded.
         An online peer switches even when its engine probe fails: a model there may be loading."""
-        if model == "main" and self.follows_running():
+        model = canonical_role(model)
+        if model == "worker" and self.follows_running():
             return None
-        role = (self._settings().get("roles") or {}).get(model) or {}
+        role = _definitions(self._settings()).get(model) or {}
         targets = role.get("targets") or []
         if not role.get("switch") or not targets:
             return None
@@ -276,11 +317,12 @@ class Roles:
 
     def stopping(self, model: str) -> bool:
         """A target for this request is being stopped for a switch: worth a quick retry, not a wait."""
+        model = canonical_role(model)
         roles = self.all()
         if model.startswith("profile:") or (model not in roles and model in self.mgr.profiles):
             pid = model.split(":", 1)[1] if model.startswith("profile:") else model
             return self.target_state({"machine": "", "profile": pid}) == "stopping"
-        if model == "main" and not (roles.get("main") or {}).get("targets"):       # no main role: anything stopping
+        if model == "worker" and not (roles.get("worker") or {}).get("targets"):       # no worker role: anything stopping
             if any(i.state == "stopping" for i in list(self.mgr.instances.values())):
                 return True
             return any((e.get("running") or {}).get("state") == "stopping"
@@ -581,10 +623,11 @@ class Roles:
             self.mgr.store.event("roles", f"{role}: requested stop of idle backup {_label(t)}")
 
     def context(self, name: str) -> int:
-        """The smallest context among a role's targets (and main's, its fallback), for the settings clients get."""
+        """The smallest context among a role's targets (and worker's, its fallback), for the settings clients get."""
+        name = canonical_role(name)
         targets = list((self.all().get(name) or {}).get("targets", []))
-        if name != "main":
-            targets += (self.all().get("main") or {}).get("targets", [])
+        if name != "worker":
+            targets += (self.all().get("worker") or {}).get("targets", [])
         if not targets:
             targets = [{"machine": "", "profile": i.profile} for i in self.mgr.instances.values()]
         sizes = [ctx for target in targets if (ctx := self.context_of(target))]
@@ -594,9 +637,10 @@ class Roles:
     def public(self) -> list[dict]:
         out = []
         roles = self.all()
-        saved_roles = self._settings().get("roles") or {}
-        if "main" not in roles:
-            roles = {"main": {"targets": [], "implicit": True}, **roles}
+        saved_roles = _definitions(self._settings())
+        if "worker" not in roles:
+            roles = {"worker": {"targets": [], "implicit": True}, **roles}
+        roles = {"worker": roles["worker"], **roles}
         for name, role in roles.items():
             serving = (self.candidates(name) or [None])[0]
             rows = []
@@ -609,7 +653,7 @@ class Roles:
             fallback = serving and not any(r["serving"] for r in rows)
             out.append({"name": name, "targets": rows, "saved_targets": (saved_roles.get(name) or {}).get("targets", []), "implicit": bool(role.get("implicit")), "spill": bool(role.get("spill")),
                         "switch": bool((saved_roles.get(name) or {}).get("switch")),
-                        **({"follow_running": self.follows_running()} if name == "main" else {}),
+                        **({"follow_running": self.follows_running()} if name == "worker" else {}),
                         "serving": serving, "fallback": bool(fallback),
                         "down_for": round(time.time() - self.down_since[name]) if name in self.down_since else None})
         return out

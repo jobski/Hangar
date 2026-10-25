@@ -12,3 +12,6 @@ __pycache__/
 
 # this machine's notes and helper scripts (machine names, paths): never published
 local/
+
+# generated local code graph
+graphify-out/

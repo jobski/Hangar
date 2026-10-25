@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DEFAULTS, type RunState, type Settings, truncateMid } from "./contract.ts";
+import { canonicalModel, DEFAULTS, type RunState, type Settings, truncateMid } from "./contract.ts";
 
 export interface ExecResult {
 	stdout: string;
@@ -44,7 +44,7 @@ export function loadSettings(): { settings: Settings; warnings: string[] } {
 	if (typeof raw.testCommand === "string") s.testCommand = raw.testCommand;
 	if (typeof raw.allowFallback === "boolean") s.allowFallback = raw.allowFallback;
 	for (const p of ["plan", "code", "review", "fix"] as const) {
-		if (typeof raw.models?.[p] === "string" && raw.models[p].trim()) s.models[p] = raw.models[p].trim();
+		if (typeof raw.models?.[p] === "string" && raw.models[p].trim()) s.models[p] = canonicalModel(raw.models[p].trim());
 		else if (raw.models?.[p] !== undefined) warnings.push(`cycle.json: models.${p} must be a model name`);
 		if (typeof raw.thinking?.[p] === "string") s.thinking[p] = raw.thinking[p];
 	}
@@ -77,7 +77,10 @@ export function writeArtifact(run: RunState, name: string, text: string): void {
 export function loadRun(id: string): RunState | undefined {
 	try {
 		const run = JSON.parse(readFileSync(join(runDir(id), "state.json"), "utf8")) as RunState;
-		return run.version === 1 ? run : undefined;
+		if (run.version !== 1) return undefined;
+		if (run.status !== "approved" && run.step !== "done")
+			for (const phase of ["plan", "code", "review", "fix"] as const) run.settings.models[phase] = canonicalModel(run.settings.models[phase]);
+		return run;
 	} catch {
 		return undefined;
 	}

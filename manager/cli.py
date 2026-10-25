@@ -34,7 +34,7 @@
 
   this PC
     hangar autostart [on|off]                       start Hangar when you sign in to Windows (no argument: show)
-    hangar roles                                    roles (main, helper, ...) and which model serves each now
+    hangar roles                                    roles (worker, thinker, helper, ...) and which model serves each now
     hangar role set <name> <machine/profile> [<machine/profile> ...] [--auto]   first = primary, then backups;
           --auto starts backups when needed (machine "this" = here). e.g. hangar role set helper macbook/qwen3-coder this/gemma-3-4b --auto
           --spill: while a target is busy, the role's requests go to a free target of the same role (--no-spill: off)
@@ -255,8 +255,9 @@ def cmd_switching(a):
             changes[k] = None if v in ("", "none") else (float(v) if v.replace(".", "", 1).isdigit() else v)
         print(json.dumps(_call("POST", "/api/switching", json=changes), indent=2))
     elif a[0] == "setup" and len(a) == 4:
-        r = _call("POST", "/api/switching/setup", json={"machine": a[1], "thinker": a[2], "coder": a[3]})
-        print(f"{r['plan']} -> {a[1]}/{a[2]}, {r['build']} -> {a[1]}/{a[3]} (home), main -> the coder; "
+        r = _call("POST", "/api/switching/setup", json={"machine": a[1], "thinker": a[2], "coder": a[3],
+                                                      "thinker_role": "thinker", "coder_role": "worker"})
+        print(f"{r['plan']} -> {a[1]}/{a[2]}, {r['build']} -> {a[1]}/{a[3]} (home), worker -> the coder; "
               f"then: hangar connect opencode|omp|qwen --apply")
     else:
         sys.exit("usage: hangar switching [set key=value ... | setup <machine> <thinker-profile> <coder-profile>]")
@@ -511,7 +512,7 @@ def cmd_reasoning(a):
 def cmd_roles(_):
     for r in _call("GET", "/api/roles"):
         chain = " > ".join(f"{t['machine'] or 'this'}/{t['profile']} [{t['state']}{', auto' if t['auto_start'] else ''}]"
-                           + (" *" if t["serving"] else "") for t in r["targets"]) or ("(whatever runs here)" if r["name"] == "main" else "(none)")
+                           + (" *" if t["serving"] else "") for t in r["targets"]) or ("(whatever runs here)" if r["name"] == "worker" else "(none)")
         s = r["serving"]
         now = f"{s['machine'] or 'this'}/{s['profile']}" + (" (fallback)" if r["fallback"] else "") if s else "NOTHING UP"
         print(f"{r['name']:10s} {chain}\n{'':10s} serving now: {now}"

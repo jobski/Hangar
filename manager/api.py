@@ -23,7 +23,7 @@ from .core import Manager
 from .mcp_server import build as build_mcp
 from .peers import (Peers, engine_connection, engine_instance, fleet, machine_info, make_code,
                     normalize_url, record_engine_result, record_manager_failure, summary)
-from .roles import ROLE_NAME, WAKE_WAIT_S, Roles
+from .roles import ROLE_NAME, WAKE_WAIT_S, Roles, canonical_role
 from .stats import RequestMeter, client_name, merge_series, merge_summaries, request_error
 from .switching import keepalive, stream_error, strip_progress
 
@@ -56,7 +56,10 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
     mgr = mgr or Manager()
     token = config_mod.token(mgr.cfg)
     peers = mgr.peers = peers or Peers(mgr.cfg)
-    roles = mgr.roles = roles or Roles(mgr, peers)
+    if roles is None:
+        roles = Roles(mgr, peers)
+        roles.migrate_default_role()
+    mgr.roles = roles
     mcp = build_mcp(mgr)
     # the token check below protects /mcp; the Host-header check would block access by Tailscale name or LAN IP
     mcp_app = mcp.streamable_http_app(streamable_http_path="/mcp", stateless_http=True, host="0.0.0.0",
@@ -365,13 +368,13 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         mgr.refresh_profiles()
         entries = clients.model_entries(mgr, [p for p in (profiles or "").split(",") if p] or None, host)
         port = int(mgr.cfg["manager"]["port"])
-        # the roles, through this Hangar's gateway: the model name is the role (main, helper, ...)
+        # the roles, through this Hangar's gateway: the model name is the role (worker, thinker, helper, ...)
         for r in roles.public():
-            if r["targets"] or r["name"] == "main":
+            if r["targets"] or r["name"] == "worker":
                 served = role_served(r)
                 entries.append({"profile": f"role-{r['name']}", "engine": "hangar", "provider": "hangar",
                                 "provider_name": "Hangar roles", "base": f"http://{host}:{port}", "api_key": token,
-                                "model": r["name"], "name": served["name"], "context": served["context"],
+                                "model": r["name"], "name": f"{r['name']} (Hangar)", "context": served["context"],
                                 "output": served["output"], "vision": served["vision"], "reasoning": served["reasoning"],
                                 "env_key": "HANGAR_TOKEN"})
         snip = clients.MODEL_CLIENTS[client](entries, env)
@@ -401,17 +404,19 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         mgr.store.event("connect", f"wrote {kind} settings to {res['file']}")
         return res
 
-    # ---- roles (main, helper, ...) and the gateway that serves them
+    # ---- roles (worker, thinker, helper, ...) and the gateway that serves them
     @app.get("/api/roles")
     def roles_list():
         return roles.public()
 
-    @app.get("/api/roles/main/follow-running")
-    def main_follow_running():
+    @app.get("/api/roles/main/follow-running", include_in_schema=False)
+    @app.get("/api/roles/worker/follow-running")
+    def worker_follow_running():
         return {"enabled": roles.follows_running()}
 
-    @app.post("/api/roles/main/follow-running")
-    def main_follow_running_set(enabled: bool = Body(..., embed=True)):
+    @app.post("/api/roles/main/follow-running", include_in_schema=False)
+    @app.post("/api/roles/worker/follow-running")
+    def worker_follow_running_set(enabled: bool = Body(..., embed=True)):
         return roles.set_follows_running(enabled)
 
     @app.post("/api/roles")
@@ -425,9 +430,9 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
 
     @app.post("/api/switching/setup")
     async def switching_setup(thinker: str = Body(..., embed=True), coder: str = Body(..., embed=True),
-                              machine: str = Body("", embed=True), thinker_role: str = Body("glm", embed=True),
-                              coder_role: str = Body("qwen", embed=True), small_role: str = Body("helper", embed=True)):
-        """Model switching in one action: a switching role for a thinker and one for a coder on one machine, main on
+                              machine: str = Body("", embed=True), thinker_role: str = Body("thinker", embed=True),
+                              coder_role: str = Body("worker", embed=True), small_role: str = Body("helper", embed=True)):
+        """Model switching in one action: a switching role for a thinker and one for a coder on one machine, worker on
         the coder (no longer following whatever runs), and the coder as that machine's home model."""
         def run():
             machine_ = (machine or "").strip().lower()
@@ -438,8 +443,8 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                     raise ValueError(f"not a role name: {rn!r} (a lowercase word, e.g. plan or helper)")
             if plan_r == build_r:
                 raise ValueError("the thinker and the coder need different role names")
-            if "main" in (plan_r, build_r):
-                raise ValueError("main is set to the coder by this setup and never switches: name the roles otherwise")
+            if "main" in (plan_r, build_r, small_r) or "worker" in (plan_r, small_r):
+                raise ValueError("worker is the default coder role; use different names for thinker and helper")
             # the small role takes clients' background work: on a switching model it would swap the thinker out
             if small_r in (plan_r, build_r) or (mgr._settings().get("roles") or {}).get(small_r, {}).get("switch"):
                 raise ValueError(f"the small role {small_r!r} must not switch models: background work would unload "
@@ -460,7 +465,8 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                     raise ValueError(f"no profile {', '.join(missing)} on this machine")
             roles.save(plan_r, [{"machine": machine_, "profile": thinker}], switch=True)
             roles.save(build_r, [{"machine": machine_, "profile": coder}], switch=True)
-            roles.save("main", [{"machine": machine_, "profile": coder}], switch=False)
+            if build_r != "worker":
+                roles.save("worker", [{"machine": machine_, "profile": coder}], switch=True)
             roles.set_follows_running(False)
             if machine_:
                 try:
@@ -566,7 +572,7 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         """What a role's requests reach right now (from roles.public()), named so a client shows the real model."""
         s, ctx = r["serving"], roles.context(r["name"])
         served_by = f"{s['machine'] or machine_info(mgr.cfg)['name']}/{s['profile']}" if s else None
-        # a switching role is named after its own model - not main while it follows the running one (it never switches)
+        # a switching role is named after its own model - not worker while it follows the running one (it never switches)
         own = (r.get("saved_targets") or [None])[0] if r.get("switch") and not r.get("follow_running") else None
         if own:
             name = f"{r['name']} → {own['profile']} on {own.get('machine') or machine_info(mgr.cfg)['name']} (switches)"
@@ -587,13 +593,14 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
 
     async def warm_model(model: str):
         """Bring a switching role's (or a profile's) model up before the first request, by the same rules."""
+        model = canonical_role(model)
         st = await anyio.to_thread.run_sync(roles.switch_target, model)
         if st and st["machine"]:
             p = peers.get(st["machine"])
             r = await gateway.post(f"{p['url']}/v1/hangar/warm", json={"model": f"profile:{st['profile']}"},
                                    headers={"Authorization": f"Bearer {p['token']}", "X-Hangar-Switch": model}, timeout=30)
             return JSONResponse(r.json(), status_code=r.status_code)
-        if not st and (model in roles.all() or model == "main"):
+        if not st and (model in roles.all() or model == "worker"):
             # a role that needs no switch: say truthfully whether it can answer, waking its machines as a request would
             woken = await anyio.to_thread.run_sync(roles.wake_for, model)
             if await anyio.to_thread.run_sync(roles.candidates, model):
@@ -633,7 +640,7 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
             max_tokens = int(data.get("max_tokens") or data.get("max_completion_tokens") or 0)
         except (TypeError, ValueError):
             raise HTTPException(400, "max_tokens must be an integer")
-        model = str(data.get("model") or "main")
+        model = canonical_role(str(data.get("model") or "worker"))
         me = machine_info(mgr.cfg)["name"]
         client, via = client_name(request.headers), request.headers.get("x-hangar-via")
         # the device: as a hub that passed it on saw it, else who connected here
@@ -649,6 +656,7 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         data = strip_progress(data)
         # a switching role whose model is not up: its machine switches and holds the request, a hub relays it there
         forced, switch_pid, local_role = [], None, False
+        model = canonical_role(model)
         st = await anyio.to_thread.run_sync(roles.switch_target, model)
         if st and st["machine"]:
             forced = [st]
