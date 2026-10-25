@@ -106,15 +106,31 @@ export default Plugin.define({
         if (index !== undefined) await action("move", { id: item.id, index });
       } else if (choice === "skip") await action("skip", { id: item.id });
     }
+    async function help() {
+      await context.ui.dialog.alert({ title: "Mission and Wingman guide", message: [
+        "START: /mission <task> creates and starts a mission. /mission opens its objectives. /mission pause pauses; /mission resume continues.",
+        "ADD A REVIEW: /mission settings → enable Checks / reviews. Then /mission add → enter a title and completion criteria → choose Review (read-only). Resume to run it. Findings create a worker fix followed by another review; approval finishes it. Repeated findings, attempt limits or blockers pause execution.",
+        "MODELS: /mission settings → worker, thinker or helper → choose the executor and model. Worker implements/fixes; thinker plans, reviews and advises Wingman; helper locates files. Defaults are local Hangar roles. Change their underlying model targets in Hangar.",
+        "EXISTING OBJECTIVES: /mission → select an unfinished objective → Change executor / model. Default model changes apply to new objectives; completed history stays intact.",
+        "WINGMAN: /wingman on enables assistance. /wingman consult <question> asks the configured thinker. /wingman off disables it. Model defaults and limits are shared with Mission in this workspace.",
+        "CLOUD: disabled by default. Enable Cloud delegation in settings to select connected providers or the installed Codex / Claude Code agents for objectives. Normal-chat cloud question consultations ask for consent each time.",
+        "PROGRESS: /mission activity shows results and flow; /mission watch opens the active worker. The sidebar also opens objectives and workers.",
+        "SHORTCUTS: /mission-help, /mission-settings (also /wingman-settings), /mission-add. Settings and objective edits pause active mission work. New missions include checks/review only when enabled; enabling them does not add objectives to an existing mission.",
+      ].join("\n\n") });
+    }
     async function objectives() {
       const mission = state()?.mission;
       if (!mission) return create();
       const choice = await context.ui.dialog.select({ title: `Mission · ${mission.status}`, options: [
         ...mission.objectives.map(o => ({ title: `${symbol(o.status)} ${o.title}`, description: assignmentName(o), value: o.id })),
-        { title: "+ Add objective", value: "add" },
+        { title: "+ Add objective", description: "Add research, implementation, checks or a review (when enabled)", value: "add" },
+        { title: "Models and settings", description: "Worker, thinker, helper, review policy and execution limits", value: "settings" },
+        { title: "Help: reviews, models and Wingman", value: "help" },
         { title: mission.status === "running" ? "Pause mission" : "Start / resume mission", value: "run" },
         { title: "Cancel mission", value: "cancel" }] });
       if (choice === "add") await add();
+      else if (choice === "settings") await settings();
+      else if (choice === "help") await help();
       else if (choice === "run") await action(mission.status === "running" ? "pause" : "resume");
       else if (choice === "cancel") await action("cancel");
       else { const item = mission.objectives.find(o => o.id === choice); if (item) await edit(item); }
@@ -267,26 +283,29 @@ export default Plugin.define({
       </box>;
     } });
     context.keymap.layer(() => ({ mode: "global", commands: [
-      { id: "hangar.mission", title: "Mission: create or manage objectives", group: "Hangar", palette: true, slash: { name: "mission", arguments: true }, run: input => guarded(async () => {
+      { id: "hangar.mission", title: "Mission: create or manage objectives", description: "Start a task or manage objectives; /mission-help explains reviews, models and Wingman", group: "Hangar", palette: true, slash: { name: "mission", arguments: true }, run: input => guarded(async () => {
         await refresh();
         const text = input?.trim() ?? "";
         if (["start", "resume", "pause", "cancel"].includes(text)) await action(text);
         else if (text === "settings") await settings();
+        else if (text === "help") await help();
         else if (["flow", "activity", "status"].includes(text)) await flow();
         else if (text === "watch") await watch();
         else if (text === "add") await add();
         else if (!text) await objectives();
         else await create(text);
       }) },
-      { id: "hangar.wingman", title: "Wingman: local expert assistance", group: "Hangar", palette: true, slash: { name: "wingman", arguments: true }, run: input => guarded(async () => {
+      { id: "hangar.wingman", title: "Wingman: local expert assistance", description: "on / off / consult <question>; choose worker and thinker models in /mission-settings", group: "Hangar", palette: true, slash: { name: "wingman", arguments: true }, run: input => guarded(async () => {
         await refresh(); const text = input?.trim() ?? "";
         if (text === "on" || text === "off") await action("wingman", { enabled: text === "on" });
         else if (text === "consult" || text.startsWith("consult ")) await action("consult", { question: text.slice(8).trim() || undefined });
         else await settings();
       }) },
+      { id: "hangar.mission.help", title: "Mission: help with reviews, models and Wingman", description: "How to add a review, configure models, use Wingman and follow progress", group: "Hangar", palette: true, slash: { name: "mission-help" }, run: () => guarded(help) },
+      { id: "hangar.mission.add", title: "Mission: add an objective", description: "Add work or a review; enable Checks / reviews in /mission-settings first for review objectives", group: "Hangar", palette: true, slash: { name: "mission-add" }, run: () => guarded(async () => { await refresh(); await add(); }) },
       { id: "hangar.mission.flow", title: "Mission: show flow", group: "Hangar", palette: true, run: () => guarded(flow) },
       { id: "hangar.mission.watch", title: "Mission: watch active worker", group: "Hangar", palette: true, run: () => guarded(watch) },
-      { id: "hangar.mission.settings", title: "Mission: model assignments and policy", group: "Hangar", palette: true, run: () => guarded(settings) },
+      { id: "hangar.mission.settings", title: "Mission: model assignments and policy", description: "Set worker, thinker and helper models; enable reviews and adjust limits (also /mission settings)", group: "Hangar", palette: true, slash: { name: "mission-settings", aliases: ["wingman-settings"] }, run: () => guarded(settings) },
       { id: "hangar.mission.pause", title: "Mission: pause active work", group: "Hangar", palette: true, run: () => guarded(() => action("pause")) },
       { id: "hangar.mission.consult", title: "Wingman: consult thinker now", group: "Hangar", palette: true, run: () => guarded(() => action("consult")) },
     ] }));

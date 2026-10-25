@@ -10,6 +10,12 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.9.1 — 2026-10-25
+
+- Make OpenCode mission setup discoverable in slash completion with help, settings and add-objective shortcuts,
+  plus a Wingman settings alias. Add Help and Models and settings to the mission menu, and explain how to enable
+  review/fix loops, assign models and use Wingman in the in-app guide.
+
 ## 0.9.0 — 2026-10-25
 
 - Add an independent OpenCode mission plugin with editable objectives, per-objective model assignments,

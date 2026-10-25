@@ -42,12 +42,15 @@ The Hangar provider must already expose `helper`, `worker` and `thinker`. Retain
 | `/mission pause` | Interrupt active work and keep its changes and journal |
 | `/mission cancel` | Stop this mission; existing changes remain |
 | `/mission add` | Append an objective and completion criteria |
-| `/mission settings` | Change default models, Helper and execution policy |
+| `/mission settings` or `/mission-settings` | Change default models, Helper and execution policy |
+| `/mission help` or `/mission-help` | Show setup, review-loop and model-assignment guidance |
+| `/mission-add` | Open Add objective directly |
+| `/wingman-settings` | Open the shared model and policy settings |
 | `/wingman on` | Enable interactive assistance and select the configured OpenCode worker model |
 | `/wingman off` | Disable assistance and interrupt an active consultation |
 | `/wingman consult [question]` | Request a read-only expert consultation at the next idle boundary |
 
-The command palette provides the same mission, settings, flow, pause and consultation actions. Sidebar entries open objective and worker details; keyboard-only users can use `/mission` to select the same objectives.
+Typing `/mission` now lists help, settings and add-objective shortcuts with descriptions in slash completion. The mission menu also includes Models and settings and Help. The command palette provides the same mission, settings, flow, pause and consultation actions. Sidebar entries open objective and worker details; keyboard-only users can use `/mission` to select the same objectives.
 
 `/mission <task>` starts the default objective sequence immediately. Use `/mission` or the sidebar's New mission action to create a mission for inspection before starting it. Completed objectives are immutable history. Pending objectives can be edited, moved or skipped. Adding an objective to a completed mission reopens it. Changing an active objective first pauses and interrupts it; resume creates a fresh worker that sees the current workspace and earlier results.
 
