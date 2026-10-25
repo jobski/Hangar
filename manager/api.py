@@ -559,7 +559,7 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
             profile = mgr.profiles.get(target["profile"])
             return mgr._vision(profile.engine, target["profile"]) if profile else False
         status = (peers.state.get(target["machine"]) or {}).get("status") or {}
-        return any(e.get("running", {}).get("profile") == target["profile"] and e["running"].get("vision")
+        return any((e.get("running") or {}).get("profile") == target["profile"] and (e.get("running") or {}).get("vision")
                    for e in status.get("engines", []))
 
     def role_served(r: dict) -> dict:

@@ -21,12 +21,15 @@ os.environ["LLM_MANAGER_TOKEN"] = "testtok"
 
 
 class FakePeers:
-    """One peer running a vision profile (its engine publishes the vision tag), and its model stopped otherwise."""
+    """One peer running a vision profile (its engine publishes the vision tag), and its model stopped otherwise.
+    The second engine entry is a stopped engine: status publishes `"running": null` for one, which is the shape
+    that made a hub answer /api/connect/models with a 500 rather than a capability."""
 
     def __init__(self):
         self.state = {"mac": {"online": True, "status": {"engines": [
             {"name": "llamacpp", "port": 8081, "plugin": "llamacpp",
-             "running": {"profile": "qwen-v", "state": "ready", "context": 131072, "vision": True}}]}}}
+             "running": {"profile": "qwen-v", "state": "ready", "context": 131072, "vision": True}},
+            {"name": "strata", "port": 8080, "plugin": "strata", "running": None}]}}}
 
     def all(self):
         return {"mac": {"name": "mac", "url": "http://10.0.0.5:9000", "token": "peertok"}}
