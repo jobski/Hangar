@@ -276,9 +276,9 @@ def build(mgr: Manager) -> MCPServer:
         except (KeyError, ValueError) as e:
             return str(e).strip("'\"")
 
-    @mcp.tool(description="Roles (main, helper, ...): each an ordered list of targets (machine/profile); clients ask "
+    @mcp.tool(description="Roles (worker, thinker, helper, ...): each an ordered list of targets (machine/profile); clients ask "
                           "this Hangar's gateway (/v1, model = the role's name) and get the first target that is up, "
-                          "else main, else anything running. Shows which model serves each role now.")
+                          "else worker, else anything running. Shows which model serves each role now.")
     async def roles(machine: str | None = None) -> str:
         if machine:
             return await peer(machine, "GET", "roles")

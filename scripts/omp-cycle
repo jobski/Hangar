@@ -9,7 +9,7 @@ omp and Hangar's switching roles, in the current git repository.
     omp-cycle --resume last                                       carry on this repository's last run where it stopped
 
 The steps share one omp session, so each model sees the whole story, and Hangar switches the GPU between them: the
-thinker (default hangar/glm) plans and reviews, the coder (default hangar/qwen) implements and fixes. A review ends with
+thinker (default hangar/thinker) plans and reviews, the coder (default hangar/worker) implements and fixes. A review ends with
 `VERDICT: APPROVE` or `VERDICT: CHANGES` and numbered findings; the loop stops when it approves, after --rounds rounds,
 when the same findings come back twice, or when the tests keep failing. Nothing is shipped unless the last review
 approved (and the tests pass); --ship refuses to run on main/master or a detached HEAD, so such a run works on its own branch.
@@ -280,8 +280,8 @@ def main() -> int:
     p.add_argument("task", nargs="?", help="what to build or change (with --resume: taken from that run)")
     p.add_argument("--resume", metavar="RUN", help="carry on an earlier run in its own session: `last` (this "
                    "repository's latest) or its folder; skips planning, finishes the coding, then reviews")
-    p.add_argument("--thinker", default="hangar/glm", help="model that plans and reviews (default hangar/glm)")
-    p.add_argument("--coder", default="hangar/qwen", help="model that implements and fixes (default hangar/qwen)")
+    p.add_argument("--thinker", default="hangar/thinker", help="model that plans and reviews (default hangar/thinker)")
+    p.add_argument("--coder", default="hangar/worker", help="model that implements and fixes (default hangar/worker)")
     p.add_argument("--rounds", type=int, default=4, help="most review rounds (default 4)")
     p.add_argument("--test", help="shell command that must pass after every coding step")
     p.add_argument("--step-time", default="90m", help="omp --max-time per step (default 90m)")

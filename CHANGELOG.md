@@ -10,6 +10,19 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.9.0 — 2026-10-25
+
+- Add an independent OpenCode mission plugin with editable objectives, per-objective model assignments,
+  automatic local thinker consultations, optional always-on helper support and resumable execution.
+- Show mission progress, worker activity and chronological flow in OpenCode's sidebar, with a composer status
+  card and activity/results panel. Wingman offers technical consultations during ordinary chats.
+- Support optional delegation through installed Codex and Claude Code agents, with local-only defaults and
+  explicit consent for cloud consultations.
+- Use stable thinker, worker and helper role names in Hangar and coding clients. Worker owns default/fallback
+  routing; legacy main requests remain a hidden compatibility alias. Migrate saved main role settings at startup
+  and retain completed mission/cycle history while displaying canonical role names.
+- Update the dashboard, CLI, MCP descriptions and generated client defaults for the consolidated roles.
+
 ## 0.8.1 — 2026-10-25
 
 - Stop telling every client that roles are text-only. The copy-paste client configs (`/api/connect/models`) hardcoded

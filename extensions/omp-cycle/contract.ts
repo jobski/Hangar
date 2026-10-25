@@ -17,7 +17,7 @@ export interface Settings {
 }
 
 export const DEFAULTS: Settings = {
-	models: { plan: "hangar/glm", code: "hangar/qwen", review: "hangar/glm", fix: "hangar/qwen" },
+	models: { plan: "hangar/thinker", code: "hangar/worker", review: "hangar/thinker", fix: "hangar/worker" },
 	thinking: {},
 	rounds: 4,
 	stepTimeoutMin: 90,
@@ -26,6 +26,9 @@ export const DEFAULTS: Settings = {
 	diffLimitKb: 60,
 	allowFallback: false,
 };
+
+export const canonicalModel = (model: string) => model.replace(/^hangar\/(glm|qwen|main)(?=$|:)/,
+	(_, role: string) => `hangar/${role === "glm" ? "thinker" : "worker"}`);
 
 export interface Finding {
 	file?: string;
@@ -83,7 +86,7 @@ export function words(line: string): string[] {
 
 export interface Parsed {
 	task: string;
-	overrides: Partial<Settings> & { models?: Partial<Record<Phase, string>> };
+	overrides: Partial<Omit<Settings, "models">> & { models?: Partial<Record<Phase, string>> };
 	error?: string;
 }
 

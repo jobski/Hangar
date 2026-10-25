@@ -137,19 +137,19 @@ from PyPI into the engine's Python (rollback reinstalls the one before). It is o
 than llama.cpp, but mlx-lm has no metrics page or API key, so Hangar shows it running, its memory and its log, not
 token counts, and anyone who can reach its port can use it (keep `host: 127.0.0.1` if only this Mac needs it).
 
-### Roles and the gateway (main, helper, backups)
+### Roles and the gateway (worker, thinker, helper, backups)
 
-Give models a *role* — `main`, `helper`, or any name — and point your tools at the role instead of a server. Each
+Give models a *role* — `worker`, `thinker`, `helper`, or any name — and point your tools at the role instead of a server. Each
 Hangar has an OpenAI- and Anthropic-compatible **gateway** at `http://<machine>:9000/v1` (API key: the Hangar token,
 as `Authorization: Bearer` or `x-api-key`); the model name is the role.
 
 - A role is an ordered list of targets, each a profile on this machine or on a peer: the first is the primary, the
-  rest are backups. A request goes to the first target that is up; if none is, to `main`, then to anything running.
+  rest are backups. A request goes to the first target that is up; if none is, to `worker`, then to anything running.
   If a target fails before it answers, the next one gets the request.
 - A backup marked *start when needed* is started once the targets before it have been down for 30 s — only if it
   fits next to what runs (nothing is stopped for it, and the memory budget holds). Once the primary is back, Hangar
   stops a backup it started after 10 minutes without requests.
-- On a machine where `main` takes the whole GPU (Strata here), set no backup: the role falls back to `main`, which
+- On a machine where `worker` takes the whole GPU (Strata here), set no backup: the role falls back to `worker`, which
   is already loaded.
 - A peer's target normally goes through that peer's own gateway. If its manager stops answering, the hub uses
   the last reported engine endpoint and engine key directly. Background health checks keep that engine available
@@ -158,11 +158,11 @@ as `Authorization: Bearer` or `x-api-key`); the model name is the role.
   returns. The dashboard distinguishes **manager offline · engine reachable** from an unavailable engine;
   management actions and fresh resource readings require the manager. Existing streams are never replayed on another engine.
 
-**Use running model as main** is enabled by default in each machine's **Roles** panel. `main` follows the most
+**Use running model as worker** is enabled by default in each machine's **Roles** panel. `worker` follows the most
 recently started ready model on each configured target machine, retaining primary and backup order. Without saved
 targets it follows the local running model. A hub follows its configured machines, so changing a Strata model does
 not leave it pinned to the previous profile. Turn the option off to use saved profile targets; those targets are retained while automatic following is on. Other roles keep their
-configured profiles. Clients should use the Hangar gateway with `model: "main"` to follow these changes.
+configured profiles. Clients should use the Hangar gateway with `model: "worker"` to follow these changes.
 
 Set roles on the Overview's **Roles** panel (badges on the engine cards show which roles a model serves), or
 `hangar role set helper macbook/qwen3-coder-30b-a3b-instruct-ud-q4_k_xl this/gemma-3-4b --auto`, `hangar roles`,
@@ -217,10 +217,10 @@ thinking, the one form opencode, Qwen Code and omp all wait for, and stripped fr
 answer. Background roles never switch, so only the model you pick moves the GPU.
 
 ```
-hangar switching setup my-pc maya-maya-m strata-iq3_s   # roles glm (thinker) and qwen (coder), main -> the coder
-hangar connect opencode --host hub --apply             # plan agent -> glm, build agent -> qwen, small -> helper
-hangar connect omp --host hub --apply                  # omp roles: default qwen, plan/slow glm, smol/task/commit helper
-hangar switch glm                                      # load it ahead of the first request
+hangar switching setup my-pc maya-maya-m strata-iq3_s   # roles thinker and worker, worker -> the coder
+hangar connect opencode --host hub --apply             # plan agent -> thinker, build agent -> worker, small -> helper
+hangar connect omp --host hub --apply                  # omp roles: default worker, plan/slow thinker, smol/task/commit helper
+hangar switch thinker                                      # load it ahead of the first request
 ```
 
 The machine that owns the models decides: a model just loaded keeps the GPU for its minimum turn (2 min), a start
@@ -371,8 +371,8 @@ WantedBy=multi-user.target
 
 Add the other machines on the hub — **Overview → Machines** or `hangar peer add` (one way is enough: the hub needs
 their tokens, they do not need the hub's). Then define the roles on the hub, with targets on the machines — say
-`main` = `pc/<big model>` then `macbook/<smaller model>` as a fallback, and `helper` = `macbook/<coder model>`. A role
-answers from the first target that is up; when none is, from `main`, then anything running.
+`worker` = `pc/<big model>` then `macbook/<smaller model>` as a fallback, and `helper` = `macbook/<coder model>`. A role
+answers from the first target that is up; when none is, from `worker`, then anything running.
 
 Point your tools at the hub: its dashboard's **Connect** page gives each tool's settings (on a machine with no engines
 it offers its network address rather than 127.0.0.1), or use `http://<hub>:9000/v1` with the hub's token as the API
@@ -407,8 +407,9 @@ Tools: `status`, `list_profiles`, `plan`, `start`, `switch_model`, `stop`, `rest
 
 The **Connect** section of the web page (and `hangar connect`) gives ready-to-paste settings for the running
 models: opencode, Qwen Code, Pi, Oh My Pi (omp), Codex CLI, Claude Code, Aider, Continue, or any OpenAI-compatible app.
-Each role is named after the model serving it now (`main → strata-iq3_s on my-pc`), and `/v1/models` reports the same
-name with its context size, so a client shows what actually answers. The second tab
+Roles have stable names (`worker (Hangar)`, `thinker (Hangar)` and `helper (Hangar)`); `/v1/models`
+reports their context sizes. The dashboard shows the profile serving each role. Legacy `main` requests
+resolve to `worker`, but `main` is hidden from the model catalogue. The second tab
 does the same for this manager's MCP server (Claude Code, Claude Desktop, Codex, Qwen Code, Gemini CLI, opencode,
 Cursor, VS Code). Pick the address the other machine should use (Tailscale name/IP, LAN, or 127.0.0.1 for this PC).
 For opencode, Qwen Code, Pi and omp, "Write to this PC" merges the settings into that tool's config file and keeps a
@@ -453,7 +454,7 @@ the same.
 
 omp does the whole job for you: `/cycle <task>` plans with the thinker, implements it with the coder, then reviews and
 fixes until the review approves - each phase in its own omp session, on its own Hangar role, so the GPU moves between
-them (`hangar/glm` plans and reviews, `hangar/qwen` codes and fixes; `hangar switching setup` names them).
+them (`hangar/thinker` plans and reviews, `hangar/worker` codes and fixes; `hangar switching setup` names them).
 `extensions/omp-cycle/` is the extension. Put it in `~/.omp/agent/extensions/` (or `<repo>/.omp/extensions/`) and omp
 picks it up; to use it straight from this repository instead, run omp in it with
 `extensions: ["./extensions/omp-cycle"]` in `~/.omp/agent/config.yml` (that path is relative to where omp starts).
