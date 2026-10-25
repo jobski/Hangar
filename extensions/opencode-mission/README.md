@@ -87,6 +87,19 @@ The sidebar lists active workers separately. Past attempts are collapsed under a
 
 Stage changes also show brief toast notifications. Worker output previews contain partial response text; reasoning token events update the activity indicator without exposing reasoning text. A quiet-period notice reports the lack of new events, without claiming the worker has failed. These displays are UI-only: they do not enqueue chat prompts, start extra model turns or switch models. Full worker output remains available in the native worker session.
 
+## Handoff to the main chat
+
+Mission runs objectives in child worker sessions, while the controlling chat keeps its own tool history. On each
+normal top-level chat turn in the same workspace, the plugin supplies a bounded report from the current mission
+journal: task/status, objective results, model assignments and worker session references. The same report is
+included during compaction. This also works for missions completed before the handoff feature was installed.
+
+The chat can explain what Mission built without claiming its own session executed those tools. Checks/reviews are
+labelled as worker-reported evidence; a completed mission does not imply a commit or deployment. Reports are
+refreshed from persisted state rather than copying entire worker conversations or reasoning. Later file edits can
+make reported results stale. Merely completing a mission does not queue an extra model turn; the handoff is
+available when you next speak to the chat.
+
 ## Questions in normal chat
 
 Outside missions, the worker is instructed to use `ask_technical_question` when unresolved technical uncertainty would otherwise require your input. Its native question prompt offers **Ask Thinker (local)** first, followed by **Ask Codex (cloud)** and **Ask Claude Code (cloud)** when their installed CLIs report a signed-in account. You can answer directly instead. Routine choices remain with the worker; preferences, requirements and approvals use the ordinary question prompt.

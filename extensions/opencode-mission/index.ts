@@ -6,6 +6,7 @@ import { Controller, type Result } from "./controller.ts";
 import { externalAgent, patchPaths, processRun } from "./agents.ts";
 import { clip, id, readOnly, validateAssignment, type Profile, type State, type Worker } from "./model.ts";
 import { missionRPC } from "./rpc.ts";
+import { missionReport } from "./report.ts";
 import { changes, head, snapshot } from "./workspace.ts";
 import { QUESTION_INSTRUCTIONS, QUESTION_TOOL, questionOffers } from "./questions.ts";
 import { roleLabel, toolActivity, working } from "./progress.ts";
@@ -168,6 +169,13 @@ export default Plugin.define({
 
     await ctx.session.hook("context", async event => {
       const scope = managed.get(event.sessionID);
+      if (!scope && controller.state?.mission) {
+        const session = await ctx.session.get({ sessionID: event.sessionID });
+        if (!session.parentID && await realpath(session.location.directory) === directory) {
+          const report = missionReport(controller.state);
+          if (report) event.system.push({ type: "text", text: report });
+        }
+      }
       if (!scope && controller.canOffer() && !(await ctx.session.get({ sessionID: event.sessionID })).parentID) {
         if (event.tools[QUESTION_TOOL]) event.system.push({ type: "text", text: QUESTION_INSTRUCTIONS });
       } else delete event.tools[QUESTION_TOOL];
@@ -188,6 +196,14 @@ export default Plugin.define({
         for (const name of Object.keys(event.tools)) if (!scope || name !== "mission_result") delete event.tools[name];
       }
       if (!scope && controller.state?.localOnly) delete event.tools.subagent;
+    });
+    await ctx.session.hook("compaction", async event => {
+      if (!controller.state?.mission || managed.has(event.sessionID)) return;
+      const session = await ctx.session.get({ sessionID: event.sessionID });
+      if (!session.parentID && await realpath(session.location.directory) === directory) {
+        const report = missionReport(controller.state);
+        if (report) event.system.push({ type: "text", text: report });
+      }
     });
     await ctx.session.hook("prompt", async event => {
       if (!event.metadata?.hangarMissionAdvice) await controller.userInput(event.sessionID);

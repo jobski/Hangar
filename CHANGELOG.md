@@ -10,6 +10,14 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.9.3 — 2026-10-26
+
+- Supply Mission results to the main OpenCode chat and its compaction context, including completed missions
+  restored from journals. Explain delegated execution, objective outcomes and worker references so the chat can
+  describe what Mission built without relying on its own tool history.
+- Bound the handoff report, label checks/reviews as worker-reported evidence and preserve permission and
+  staleness boundaries. Completing a mission does not trigger an extra model turn.
+
 ## 0.9.2 — 2026-10-25
 
 - Add live Mission output above the composer with remembered Compact, Verbose and Hidden modes, scrollable
