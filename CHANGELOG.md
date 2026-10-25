@@ -10,6 +10,46 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.10.0 — 2026-10-26
+
+- Add Mission completion reports, archived history and clear-display actions while retaining results, worker
+  sessions and chat handoffs. Starting another mission archives the previous finished or cancelled mission.
+- Add pause-after-objective and recorded steering instructions, explicit update/recovery reasons and actionable
+  blocked-state controls. Forced plugin teardown retains work and requires explicit resume.
+- Clarify default models versus existing assignments, add explicit application to unfinished objectives, validate
+  Wingman's interactive worker before saving, and give missions/workers descriptive titles without replacing custom names.
+- Correct review/fix orchestration: separate findings fingerprints from workspace snapshots, rerun configured
+  checks after review fixes, require fresh validation after post-approval changes and stop invalid approvals.
+- Record criterion-specific worker evidence with optional strict coverage and read-only completion snapshot
+  comparisons. Missing evidence remains unverified; snapshot comparisons do not rerun checks.
+- Exercise the requested gaps with 19 controller checks and a live local-worker fix/recheck/review round in a
+  disposable fixture. No cloud calls or validation reruns against the user's completed project were required.
+
+## 0.9.3 — 2026-10-26
+
+- Supply Mission results to the main OpenCode chat and its compaction context, including completed missions
+  restored from journals. Explain delegated execution, objective outcomes and worker references so the chat can
+  describe what Mission built without relying on its own tool history.
+- Bound the handoff report, label checks/reviews as worker-reported evidence and preserve permission and
+  staleness boundaries. Completing a mission does not trigger an extra model turn.
+
+## 0.9.2 — 2026-10-25
+
+- Add live Mission output above the composer with remembered Compact, Verbose and Hidden modes, scrollable
+  worker/tool output, captured command output, activity indicators and explicit freshness/wait states.
+- Separate active workers from collapsed historical attempts in the sidebar. Keep interruption reasons and
+  native sessions accessible through the full worker-history picker.
+- Recover idle mission controllers left in earlier chats and report actionable RPC errors instead of generic
+  failures. Preserve ownership while unfinished missions or Wingman consultations are active.
+- Automatically initialise Git on main when creating or starting a mission in a plain folder, including resume.
+  Preserve existing repositories and worktrees; do not create an initial commit.
+
+## 0.9.1 — 2026-10-25
+
+- Make OpenCode mission setup discoverable in slash completion with help, settings and add-objective shortcuts,
+  plus a Wingman settings alias. Add Help and Models and settings to the mission menu, and explain how to enable
+  review/fix loops, assign models and use Wingman in the in-app guide.
+
 ## 0.9.0 — 2026-10-25
 
 - Add an independent OpenCode mission plugin with editable objectives, per-objective model assignments,

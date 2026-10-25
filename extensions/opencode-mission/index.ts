@@ -6,6 +6,8 @@ import { Controller, type Result } from "./controller.ts";
 import { externalAgent, patchPaths, processRun } from "./agents.ts";
 import { clip, id, readOnly, validateAssignment, type Profile, type State, type Worker } from "./model.ts";
 import { missionRPC } from "./rpc.ts";
+import { missionReport } from "./report.ts";
+import { workerTitle } from "./titles.ts";
 import { changes, head, snapshot } from "./workspace.ts";
 import { QUESTION_INSTRUCTIONS, QUESTION_TOOL, questionOffers } from "./questions.ts";
 import { roleLabel, toolActivity, working } from "./progress.ts";
@@ -37,7 +39,17 @@ export default Plugin.define({
         saveQueue = saveQueue.catch(() => {}).then(() => ctx.storage.set(stateKey, JSON.parse(JSON.stringify(state))));
         return saveQueue;
       },
-      interrupt: async sessionID => { if (!sessionID.includes(":")) await ctx.session.interrupt({ sessionID: sessionID as SessionID }); },
+      interrupt: async sessionID => {
+        if (!sessionID.includes(":")) {
+          await ctx.session.interrupt({ sessionID: sessionID as SessionID });
+          await ctx.session.wait({ sessionID: sessionID as SessionID }, { signal: AbortSignal.timeout(15000) });
+        }
+      },
+      rename: async (sessionID, title, previous) => {
+        const session = await ctx.session.get({ sessionID: sessionID as SessionID });
+        if (session.title && !/^new session(?:$|\s[-–])/i.test(session.title) && session.title !== previous) return false;
+        await ctx.session.update({ sessionID: sessionID as SessionID, title }); return true;
+      },
       idle: async sessionID => {
         try { await ctx.session.wait({ sessionID: sessionID as SessionID }, { signal: AbortSignal.timeout(300) }); return true; }
         catch { return false; }
@@ -80,7 +92,7 @@ export default Plugin.define({
         const permissions = readonly
           ? [{ action: "*", resource: "*", effect: "deny" as const }, ...["read", "glob", "grep", ...READ_TOOLS].map(action => ({ action, resource: "*", effect: "allow" as const }))]
           : ["edit", "shell", "execute"].map(action => ({ action, resource: "*", effect: "ask" as const }));
-        const session = await ctx.session.create({ parentID: (worker.parentID ?? controller.state.owner) as SessionID, title: `Mission ${roleLabel(worker.role)}: ${worker.objectiveID ?? "consultation"}`,
+        const session = await ctx.session.create({ parentID: (worker.parentID ?? controller.state.owner) as SessionID, title: workerTitle(controller.state, worker),
           model: modelRef(worker.assignment.model), permissions });
         worker.sessionID = session.id;
         const scope: Managed = { worker, profile, signal };
@@ -144,7 +156,7 @@ export default Plugin.define({
         if (original) tools.add({ ...original, name: `mission_${name}`, options: { codemode: false } });
       }
       tools.add({ name: "mission_result", description: "Complete the current mission objective with an explicit result. Call once at the end.", options: { codemode: false },
-        input: { type: "object", properties: { status: { type: "string", enum: ["done", "blocked", "approve", "changes"] }, summary: { type: "string", minLength: 1 } }, required: ["status", "summary"], additionalProperties: false },
+        input: { type: "object", properties: { status: { type: "string", enum: ["done", "blocked", "approve", "changes"] }, summary: { type: "string", minLength: 1 }, evidence: { type: "array", maxItems: 30, items: { type: "object", properties: { criterion: { type: "string", minLength: 1 }, status: { type: "string", enum: ["met", "unmet", "unverified"] }, detail: { type: "string", minLength: 1 } }, required: ["criterion", "status", "detail"], additionalProperties: false } } }, required: ["status", "summary"], additionalProperties: false },
         execute: async (input, context) => {
           const scope = managed.get(context.sessionID);
           if (!scope) throw new Error("This tool is only available to a mission worker");
@@ -168,6 +180,13 @@ export default Plugin.define({
 
     await ctx.session.hook("context", async event => {
       const scope = managed.get(event.sessionID);
+      if (!scope && (controller.state?.mission || controller.state?.archives?.length)) {
+        const session = await ctx.session.get({ sessionID: event.sessionID });
+        if (!session.parentID && await realpath(session.location.directory) === directory) {
+          const report = missionReport(controller.state);
+          if (report) event.system.push({ type: "text", text: report });
+        }
+      }
       if (!scope && controller.canOffer() && !(await ctx.session.get({ sessionID: event.sessionID })).parentID) {
         if (event.tools[QUESTION_TOOL]) event.system.push({ type: "text", text: QUESTION_INSTRUCTIONS });
       } else delete event.tools[QUESTION_TOOL];
@@ -189,6 +208,14 @@ export default Plugin.define({
       }
       if (!scope && controller.state?.localOnly) delete event.tools.subagent;
     });
+    await ctx.session.hook("compaction", async event => {
+      if (!(controller.state?.mission || controller.state?.archives?.length) || managed.has(event.sessionID)) return;
+      const session = await ctx.session.get({ sessionID: event.sessionID });
+      if (!session.parentID && await realpath(session.location.directory) === directory) {
+        const report = missionReport(controller.state);
+        if (report) event.system.push({ type: "text", text: report });
+      }
+    });
     await ctx.session.hook("prompt", async event => {
       if (!event.metadata?.hangarMissionAdvice) await controller.userInput(event.sessionID);
     });
@@ -209,7 +236,8 @@ export default Plugin.define({
     });
 
     await ctx.session.hook("title", event => {
-      if (managed.has(event.sessionID)) event.result = "Mission worker";
+      const scope = managed.get(event.sessionID);
+      if (scope) event.result = workerTitle(controller.state, scope.worker);
     });
 
     await ctx.session.hook("http.request", async event => {
@@ -289,25 +317,29 @@ export default Plugin.define({
       }
     });
 
-    const registration = await ctx.rpc.register(missionRPC, { action: async raw => {
-      const input = raw as { sessionID: string; action: string; payload: string };
-      const session = await ctx.session.get({ sessionID: input.sessionID as SessionID });
-      if (await realpath(session.location.directory) !== await realpath(directory)) throw new Error("Session belongs to another workspace");
-      if (managed.has(input.sessionID)) throw new Error("Control missions from the parent session");
-      const payload = JSON.parse(input.payload);
-      if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid action payload");
-      const state = await controller.action(input.sessionID, input.action, payload);
-      if ((input.action === "wingman" && payload.enabled) || input.action === "assign" && payload.role === "worker" && state.wingman.enabled) {
-        const assignment = state.assignments.worker;
-        if (assignment.executor !== "opencode") { state.wingman.enabled = false; throw new Error("Wingman's main worker must use opencode; external agents can be experts or objective executors"); }
-        await ctx.session.switchModel({ sessionID: input.sessionID as SessionID, model: modelRef(assignment.model)! });
-        if (!mainWorker || mainWorker.status === "done") {
-          mainWorker = { id: id(), sessionID: input.sessionID, role: "worker", assignment: { ...assignment }, status: "waiting", detail: "Interactive worker ready" };
-          state.workers.push(mainWorker);
+    const registration = await ctx.rpc.register(missionRPC, { action: async (raw, call) => {
+      try {
+        const input = raw as { sessionID: string; action: string; payload: string };
+        const session = await ctx.session.get({ sessionID: input.sessionID as SessionID });
+        if (await realpath(session.location.directory) !== await realpath(directory)) throw new Error("Session belongs to another workspace");
+        if (managed.has(input.sessionID)) throw new Error("Control missions from the parent session");
+        const payload = JSON.parse(input.payload);
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid action payload");
+        const state = await controller.action(input.sessionID, input.action, payload);
+        if ((input.action === "wingman" && payload.enabled) || input.action === "assign" && payload.role === "worker" && state.wingman.enabled) {
+          const assignment = state.assignments.worker;
+          if (assignment.executor !== "opencode") { state.wingman.enabled = false; throw new Error("Wingman's main worker must use opencode; external agents can be experts or objective executors"); }
+          await ctx.session.switchModel({ sessionID: input.sessionID as SessionID, model: modelRef(assignment.model)! });
+          if (!mainWorker || mainWorker.status === "done") {
+            mainWorker = { id: id(), sessionID: input.sessionID, role: "worker", assignment: { ...assignment }, status: "waiting", detail: "Interactive worker ready" };
+            state.workers.push(mainWorker);
+          }
+          await controller.save();
         }
-        await controller.save();
+        return { json: JSON.stringify(state) };
+      } catch (error) {
+        return call.error("mission.action", error instanceof Error ? error.message : String(error), {});
       }
-      return { json: JSON.stringify(state) };
     } });
     const eventLoop = (async () => {
       for await (const event of ctx.event.subscribe({ signal: lifetime.signal })) {
@@ -349,6 +381,6 @@ export default Plugin.define({
         if (event.type === "session.execution.succeeded") await controller.onIdle();
       }
     })().catch(error => { if (!lifetime.signal.aborted) console.error("Mission event stream stopped", error); });
-    return async () => { lifetime.abort(); if (progressTimer) clearTimeout(progressTimer); await controller.close(); await registration.dispose(); await eventLoop; };
+    return async () => { if (progressTimer) clearTimeout(progressTimer); await controller.close(); lifetime.abort(); await registration.dispose(); await eventLoop; };
   },
 });

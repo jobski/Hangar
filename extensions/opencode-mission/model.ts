@@ -4,10 +4,12 @@ export type Executor = "opencode" | "codex" | "claude";
 export type Role = "helper" | "worker" | "expert";
 export type Profile = "research" | "implement" | "check" | "review";
 export interface Assignment { executor: Executor; model: string }
+export interface Evidence { criterion: string; status: "met" | "unmet" | "unverified"; detail: string }
 export interface Objective {
   id: string; title: string; criteria: string; profile: Profile; assignment: Assignment;
   dependencies: string[]; status: "pending" | "running" | "done" | "blocked" | "skipped";
-  attempts: number; result?: string; snapshot?: string;
+  evidence?: Evidence[]; evidenceAt?: string;
+  attempts: number; result?: string; snapshot?: string; findingsFingerprint?: string;
 }
 export interface Worker {
   id: string; sessionID?: string; parentID?: string; oneOffCloud?: boolean; objectiveID?: string; role: Role; assignment: Assignment;
@@ -20,11 +22,18 @@ export interface Mission {
   id: string; task: string; base: string; status: "ready" | "running" | "paused" | "done" | "cancelled";
   objectives: Objective[]; reason?: string;
   startedAt?: string; finishedAt?: string;
+  completedSnapshot?: string;
+  instructions?: { at: string; text: string }[];
+  pauseRequested?: boolean; pauseCause?: "user" | "update" | "recovery" | "blocked" | "error" | "steering";
 }
+export interface ArchivedMission { mission: Mission; workers: Worker[]; flow: Flow[]; archivedAt: string }
 export interface State {
   version: 1; owner: string; directory: string; localOnly: boolean; helper: boolean;
   paperCut: boolean; allowChecksReview: boolean;
-  assignments: Record<Role, Assignment>; mission?: Mission; workers: Worker[]; flow: Flow[];
+  requireEvidence?: boolean;
+  snapshotChecks?: Record<string, { at: string; matches: boolean }>;
+  sessionTitles?: Record<string, string>;
+  assignments: Record<Role, Assignment>; mission?: Mission; archives?: ArchivedMission[]; workers: Worker[]; flow: Flow[];
   wingman: { enabled: boolean; failures: Record<string, number>; pending?: string; consultations: number };
   advice: { enabled: boolean; declined: Record<string, string[]> };
   maxAttempts: number; maxConsultations: number; timeoutMin: number; failureThreshold: number;
@@ -36,7 +45,7 @@ export const canonicalModel = (model: string) => model.replace(/^hangar\/(glm|qw
 export function initial(owner: string, directory: string, paperCut: boolean): State {
   return { version: 1, owner, directory, paperCut, allowChecksReview: paperCut,
     localOnly: true, helper: true, assignments: { helper: local("helper"), worker: local("worker"), expert: local("thinker") },
-    workers: [], flow: [], wingman: { enabled: false, failures: {}, consultations: 0 },
+    archives: [], workers: [], flow: [], wingman: { enabled: false, failures: {}, consultations: 0 },
     advice: { enabled: true, declined: {} },
     maxAttempts: 3, maxConsultations: 3, timeoutMin: 90, failureThreshold: 2 };
 }
