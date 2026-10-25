@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { canonicalModel, clip, id, initial, note, objective, readOnly, template, validateAssignment, validateObjectives,
-  type Assignment, type Objective, type Profile, type Role, type State, type Worker } from "./model.ts";
+  type Assignment, type Evidence, type Objective, type Profile, type Role, type State, type Worker } from "./model.ts";
+import { criteriaList, criterionEvidence } from "./evidence.ts";
+import { missionTitle } from "./titles.ts";
 import { changes, head, initialiseRepository, snapshot, workspacePolicy } from "./workspace.ts";
 
-export interface Result { status: "done" | "blocked" | "approve" | "changes"; summary: string }
+export interface Result { status: "done" | "blocked" | "approve" | "changes"; summary: string; evidence?: Evidence[] }
 export interface Runtime {
   save(state: State): Promise<void>;
+  rename?(sessionID: string, title: string, previous?: string): Promise<boolean>;
   run(worker: Worker, profile: Profile, prompt: string, signal: AbortSignal): Promise<Result>;
   interrupt(sessionID: string): Promise<void>;
   idle(sessionID: string): Promise<boolean>;
@@ -31,13 +34,19 @@ export class Controller {
   private consultDone?: Promise<void>;
   private finishConsult?: () => void;
   private closed = false;
-  constructor(readonly directory: string, readonly runtime: Runtime) {}
+  readonly directory: string;
+  readonly runtime: Runtime;
+  constructor(directory: string, runtime: Runtime) { this.directory = directory; this.runtime = runtime; }
 
   async restore(saved?: State) {
     if (!saved) return;
     if (saved.version !== 1 || await realpath(saved.directory) !== await realpath(this.directory)) throw new Error("Unsupported mission journal");
     saved.directory = this.directory;
+    for (const item of saved.mission?.objectives ?? []) if (item.profile === "review" && !["done", "skipped"].includes(item.status) && item.attempts > 0 && item.result && item.snapshot && !item.findingsFingerprint) {
+      item.findingsFingerprint = item.snapshot; item.snapshot = undefined;
+    }
     saved.failureThreshold ??= 2;
+    saved.archives ??= [];
     saved.advice ??= { enabled: true, declined: {} };
     for (const assignment of Object.values(saved.assignments))
       if (assignment.executor === "opencode") assignment.model = canonicalModel(assignment.model);
@@ -52,16 +61,48 @@ export class Controller {
     }
     if (leases.has(this.directory)) throw new Error("A mission is active in another workspace location; connect to its session");
     this.state = saved;
+    const recovered = saved.mission?.status === "running" || saved.workers.some(w => ["working", "waiting", "loading"].includes(w.status));
     for (const worker of saved.workers.filter(w => ["working", "waiting", "loading"].includes(w.status))) {
       if (worker.sessionID) await this.runtime.interrupt(worker.sessionID);
       worker.status = "interrupted";
+      worker.detail = "Recovered after server/plugin restart; previous changes retained";
+      worker.finishedAt = worker.updatedAt = new Date().toISOString();
     }
-    if (saved.mission?.status === "running") saved.mission.status = "paused";
+    if (saved.mission?.status === "running") {
+      saved.mission.status = "paused"; saved.mission.pauseCause = "recovery";
+      saved.mission.reason = "OpenCode restarted during work. Changes and completed objectives were retained; resume when ready.";
+    }
     for (const item of saved.mission?.objectives ?? []) if (item.status === "running") item.status = "pending";
-    note(saved, "Restored journal; interrupted work requires explicit resume");
+    await this.nameOwner();
+    if (recovered) note(saved, "Recovered interrupted work; resume explicitly after checking the retained changes");
     await this.save();
   }
+  private async nameOwner() {
+    const s = this.state;
+    if (!s?.mission || !this.runtime.rename) return;
+    const title = missionTitle(s.mission);
+    try {
+      if (await this.runtime.rename(s.owner, title, s.sessionTitles?.[s.owner])) {
+        s.sessionTitles ??= {}; s.sessionTitles[s.owner] = title;
+      }
+    } catch { note(s, "Session title could not be updated; mission execution is unaffected"); }
+  }
+  private archiveCurrent() {
+    const s = this.state, mission = s.mission;
+    if (!mission) return;
+    if (!["done", "cancelled"].includes(mission.status)) throw new Error("Finish or cancel the mission before clearing it");
+    const ids = new Set(mission.objectives.map(item => item.id));
+    const start = s.flow.findLastIndex(event => event.text.startsWith("Mission created:"));
+    const record = structuredClone({ mission, workers: s.workers.filter(worker => worker.objectiveID && ids.has(worker.objectiveID)),
+      flow: s.flow.slice(Math.max(0, start)), archivedAt: new Date().toISOString() });
+    s.archives ??= [];
+    const previous = s.archives.findIndex(item => item.mission.id === mission.id);
+    if (previous < 0) s.archives.push(record); else s.archives[previous] = record;
+    s.workers = s.workers.filter(worker => !worker.objectiveID || !ids.has(worker.objectiveID));
+    s.mission = undefined;
+  }
   async ensure(owner: string) {
+    if (this.closed) throw new Error("Mission plugin is updating; wait for the interface to reconnect");
     if (!this.state) this.state = initial(owner, this.directory, (await workspacePolicy(this.directory)).paperCut);
     if (this.state.owner !== owner) {
       if (this.loop || this.consulting || this.state.wingman.enabled ||
@@ -87,8 +128,18 @@ export class Controller {
     if (action === "status" && this.state) return this.state;
     const s = await this.ensure(owner);
     if (action === "status") return s;
+    if (action === "pause" && payload.boundary === true) {
+      if (s.mission?.status !== "running") throw new Error("A mission must be running to pause after its current objective");
+      s.mission.pauseRequested = true;
+      await this.changed("Pause requested: finish the current objective, then wait before starting another worker");
+      return s;
+    }
     if (action === "pause" || action === "cancel") {
-      if (s.mission) s.mission.status = action === "pause" ? "paused" : "cancelled";
+      if (s.mission) {
+        s.mission.status = action === "pause" ? "paused" : "cancelled";
+        s.mission.pauseRequested = false; s.mission.pauseCause = "user";
+        s.mission.reason = action === "pause" ? "Paused by you. Existing changes are retained; resume when ready." : "Cancelled by you. Existing changes are retained.";
+      }
       if (s.mission && action === "cancel") s.mission.finishedAt = new Date().toISOString();
       s.wingman.pending = undefined;
       this.active?.abort(new Error(action === "pause" ? "Paused by owner" : "Cancelled by owner"));
@@ -96,9 +147,24 @@ export class Controller {
       await this.changed(action === "pause" ? "Mission paused" : "Mission cancelled");
       return s;
     }
+    if (action === "steer") {
+      if (!s.mission || ["done", "cancelled"].includes(s.mission.status)) throw new Error("Steering needs an unfinished mission. Add a follow-up objective to a completed mission instead.");
+      const text = String(payload.text ?? "").trim();
+      if (!text || text.length > 8000) throw new Error("Give between 1 and 8000 characters of instructions");
+      if (!await this.runtime.idle(owner)) throw new Error("Wait for the controlling chat to finish before steering");
+      await this.action(owner, "pause");
+      s.mission.instructions ??= [];
+      s.mission.instructions.push({ at: new Date().toISOString(), text });
+      const next = s.mission.objectives.find(item => !["done", "skipped"].includes(item.status));
+      if (next) { next.attempts = 0; next.status = "pending"; next.findingsFingerprint = undefined; }
+      s.mission.pauseCause = "steering"; s.mission.reason = "New instructions saved for the next worker. Resume to continue with the retained changes.";
+      await this.changed(`Instructions received: ${clip(text, 500)}`);
+      return s;
+    }
     if (action === "wingman") {
       if (typeof payload.enabled !== "boolean") throw new Error("Specify enabled");
       if (this.loop) throw new Error("Pause the mission before changing Wingman mode");
+      if (payload.enabled && s.assignments.worker.executor !== "opencode") throw new Error("Wingman's interactive worker must use OpenCode. Choose an OpenCode worker default first; external agents can be thinkers or Mission objective workers.");
       s.wingman.enabled = payload.enabled;
       if (payload.enabled) { s.wingman.consultations = 0; s.wingman.failures = {}; }
       if (!payload.enabled) { s.wingman.pending = undefined; if (this.consulting) this.active?.abort(); }
@@ -111,14 +177,31 @@ export class Controller {
       await this.onIdle();
       return s;
     }
+    if (action === "verify") {
+      this.editable();
+      const mission = payload.id ? s.archives?.find(record => record.mission.id === payload.id)?.mission : s.mission ?? s.archives?.at(-1)?.mission;
+      if (!mission || !["done", "cancelled"].includes(mission.status)) throw new Error("Snapshot comparison needs a finished or archived mission");
+      const expected = mission.completedSnapshot ?? mission.objectives.findLast(item => item.status === "done")?.snapshot;
+      if (!expected) throw new Error("No completion snapshot was recorded for this mission");
+      s.snapshotChecks ??= {};
+      s.snapshotChecks[mission.id] = { at: new Date().toISOString(), matches: expected === await snapshot(this.directory, mission.base) };
+      await this.save(); return s;
+    }
+    if (action === "clear" && s.mission && !["done", "cancelled"].includes(s.mission.status))
+      throw new Error("Finish or cancel this mission before clearing it. Clear preserves results in history; it does not cancel work.");
     this.editable();
     if (!await this.runtime.idle(owner)) throw new Error("Wait for the main conversation to finish before changing mission settings");
-    if (action === "create") {
+    if (action === "clear") {
+      this.archiveCurrent();
+      await this.changed("Mission archived and cleared from the display; results retained in history");
+    } else if (action === "create") {
       if (s.mission && !["done", "cancelled"].includes(s.mission.status)) throw new Error("Finish or cancel the existing mission first");
       const task = String(payload.task ?? "").trim();
       if (!task) throw new Error("Describe the mission");
       await initialiseRepository(this.directory);
-      s.mission = template(s, task, await head(this.directory));
+      const created = template(s, task, await head(this.directory));
+      this.archiveCurrent(); s.mission = created;
+      await this.nameOwner();
       s.wingman.consultations = 0; s.wingman.failures = {}; s.wingman.pending = undefined;
       s.wingman.enabled = false;
       await this.changed(`Mission created: ${task}`);
@@ -137,6 +220,9 @@ export class Controller {
     } else if (action === "helper") {
       s.helper = payload.enabled === true;
       await this.changed(`Helper ${s.helper ? "enabled" : "disabled"}`);
+    } else if (action === "require-evidence") {
+      s.requireEvidence = payload.enabled === true;
+      await this.changed(`Criterion evidence requirement ${s.requireEvidence ? "enabled" : "disabled"}`);
     } else if (action === "checks") {
       s.allowChecksReview = payload.enabled === true;
       await this.changed(`Checks and reviews ${s.allowChecksReview ? "explicitly enabled" : "disabled"}`);
@@ -154,8 +240,14 @@ export class Controller {
       if (!["helper", "worker", "expert"].includes(role)) throw new Error("Unknown role");
       const assignment = payload.assignment as Assignment;
       validateAssignment(assignment, s);
+      if (role === "worker" && s.wingman.enabled && assignment.executor !== "opencode") throw new Error("Wingman's interactive worker must use OpenCode. Turn Wingman off before assigning an external Mission worker default.");
       s.assignments[role] = { ...assignment };
       await this.changed(`Default ${role} assignment changed`);
+    } else if (action === "apply-defaults") {
+      if (!s.mission) throw new Error("Create a mission first");
+      for (const item of s.mission.objectives) if (!["done", "skipped"].includes(item.status))
+        item.assignment = { ...s.assignments[item.profile === "research" || item.profile === "review" ? "expert" : "worker"] };
+      await this.changed("Default models explicitly applied to unfinished objectives; completed assignments retained");
     } else if (["add", "edit", "skip", "move"].includes(action)) {
       const mission = s.mission;
       if (!mission) throw new Error("Create a mission first");
@@ -206,14 +298,14 @@ export class Controller {
       const resumed = Boolean(s.mission.startedAt);
       s.mission.startedAt ??= new Date().toISOString();
       s.mission.finishedAt = undefined;
-      s.mission.reason = undefined;
+      s.mission.reason = undefined; s.mission.pauseCause = undefined; s.mission.pauseRequested = false;
       this.active = new AbortController();
       const signal = this.active.signal;
       this.loop = (async () => {
         await this.changed(resumed ? "Mission resumed" : "Mission started");
         await this.execute(signal);
       })().catch(async error => {
-        if (s.mission?.status === "running") { s.mission.status = "paused"; s.mission.reason = String(error.message ?? error); }
+        if (s.mission?.status === "running") { s.mission.status = "paused"; s.mission.pauseCause ??= "error"; s.mission.reason = String(error.message ?? error); }
         for (const item of s.mission?.objectives ?? []) if (item.status === "running") item.status = "pending";
         await this.changed(`Execution stopped: ${error.message ?? error}`);
       }).finally(() => { release(); this.loop = undefined; this.active = undefined; });
@@ -237,7 +329,8 @@ export class Controller {
       return result;
     } catch (error) {
       worker.status = signal.aborted ? "interrupted" : "failed";
-      worker.detail = error instanceof Error ? error.message : String(error);
+      const cause = signal.aborted ? signal.reason ?? error : error;
+      worker.detail = cause instanceof Error ? cause.message : String(cause);
       worker.attention = undefined; worker.finishedAt = worker.updatedAt = new Date().toISOString();
       await this.changed(`${role}: ${worker.detail}`, worker.id);
       throw error;
@@ -280,13 +373,26 @@ export class Controller {
     const s = this.state, mission = s.mission!;
     while (mission.status === "running") {
       signal.throwIfAborted();
+      if (mission.pauseRequested && mission.objectives.some(item => !["done", "skipped"].includes(item.status))) {
+        mission.pauseRequested = false; mission.status = "paused"; mission.pauseCause = "user";
+        mission.reason = "Current objective finished. Paused at an objective boundary; safe to update or steer, then resume.";
+        await this.changed("Mission paused at an objective boundary"); return;
+      }
       const item = mission.objectives.find(o => !["done", "skipped"].includes(o.status));
-      if (!item) { mission.status = "done"; mission.finishedAt = new Date().toISOString(); await this.changed("Mission completed"); return; }
+      if (!item) {
+        const review = mission.objectives.findLast(objective => objective.profile === "review" && objective.status === "done");
+        if (review?.snapshot && review.snapshot !== await snapshot(this.directory, mission.base) && s.allowChecksReview) {
+          this.appendValidation("Workspace changed after review");
+          await this.changed("Reviewed snapshot changed; fresh validation required"); continue;
+        }
+        mission.pauseRequested = false;
+        mission.completedSnapshot = await snapshot(this.directory, mission.base);
+        mission.status = "done"; mission.finishedAt = new Date().toISOString(); await this.changed("Mission completed"); return;
+      }
       if (item.attempts >= s.maxAttempts) throw new Error(`Attempt budget reached for ${item.title}; edit the objective or add a follow-up`);
       if (!item.dependencies.every(dep => mission.objectives.some(o => o.id === dep && ["done", "skipped"].includes(o.status))))
         throw new Error("Objective dependencies are incomplete");
       const before = await snapshot(this.directory, mission.base);
-      if (item.profile === "review" && item.snapshot && item.snapshot !== before) item.result = undefined;
       item.status = "running";
       await this.changed(`Objective started: ${item.title}`);
       const report = await changes(this.directory, mission.base);
@@ -294,7 +400,7 @@ export class Controller {
       const support = s.workers.filter(w => w.role === "helper" && w.status === "done" && mission.objectives.some(o => o.id === w.objectiveID))
         .map(w => `Helper support (verify against current files): ${clip(w.result ?? "", 6000)}`);
       const context = [...completed, ...support].join("\n\n");
-      const prompt = `Mission: ${mission.task}\nObjective: ${item.title}\nCompletion criteria: ${item.criteria}\nPermission profile: ${item.profile}\nPrevious results:\n${context}\nPrevious attempt:\n${item.result ?? "none"}\nWorkspace:\n${report}\n${item.profile === "review" ? "Return approve or changes, with concrete findings. Approval applies only to the supplied workspace snapshot." : item.profile === "check" ? "Return done only when the required checks pass; return changes for failing checks with evidence, or blocked for an unavailable tool or environment." : "Complete this objective and report done or blocked honestly."}`;
+      const prompt = `Mission: ${mission.task}\nOwner's later instructions (apply to remaining work, preserving completed history):\n${(mission.instructions ?? []).map(instruction => `${instruction.at}: ${instruction.text}`).join("\n") || "none"}\nObjective: ${item.title}\nCompletion criteria: ${item.criteria}\nReport evidence for each criterion separately: ${JSON.stringify(criteriaList(item.criteria))}. Include an evidence array with criterion (exact text), status (met, unmet or unverified), and detail (actual files, commands/results or limitations). Never invent evidence.\nPermission profile: ${item.profile}\nPrevious results:\n${context}\nPrevious attempt:\n${item.result ?? "none"}\nWorkspace:\n${report}\n${item.profile === "review" ? "Return approve or changes, with concrete findings. Approval applies only to the supplied workspace snapshot." : item.profile === "check" ? "Return done only when the required checks pass; return changes for failing checks with evidence, or blocked for an unavailable tool or environment." : "Complete this objective and report done or blocked honestly."}`;
       const helper = s.helper && item.profile === "research"
         ? this.worker("helper", s.assignments.helper, "research", `Read-only support: locate relevant files for this task. Return a concise map with file paths. Do not implement or review.\n${mission.task}`, AbortSignal.any([signal, AbortSignal.timeout(120000)]), item.id).catch(async error => {
           await this.changed(`Optional Helper unavailable: ${error.message ?? error}`); return undefined;
@@ -304,19 +410,28 @@ export class Controller {
         result = await this.worker(readOnly(item.profile) ? "expert" : "worker", item.assignment, item.profile, prompt, signal, item.id);
       } finally { await helper; }
       signal.throwIfAborted();
+      if (!["done", "blocked", "approve", "changes"].includes(result.status) || typeof result.summary !== "string" || !result.summary.trim()) throw new Error("Worker returned an invalid result");
+      if (item.profile === "check" && result.status === "approve") throw new Error("Only a review objective can approve changes");
       if ((item.profile === "research" || item.profile === "implement") && !["done", "blocked"].includes(result.status)) throw new Error("Worker returned a result incompatible with its permission profile");
       const after = await snapshot(this.directory, mission.base);
       if (readOnly(item.profile) && before !== after) throw new Error("Read-only workspace changed; result invalidated");
       item.attempts++;
       item.result = result.summary;
+      item.evidence = criterionEvidence(item.criteria, result.evidence); item.evidenceAt = new Date().toISOString();
+      if (["done", "approve"].includes(result.status) && (item.evidence.some(entry => entry.status === "unmet") ||
+          s.requireEvidence && item.evidence.some(entry => entry.status !== "met"))) {
+        item.status = "blocked"; mission.pauseCause = "blocked";
+        throw new Error("Completion criteria lack sufficient reported evidence. Inspect the objective's evidence before retrying.");
+      }
       if (s.wingman.pending && result.status === "blocked") {
         const question = s.wingman.pending; s.wingman.pending = undefined;
         item.result += `\nExpert advice:\n${await this.expert(question, report, signal)}`;
         item.status = "pending";
         continue;
       }
-      if (result.status === "blocked") { item.status = "blocked"; throw new Error(`Objective blocked: ${result.summary}`); }
+      if (result.status === "blocked") { item.status = "blocked"; mission.pauseCause = "blocked"; throw new Error(`Objective blocked: ${result.summary}`); }
       if (item.profile === "check" && result.status === "changes") {
+        if (item.attempts >= s.maxAttempts) throw new Error(`Attempt budget reached for ${item.title}; inspect the findings before retrying`);
         const fix = objective(`Fix failed checks for ${item.title}`, "implement", s.assignments.worker, result.summary);
         const index = mission.objectives.indexOf(item);
         fix.dependencies = [...item.dependencies]; item.dependencies = [fix.id];
@@ -328,26 +443,43 @@ export class Controller {
       if (item.profile === "review" && result.status !== "approve") {
         if (result.status !== "changes") throw new Error("Reviewer did not give an explicit verdict");
         const fingerprint = createHash("sha256").update(result.summary.toLowerCase().replace(/\s+/g, " ")).digest("hex");
-        if (item.snapshot === fingerprint) throw new Error("The same review findings returned after a fix");
-        item.snapshot = fingerprint;
+        if (item.findingsFingerprint === fingerprint) throw new Error("The same review findings returned after a fix");
+        if (item.attempts >= s.maxAttempts) throw new Error(`Attempt budget reached for ${item.title}; inspect the findings before retrying`);
+        item.findingsFingerprint = fingerprint;
         const fix = objective(`Fix findings from ${item.title}`, "implement", s.assignments.worker, result.summary);
         const index = mission.objectives.indexOf(item);
         fix.dependencies = [...item.dependencies]; item.dependencies = [fix.id];
-        mission.objectives.splice(index, 0, fix); item.status = "pending";
-        await this.changed("Review requested changes; inserted a fix objective"); continue;
+        const previousCheck = mission.objectives.findLast(objective => objective.profile === "check");
+        if (previousCheck) {
+          const check = objective("Recheck after review fixes", "check", s.assignments.worker, previousCheck.criteria);
+          check.dependencies = [fix.id]; item.dependencies = [check.id];
+          mission.objectives.splice(index, 0, fix, check);
+        } else mission.objectives.splice(index, 0, fix);
+        item.status = "pending";
+        await this.changed("Review requested changes; inserted fix and any required recheck"); continue;
       }
       item.status = "done"; item.snapshot = after;
       if (!readOnly(item.profile) && before !== after && s.allowChecksReview) {
         const earlierReview = mission.objectives.some(o => o.profile === "review" && o.status === "done");
         const pendingReview = mission.objectives.some(o => o.profile === "review" && o.status === "pending");
         if (earlierReview && !pendingReview) {
-          const review = objective("Review follow-up changes", "review", s.assignments.expert, "Approve the current snapshot or list concrete findings");
-          review.dependencies = [mission.objectives.at(-1)!.id]; mission.objectives.push(review);
+          this.appendValidation("Follow-up changes");
           await this.changed("Code changed after approval; added a fresh review");
         }
       }
       await this.changed(`Objective completed: ${item.title}`);
     }
+  }
+  private appendValidation(reason: string) {
+    const s = this.state, mission = s.mission!;
+    const check = mission.objectives.findLast(item => item.profile === "check");
+    let dependency = mission.objectives.at(-1)!.id;
+    if (check) {
+      const fresh = objective(`${reason}: check`, "check", s.assignments.worker, check.criteria);
+      fresh.dependencies = [dependency]; mission.objectives.push(fresh); dependency = fresh.id;
+    }
+    const review = objective(`${reason}: review`, "review", s.assignments.expert, "Approve the current snapshot or list concrete findings");
+    review.dependencies = [dependency]; mission.objectives.push(review);
   }
   requestExpert(question: string) {
     if (!this.state || (!this.state.wingman.enabled && !this.loop)) throw new Error("Wingman is off");
@@ -399,10 +531,18 @@ export class Controller {
     if (this.consulting && owner === this.consultationOwner) { this.active?.abort(new Error("New user input superseded expert consultation")); await this.consultDone; }
   }
   async close() {
-    this.closed = true; this.active?.abort(new Error("Plugin unloaded"));
+    this.closed = true;
+    if (this.state?.mission?.status === "running") {
+      this.state.mission.status = "paused"; this.state.mission.pauseCause = "update";
+      this.state.mission.pauseRequested = false;
+      this.state.mission.reason = "OpenCode reloaded the Mission plugin during work. Completed results and file changes are retained; resume explicitly.";
+      await this.changed("Plugin update paused the mission; retained changes require explicit resume");
+    }
+    if (this.state) this.state.wingman.pending = undefined;
+    this.active?.abort(new Error("Paused for Mission plugin update; file changes retained"));
     await this.loop;
     await this.consultDone;
-    if (this.state?.mission?.status === "running") this.state.mission.status = "paused";
+    for (const item of this.state?.mission?.objectives ?? []) if (item.status === "running") item.status = "pending";
     await this.save();
   }
 }

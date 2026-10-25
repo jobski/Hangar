@@ -2,20 +2,25 @@ import { clip, type State } from "./model.ts";
 import { assignmentName } from "./progress.ts";
 
 export function missionReport(state?: State): string | undefined {
-  const mission = state?.mission;
+  const archived = state?.archives?.at(-1);
+  const mission = state?.mission ?? archived?.mission;
+  const workers = state?.mission ? state.workers : archived?.workers ?? [];
   if (!mission) return undefined;
   const objectives = mission.objectives.slice(-16).map(item => ({
     title: clip(item.title, 300), profile: item.profile, status: item.status,
     assignment: assignmentName(item), attempts: item.attempts,
+    criteria: clip(item.criteria, 2000), evidence: item.evidence,
     result: item.result ? clip(item.result, item.profile === "research" ? 1500 : 4500) : undefined,
-    workerSessions: state!.workers.filter(worker => worker.objectiveID === item.id)
+    workerSessions: workers.filter(worker => worker.objectiveID === item.id)
       .slice(-3).map(worker => ({ sessionID: worker.sessionID, status: worker.status })),
   }));
   const journal = {
     source: "Hangar Mission controller journal", directory: state!.directory,
     controllingSession: state!.owner, missionID: mission.id, task: clip(mission.task, 3000),
+    instructions: mission.instructions?.map(instruction => ({ at: instruction.at, text: clip(instruction.text, 2000) })),
     status: mission.status, startedAt: mission.startedAt, finishedAt: mission.finishedAt,
     reason: mission.reason ? clip(mission.reason, 1500) : undefined,
+    snapshotComparison: state?.snapshotChecks?.[mission.id],
     objectiveCounts: { total: mission.objectives.length, completed: mission.objectives.filter(item => item.status === "done").length,
       skipped: mission.objectives.filter(item => item.status === "skipped").length },
     earlierObjectivesOmitted: Math.max(0, mission.objectives.length - objectives.length), objectives,

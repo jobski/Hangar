@@ -39,12 +39,12 @@ export function missionProgress(state?: State, now = Date.now()) {
   const age = worker?.updatedAt ? now - Date.parse(worker.updatedAt) : undefined;
   const heading = worker?.attention && mission.status === "running" ? "Needs your input"
     : ({ ready: "Ready to start", running: "Running", paused: "Paused", done: "Completed", cancelled: "Cancelled" })[mission.status];
-  const detail = mission.reason || (mission.status === "running"
+  const detail = (mission.pauseRequested ? "Pause scheduled after the current objective · " : "") + (mission.reason || (mission.status === "running"
     ? `${current?.title ?? "Preparing next objective"} · ${worker ? assignmentName(worker) : current ? assignmentName(current) : "preparing"} · ${worker?.detail ?? "Preparing worker"}`
     : mission.status === "done" ? mission.objectives.findLast(o => o.status === "done")?.result ?? "All objectives completed"
     : mission.status === "cancelled" ? "Execution stopped. Existing changes are retained."
     : mission.status === "ready" ? "Inspect the objectives, then start the mission."
-    : "Resume when ready, or edit the remaining objectives.");
+    : "Resume when ready, or edit the remaining objectives."));
   return { mission, current, worker, heading, detail, elapsed, done, skipped, total,
     count: `${done}/${total} objectives complete${skipped ? ` · ${skipped} skipped` : ""}`,
     freshness: age === undefined ? "Waiting for the first worker event" : `${duration(age)} since last worker event`,
@@ -62,4 +62,19 @@ export function toolActivity(tool: string, input: unknown) {
     shell: "Running a command", question: "Preparing a question", diff: "Inspecting workspace changes",
     result: "Recording completion result", ask_expert: "Requesting expert advice" };
   return `${action[name] ?? `Using ${name}`}${typeof target === "string" ? ` · ${target.slice(0, 140)}` : ""}`;
+}
+
+export function nextMissionAction(state?: State): { label: string; action: "watch" | "settings" | "objectives" | "resume" | "steer" } | undefined {
+  const mission = state?.mission, worker = primaryWorker(state);
+  if (!mission) return;
+  if (worker?.attention && mission.status === "running") return { label: worker.attention === "permission" ? "Approve the edit / command in worker" : "Answer the worker's question", action: "watch" };
+  if (mission.status === "ready") return { label: "Inspect objectives and start", action: "objectives" };
+  if (mission.status !== "paused") return;
+  const reason = mission.reason ?? "";
+  if (/evidence|criteria/i.test(reason)) return { label: "Inspect completion criteria and evidence", action: "objectives" };
+  if (/attempt budget|dependencies/i.test(reason)) return { label: "Edit the blocked objective or its limits", action: "objectives" };
+  if (/same review findings|repeated findings/i.test(reason)) return { label: "Give new instructions for the repeated findings", action: "steer" };
+  if (/model|fallback|loading|warm|provider|quota|authentication|login|context.*(?:limit|size)|token/i.test(reason)) return { label: "Check model assignment and limits", action: "settings" };
+  if (/blocked|unavailable tool|environment|no explicit|read-only workspace|permission|denied|verdict/i.test(reason)) return { label: "Inspect worker evidence before resuming", action: "watch" };
+  return { label: mission.pauseCause === "update" || mission.pauseCause === "recovery" ? "Inspect retained work, then resume" : "Resume when ready", action: "resume" };
 }

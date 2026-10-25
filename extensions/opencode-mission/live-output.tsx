@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode/plugin/tui";
 import { useTerminalDimensions } from "@opentui/solid";
 import { createMemo, createSignal, onCleanup, Show } from "solid-js";
 import type { State } from "./model.ts";
-import { duration, missionProgress, primaryWorker } from "./progress.ts";
+import { duration, missionProgress, nextMissionAction, primaryWorker } from "./progress.ts";
 
 export type OutputMode = "compact" | "verbose" | "hidden";
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -20,7 +20,7 @@ export function displayOutput(text: string): string {
 export function LiveOutput(props: {
   context: Plugin.Context; state: () => State | undefined; now: () => number;
   mode: () => OutputMode; setMode: (mode: OutputMode) => void;
-  watch: () => void; activity: () => void; toggle: () => void;
+  watch: () => void; activity: () => void; report: () => void; attention: () => void; toggle: () => void;
 }) {
   const context = props.context, theme = context.theme, dimensions = useTerminalDimensions();
   const view = () => missionProgress(props.state(), props.now());
@@ -114,11 +114,14 @@ export function LiveOutput(props: {
       <text fg={theme.text.muted} onMouseUp={() => props.setMode("hidden")}>[{props.mode() === "hidden" ? "● " : ""}Hide]</text>
       <text fg={theme.text.base} onMouseUp={props.watch}>[Open worker]</text>
       <text fg={theme.text.base} onMouseUp={props.activity}>[Activity]</text>
+      <text fg={theme.text.base} onMouseUp={props.report}>[Report]</text>
       <Show when={!["done", "cancelled"].includes(progress().mission.status)}>
         <text fg={theme.text.base} onMouseUp={props.toggle}>[{progress().mission.status === "running" ? "Pause" : "Resume"}]</text>
       </Show>
     </box>
+    <Show when={nextMissionAction(props.state())}>{next => <text fg={theme.text.base} onMouseUp={props.attention}>[{next().label}]</text>}</Show>
     <Show when={props.mode() !== "hidden"}>
+      <Show when={progress().mission.status === "done"}><text fg={theme.text.base}>Mission finished · results, checks and outstanding items: [Report]</text></Show>
       <text fg={worker()?.attention || progress().mission.status === "paused" ? theme.text.feedback.warning.base : theme.text.base}>{progress().detail.slice(0, 240)}</text>
       <text fg={theme.text.muted}>{progress().freshness}{progress().quiet ? " · No new worker events; inspect the worker if needed" : ""}{capture().sessionID === worker()?.sessionID && capture().updatedAt ? ` · command output ${duration(props.now() - capture().updatedAt)} ago` : ""}</text>
       <Show when={props.mode() === "verbose"} fallback={<box height={3} overflow="hidden"><text fg={theme.text.muted}>{compactText()}</text></box>}>
