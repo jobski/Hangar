@@ -10,6 +10,17 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.9.2 — 2026-10-25
+
+- Add live Mission output above the composer with remembered Compact, Verbose and Hidden modes, scrollable
+  worker/tool output, captured command output, activity indicators and explicit freshness/wait states.
+- Separate active workers from collapsed historical attempts in the sidebar. Keep interruption reasons and
+  native sessions accessible through the full worker-history picker.
+- Recover idle mission controllers left in earlier chats and report actionable RPC errors instead of generic
+  failures. Preserve ownership while unfinished missions or Wingman consultations are active.
+- Automatically initialise Git on main when creating or starting a mission in a plain folder, including resume.
+  Preserve existing repositories and worktrees; do not create an initial commit.
+
 ## 0.9.1 — 2026-10-25
 
 - Make OpenCode mission setup discoverable in slash completion with help, settings and add-objective shortcuts,

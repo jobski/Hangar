@@ -289,25 +289,29 @@ export default Plugin.define({
       }
     });
 
-    const registration = await ctx.rpc.register(missionRPC, { action: async raw => {
-      const input = raw as { sessionID: string; action: string; payload: string };
-      const session = await ctx.session.get({ sessionID: input.sessionID as SessionID });
-      if (await realpath(session.location.directory) !== await realpath(directory)) throw new Error("Session belongs to another workspace");
-      if (managed.has(input.sessionID)) throw new Error("Control missions from the parent session");
-      const payload = JSON.parse(input.payload);
-      if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid action payload");
-      const state = await controller.action(input.sessionID, input.action, payload);
-      if ((input.action === "wingman" && payload.enabled) || input.action === "assign" && payload.role === "worker" && state.wingman.enabled) {
-        const assignment = state.assignments.worker;
-        if (assignment.executor !== "opencode") { state.wingman.enabled = false; throw new Error("Wingman's main worker must use opencode; external agents can be experts or objective executors"); }
-        await ctx.session.switchModel({ sessionID: input.sessionID as SessionID, model: modelRef(assignment.model)! });
-        if (!mainWorker || mainWorker.status === "done") {
-          mainWorker = { id: id(), sessionID: input.sessionID, role: "worker", assignment: { ...assignment }, status: "waiting", detail: "Interactive worker ready" };
-          state.workers.push(mainWorker);
+    const registration = await ctx.rpc.register(missionRPC, { action: async (raw, call) => {
+      try {
+        const input = raw as { sessionID: string; action: string; payload: string };
+        const session = await ctx.session.get({ sessionID: input.sessionID as SessionID });
+        if (await realpath(session.location.directory) !== await realpath(directory)) throw new Error("Session belongs to another workspace");
+        if (managed.has(input.sessionID)) throw new Error("Control missions from the parent session");
+        const payload = JSON.parse(input.payload);
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid action payload");
+        const state = await controller.action(input.sessionID, input.action, payload);
+        if ((input.action === "wingman" && payload.enabled) || input.action === "assign" && payload.role === "worker" && state.wingman.enabled) {
+          const assignment = state.assignments.worker;
+          if (assignment.executor !== "opencode") { state.wingman.enabled = false; throw new Error("Wingman's main worker must use opencode; external agents can be experts or objective executors"); }
+          await ctx.session.switchModel({ sessionID: input.sessionID as SessionID, model: modelRef(assignment.model)! });
+          if (!mainWorker || mainWorker.status === "done") {
+            mainWorker = { id: id(), sessionID: input.sessionID, role: "worker", assignment: { ...assignment }, status: "waiting", detail: "Interactive worker ready" };
+            state.workers.push(mainWorker);
+          }
+          await controller.save();
         }
-        await controller.save();
+        return { json: JSON.stringify(state) };
+      } catch (error) {
+        return call.error("mission.action", error instanceof Error ? error.message : String(error), {});
       }
-      return { json: JSON.stringify(state) };
     } });
     const eventLoop = (async () => {
       for await (const event of ctx.event.subscribe({ signal: lifetime.signal })) {

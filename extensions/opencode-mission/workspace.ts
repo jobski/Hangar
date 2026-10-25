@@ -20,6 +20,26 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout;
 }
 
+async function isRepository(cwd: string): Promise<boolean> {
+  try {
+    return (await git(cwd, ['rev-parse', '--is-inside-work-tree'])).trim() === 'true';
+  } catch (error) {
+    if (/not a git repository/i.test(String((error as { stderr?: string }).stderr ?? error))) return false;
+    throw error;
+  }
+}
+
+export async function initialiseRepository(cwd: string): Promise<void> {
+  if (await isRepository(cwd)) return;
+  await git(cwd, ['init', '-b', 'main']);
+  if (!await isRepository(cwd)) throw new Error(`Could not initialise a Git repository in ${cwd}`);
+}
+
+async function requireRepository(cwd: string): Promise<void> {
+  if (!await isRepository(cwd))
+    throw new Error(`Mission needs a Git repository to snapshot changes and validate reviews. This folder has no repository: ${cwd}. Start or resume a mission to initialise Git automatically. No commit is required.`);
+}
+
 async function soft(cwd: string, args: string[]): Promise<string> {
   try {
     return await git(cwd, args);
@@ -90,6 +110,7 @@ function diffCmds(base: string): string[][] {
 }
 
 export async function workspacePolicy(cwd: string): Promise<{ paperCut: boolean }> {
+  if (!await isRepository(cwd)) return { paperCut: false };
   const fromConfig = (await soft(cwd, ['config', '--get', 'user.email'])).trim();
   const fromVar = ((await soft(cwd, ['var', 'GIT_COMMITTER_IDENT'])).match(/<([^<>]*)>/)?.[1] ?? '').trim();
   const email = (fromConfig || fromVar).toLowerCase();
@@ -99,6 +120,7 @@ export async function workspacePolicy(cwd: string): Promise<{ paperCut: boolean 
 }
 
 export async function head(cwd: string): Promise<string> {
+  await requireRepository(cwd);
   try {
     return (await git(cwd, ['rev-parse', '--verify', 'HEAD'])).trim() || 'none';
   } catch {
@@ -107,6 +129,7 @@ export async function head(cwd: string): Promise<string> {
 }
 
 export async function snapshot(cwd: string, base: string): Promise<string> {
+  await requireRepository(cwd);
   const status = await git(cwd, ['status', '--porcelain', '--untracked-files=all']);
   const diffs = [];
   for (const args of diffCmds(base)) diffs.push([args.join(' '), await git(cwd, args)] as const);
@@ -142,6 +165,7 @@ export async function snapshot(cwd: string, base: string): Promise<string> {
 
 export async function changes(cwd: string, base: string, limit = 60_000): Promise<string> {
   if (!Number.isFinite(limit) || limit <= 0) throw new Error(`limit must be a positive integer, got ${limit}`);
+  await requireRepository(cwd);
   const out: string[] = [];
   let used = 0;
   let omitted = 0;

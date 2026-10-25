@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { canonicalModel, clip, id, initial, note, objective, readOnly, template, validateAssignment, validateObjectives,
   type Assignment, type Objective, type Profile, type Role, type State, type Worker } from "./model.ts";
-import { changes, head, snapshot, workspacePolicy } from "./workspace.ts";
+import { changes, head, initialiseRepository, snapshot, workspacePolicy } from "./workspace.ts";
 
 export interface Result { status: "done" | "blocked" | "approve" | "changes"; summary: string }
 export interface Runtime {
@@ -63,7 +63,19 @@ export class Controller {
   }
   async ensure(owner: string) {
     if (!this.state) this.state = initial(owner, this.directory, (await workspacePolicy(this.directory)).paperCut);
-    if (this.state.owner !== owner) throw new Error("This workspace already has a mission controller in another session");
+    if (this.state.owner !== owner) {
+      if (this.loop || this.consulting || this.state.wingman.enabled ||
+          this.state.mission && !["done", "cancelled"].includes(this.state.mission.status))
+        throw new Error("This mission is controlled from another chat. Use Open mission's controlling session in the sidebar to manage it.");
+      const release = lease(this.directory);
+      try {
+        if (!await this.runtime.idle(this.state.owner) || !await this.runtime.idle(owner))
+          throw new Error("Wait for both chats to finish before moving mission control to this chat.");
+        this.state.owner = owner;
+        note(this.state, "Mission control moved to the current chat; earlier results retained");
+        await this.save();
+      } finally { release(); }
+    }
     return this.state;
   }
   async save() { if (this.state) await this.runtime.save(structuredClone(this.state)); }
@@ -105,6 +117,7 @@ export class Controller {
       if (s.mission && !["done", "cancelled"].includes(s.mission.status)) throw new Error("Finish or cancel the existing mission first");
       const task = String(payload.task ?? "").trim();
       if (!task) throw new Error("Describe the mission");
+      await initialiseRepository(this.directory);
       s.mission = template(s, task, await head(this.directory));
       s.wingman.consultations = 0; s.wingman.failures = {}; s.wingman.pending = undefined;
       s.wingman.enabled = false;
@@ -186,6 +199,7 @@ export class Controller {
       if (s.wingman.enabled) throw new Error("Disable Wingman before starting a mission");
       if (!await this.runtime.idle(s.owner)) throw new Error("Wait for the main conversation to become idle");
       validateObjectives(s);
+      await initialiseRepository(this.directory);
       for (const item of s.mission.objectives) if (item.status === "blocked") item.status = "pending";
       const release = lease(this.directory);
       s.mission.status = "running";

@@ -5,6 +5,7 @@ export const missionRPC = {
     action: {
       input: { type: "object", properties: { sessionID: { type: "string" }, action: { type: "string" }, payload: { type: "string" } }, required: ["sessionID", "action", "payload"], additionalProperties: false },
       output: { type: "object", properties: { json: { type: "string" } }, required: ["json"], additionalProperties: false },
+      errors: { "mission.action": { type: "object", properties: {}, additionalProperties: false } },
     },
   },
   events: {},
