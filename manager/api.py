@@ -372,7 +372,7 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
                 entries.append({"profile": f"role-{r['name']}", "engine": "hangar", "provider": "hangar",
                                 "provider_name": "Hangar roles", "base": f"http://{host}:{port}", "api_key": token,
                                 "model": r["name"], "name": served["name"], "context": served["context"],
-                                "output": served["output"], "vision": False, "reasoning": served["reasoning"],
+                                "output": served["output"], "vision": served["vision"], "reasoning": served["reasoning"],
                                 "env_key": "HANGAR_TOKEN"})
         snip = clients.MODEL_CLIENTS[client](entries, env)
         mapping = mgr._settings().get("switching_roles") or {}
@@ -550,6 +550,18 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         engine = mgr.engines.get(profile.engine) if profile else None
         return engine.plugin if engine else None
 
+    def target_vision(target) -> bool:
+        """Whether the model behind a target takes image input. A local profile answers from its own config, so a
+        stopped one still answers; a peer answers from the vision tag its running engine publishes (core.status)."""
+        if not target:
+            return False
+        if not target["machine"]:
+            profile = mgr.profiles.get(target["profile"])
+            return mgr._vision(profile.engine, target["profile"]) if profile else False
+        status = (peers.state.get(target["machine"]) or {}).get("status") or {}
+        return any(e.get("running", {}).get("profile") == target["profile"] and e["running"].get("vision")
+                   for e in status.get("engines", []))
+
     def role_served(r: dict) -> dict:
         """What a role's requests reach right now (from roles.public()), named so a client shows the real model."""
         s, ctx = r["serving"], roles.context(r["name"])
@@ -563,7 +575,9 @@ def create_app(mgr: Manager | None = None, *, peers: Peers | None = None, roles:
         else:
             name = f"{r['name']} → {s['profile']} on {served_by.split('/', 1)[0]}" + (" (fallback)" if r["fallback"] else "")
         return {"name": name, "served_by": served_by, "context": ctx, "output": min(16384, max(1024, ctx // 4)),
-                "reasoning": bool(s) and target_engine(s) in ("strata", "maya")}
+                # capability follows the model the role is set to, not a text-only fallback answering in its place
+                "reasoning": bool(s) and target_engine(s) in ("strata", "maya"),
+                "vision": target_vision((r["targets"] or [None])[0] or s)}
 
     def stopping_reply(model: str) -> JSONResponse:
         """A target finishing its reply before a switch stops it: a hub must retry, not route around the drain."""

@@ -10,6 +10,14 @@ Hangar uses semantic versioning (`MAJOR.MINOR.PATCH`). The release number lives 
 Each machine reports its running release and Git revision separately, so two builds of the same release
 can still be distinguished. Engine binary versions have their own release numbering.
 
+## 0.8.1 — 2026-10-25
+
+- Stop telling every client that roles are text-only. The copy-paste client configs (`/api/connect/models`) hardcoded
+  `vision: false` for every role, so a client such as opencode refused attachments on a role whose model reads images.
+  A role now carries the capability of the model it is set to — this machine's profile (`mmproj`, or the engine's
+  `has_vision`) or the vision tag a peer's running engine publishes — and not the capability of the stand-in that
+  answers while its own model is down: a client needs the truth before offering a photo the model cannot judge.
+
 ## 0.8.0 — 2026-10-23
 
 - Add `/cycle` for omp (`extensions/omp-cycle/`): plan, code, review and fix a task until a fresh review approves it,
