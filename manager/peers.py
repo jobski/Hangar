@@ -569,7 +569,9 @@ def summary(st: dict) -> dict:
             "ram_total_mib": r.get("ram_total_mib") or 0,
             "cpu_percent": r.get("cpu_percent"), "cpu_count": r.get("cpu_count"),
             "gpu": gpus[0]["name"] if gpus else None, "gpu_count": len(gpus), "job": (st.get("job") or {}).get("title"),
-            "gpu_list": [{"name": g.get("name"), "vram_used_mib": g.get("vram_used_mib") or 0, "vram_total_mib":
+            "gpu_list": [{"name": g.get("display_name") or g.get("name"),
+                          "brand": g.get("brand"), "model": g.get("model") or g.get("name"),
+                          "vram_used_mib": g.get("vram_used_mib") or 0, "vram_total_mib":
                           g.get("vram_total_mib") or 0, "util_percent": best(g), "kernel_percent": g.get("util_percent") if g.get("load_percent") is not None else None,
                           "vram_free_mib": g.get("vram_free_mib"), "temp_c": g.get("temp_c"),
                           "power_w": g.get("power_w"), "power_limit_w": g.get("power_limit_w"),

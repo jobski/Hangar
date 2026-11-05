@@ -79,7 +79,9 @@ def telemetry() -> dict[int, dict]:
                 sample = c.get("sample")
                 idx = ident.get("index")
                 if isinstance(idx, int) and isinstance(sample, dict):
-                    cards[idx] = {**sample, "pci_bus_id": ident.get("bus_id")}
+                    cards[idx] = {**sample, "pci_bus_id": ident.get("bus_id"),
+                                  "brand": ident.get("brand"), "model": ident.get("model"),
+                                  "display_name": ident.get("display_name")}
             # an answer without our shape (some other app on the port) is not a sidecar
             _state["ok"] = bool(cards)
             _state["cards"] = cards
@@ -116,6 +118,12 @@ def merge(gpus: list[dict]) -> list[dict]:
         if not s:
             continue
         g["load_percent"] = s.get("load_pct")
+        for field in ("brand", "model", "display_name"):
+            if s.get(field):
+                g[field] = s[field]
+        if s.get("display_name"):
+            # Older hubs render only name; retain the canonical NVIDIA model in model.
+            g["name"] = s["display_name"]
         g["kernel_percent"] = s.get("kernel_pct")
         g["power_limit_w"] = s.get("limit_w")
         g["throttling"] = [w for w in (s.get("throttle") or []) if w in _CONCERNING]

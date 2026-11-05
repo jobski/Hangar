@@ -38,6 +38,13 @@ class GpumonitorMergeTest(unittest.TestCase):
         self.assertNotIn("load_percent", out[0])
         self.assertNotIn("power_limit_w", out[0])
 
+    def test_brand_and_model_survive_status_and_older_hub_rendering(self):
+        out = self.merge({0: {"load_pct": 50, "brand": "MSI", "model": "NVIDIA GeForce RTX 3090",
+                             "display_name": "MSI RTX 3090"}}, [{"index": 0, "name": "NVIDIA GeForce RTX 3090"}])
+        self.assertEqual(out[0]["name"], "MSI RTX 3090")
+        self.assertEqual(out[0]["brand"], "MSI")
+        self.assertEqual(out[0]["model"], "NVIDIA GeForce RTX 3090")
+
 
 class LinuxTelemetryTest(unittest.TestCase):
     def telemetry(self, handler, snapshot=None):
