@@ -1,13 +1,13 @@
-"""Optional GPUMonitor sidecar (Windows only): honest NVIDIA load, merged by NVML index.
+"""Optional GPUMonitor sidecar on Windows or Linux, matched by PCI bus when available.
 
 GPUMonitor (a separate app on the GPU box) reads power, the enforced power limit and the
 kernel-time percentage straight from NVML. Hangar's own `nvidia-smi` path reports kernel time
 as "utilization", which reads ~0 % for pure CUDA work and hides how hard a card actually works.
 When the sidecar is up, its `load = power / limit` replaces that on the dashboard; otherwise this
 is a no-op and nothing changes. Read-only: power-limit control and the deep per-card history stay
-in GPUMonitor's own UI, where the UAC prompts and charts belong.
+in GPUMonitor's own UI, where confirmations and charts belong.
 
-The probe runs only on win32, so the hub and the Mac never touch it. A missing or down sidecar is
+The probe runs on Windows and Linux when configured. A missing or down sidecar is
 simply absent (60 s backoff before re-probing), never an error the user has to see.
 """
 from __future__ import annotations
@@ -33,9 +33,17 @@ _base_url = ""
 
 
 def configure(base_url: str):
-    """Set the sidecar address once at startup ("" disables it, e.g. off Windows)."""
-    global _base_url
-    _base_url = (base_url or "").rstrip("/")
+    """Set the sidecar address; an empty string disables it."""
+    global _base_url, _http
+    with _lock:
+        base_url = (base_url or "").rstrip("/")
+        if base_url == _base_url:
+            return
+        if _http is not None:
+            _http.close()
+            _http = None
+        _base_url = base_url
+        _state.update(probed=0.0, ok=False, fetched=0.0, cards={})
 
 
 def _client() -> httpx.Client:
@@ -46,27 +54,32 @@ def _client() -> httpx.Client:
 
 
 def telemetry() -> dict[int, dict]:
-    """Latest sidecar samples keyed by NVML index; {} off Windows or when it is unavailable."""
-    if sys.platform != "win32" or not _base_url:
+    """Latest sidecar samples keyed by NVML index; {} when disabled or unavailable."""
+    if (sys.platform != "win32" and not sys.platform.startswith("linux")) or not _base_url:
         return {}
     with _lock:
         now = time.monotonic()
-        if now - _state["fetched"] < TELEMETRY_TTL:
+        if _state["fetched"] and now - _state["fetched"] < TELEMETRY_TTL:
             return dict(_state["cards"])
         _state["fetched"] = now
         try:
             if not _state["ok"]:
-                if now - _state["probed"] < RETRY_S:
+                if _state["probed"] and now - _state["probed"] < RETRY_S:
                     return {}
                 _state["probed"] = now
-            snap = _client().get("/api/snapshot").json()
+            response = _client().get("/api/snapshot")
+            response.raise_for_status()
+            snap = response.json()
+            age = snap.get("sample_age_ms")
+            if isinstance(age, (int, float)) and age > max(15000, 3 * (snap.get("interval_ms") or 250)):
+                raise ValueError("sidecar samples are stale")
             cards = {}
             for c in snap.get("cards", []):
                 ident = c.get("identity") or {}
                 sample = c.get("sample")
                 idx = ident.get("index")
                 if isinstance(idx, int) and isinstance(sample, dict):
-                    cards[idx] = sample
+                    cards[idx] = {**sample, "pci_bus_id": ident.get("bus_id")}
             # an answer without our shape (some other app on the port) is not a sidecar
             _state["ok"] = bool(cards)
             _state["cards"] = cards
@@ -75,6 +88,13 @@ def telemetry() -> dict[int, dict]:
             _state["cards"] = {}
             return {}
         return dict(_state["cards"])
+
+
+def _bus(value):
+    parts = str(value or "").lower().split(":")
+    if len(parts) == 3:
+        return parts[0].lstrip("0") + ":" + ":".join(parts[1:])
+    return ""
 
 
 def merge(gpus: list[dict]) -> list[dict]:
@@ -88,6 +108,11 @@ def merge(gpus: list[dict]) -> list[dict]:
         return gpus
     for g in gpus:
         s = tele.get(g.get("index"))
+        bus = _bus(g.get("pci_bus_id"))
+        if bus and s and _bus(s.get("pci_bus_id")) and _bus(s.get("pci_bus_id")) != bus:
+            s = None
+        if bus:
+            s = next((sample for sample in tele.values() if _bus(sample.get("pci_bus_id")) == bus), s)
         if not s:
             continue
         g["load_percent"] = s.get("load_pct")

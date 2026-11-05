@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+import httpx
+
 from manager import gpumonitor, peers
 
 
@@ -35,6 +37,49 @@ class GpumonitorMergeTest(unittest.TestCase):
         out = self.merge({}, [{"index": 0, "util_percent": 46.0, "power_w": 205.0}])
         self.assertNotIn("load_percent", out[0])
         self.assertNotIn("power_limit_w", out[0])
+
+
+class LinuxTelemetryTest(unittest.TestCase):
+    def telemetry(self, handler, snapshot=None):
+        client = httpx.Client(base_url="http://127.0.0.1:8765", transport=httpx.MockTransport(handler))
+        self.addCleanup(client.close)
+        state = {"probed": 0.0, "ok": False, "fetched": 0.0, "cards": {}}
+        with patch.object(gpumonitor.sys, "platform", "linux"), \
+             patch.object(gpumonitor, "_base_url", "http://127.0.0.1:8765"), \
+             patch.object(gpumonitor, "_http", client), patch.object(gpumonitor, "_state", state):
+            return gpumonitor.telemetry()
+
+    def test_linux_reads_live_sidecar(self):
+        data = {"sample_age_ms": 20, "cards": [{"identity": {"index": 0, "bus_id": "00000000:41:00.0"},
+                 "sample": {"load_pct": 80, "limit_w": 240}}]}
+        cards = self.telemetry(lambda request: httpx.Response(200, json=data))
+        self.assertEqual(cards[0]["load_pct"], 80)
+        self.assertEqual(cards[0]["pci_bus_id"], "00000000:41:00.0")
+
+    def test_stale_or_failed_sidecar_falls_back(self):
+        for status, data in [(200, {"sample_age_ms": 60000}), (503, {})]:
+            self.assertEqual(self.telemetry(lambda request: httpx.Response(status, json=data)), {})
+
+    def test_pci_bus_matching_survives_reindexed_cards(self):
+        cards = {0: {"load_pct": 90, "pci_bus_id": "00000000:81:00.0"},
+                 1: {"load_pct": 25, "pci_bus_id": "00000000:41:00.0"}}
+        with patch.object(gpumonitor, "telemetry", return_value=cards):
+            result = gpumonitor.merge([{"index": 0, "pci_bus_id": "0000:41:00.0"}])
+        self.assertEqual(result[0]["load_percent"], 25)
+
+    def test_mismatched_index_never_labels_the_wrong_gpu(self):
+        with patch.object(gpumonitor, "telemetry", return_value={0: {
+                "load_pct": 90, "pci_bus_id": "00000000:81:00.0"}}):
+            result = gpumonitor.merge([{"index": 0, "pci_bus_id": "0000:41:00.0"}])
+        self.assertNotIn("load_percent", result[0])
+
+    def test_reconfigure_discards_old_client_and_samples(self):
+        state = {"probed": 100.0, "fetched": 100.0, "ok": True, "cards": {0: {"load_pct": 1}}}
+        with patch.object(gpumonitor, "_state", state), patch.object(gpumonitor, "_http", None), \
+             patch.object(gpumonitor, "_base_url", "http://old:8765"):
+            gpumonitor.configure("http://new:8765")
+            self.assertEqual(state["cards"], {})
+            self.assertFalse(state["ok"])
 
 
 class SummaryPropagationTest(unittest.TestCase):

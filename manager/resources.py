@@ -31,7 +31,7 @@ def nvidia_gpus() -> list[dict]:
     exe = shutil.which("nvidia-smi")
     if not exe:
         return []
-    q = "index,name,memory.total,memory.used,utilization.gpu,temperature.gpu,power.draw"
+    q = "index,name,memory.total,memory.used,utilization.gpu,temperature.gpu,power.draw,pci.bus_id"
     try:
         out = subprocess.run([exe, f"--query-gpu={q}", "--format=csv,noheader,nounits"], capture_output=True,
                              text=True, timeout=10, creationflags=NO_WINDOW).stdout
@@ -46,7 +46,7 @@ def nvidia_gpus() -> list[dict]:
         total, used = num(f[2]) or 0, num(f[3]) or 0
         res.append({"index": int(f[0]), "name": f[1], "vram_total_mib": total, "vram_used_mib": used,
                     "vram_free_mib": total - used, "util_percent": num(f[4]), "temp_c": num(f[5]),
-                    "power_w": num(f[6])})
+                    "power_w": num(f[6]), "pci_bus_id": f[7] if len(f) > 7 else None})
     return res
 
 
