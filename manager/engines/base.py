@@ -49,6 +49,7 @@ class Estimate:
 
 class Engine:
     plugin = "base"
+    external = False                  # lifecycle belongs to an external supervisor, not a host process
     #: shown in the UI/MCP; actions a plugin cannot do are hidden
     can_update = False
     can_rollback = False
@@ -73,6 +74,19 @@ class Engine:
 
     # ---- running
     def launch(self, profile: Profile) -> Launch:
+        raise NotImplementedError
+
+    def validate_launch(self, profile: Profile):
+        """Reject unsupported settings before the manager stops an existing engine."""
+
+    def external_status(self) -> dict | None:
+        """Running supervised instance: identity, profile, host pid, and creation time."""
+        return None
+
+    def start_external(self, profile: Profile) -> dict:
+        raise NotImplementedError
+
+    def stop_external(self, identity: str, log: Log):
         raise NotImplementedError
 
     def extra_logs(self, profile: Profile) -> list[Path]:

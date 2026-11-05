@@ -137,6 +137,34 @@ from PyPI into the engine's Python (rollback reinstalls the one before). It is o
 than llama.cpp, but mlx-lm has no metrics page or API key, so Hangar shows it running, its memory and its log, not
 token counts, and anyone who can reach its port can use it (keep `host: 127.0.0.1` if only this Mac needs it).
 
+### Strata in Docker Compose
+
+Hangar can manage an existing local Strata Docker Compose service. Copy
+`config.example.docker.yaml` to `config.yaml` and set the Compose file, service,
+container name, and published host port. The user running Hangar needs Docker access.
+The Strata API must be published on local IPv4; host networking and remote Docker
+daemons are not supported by this configuration.
+
+Hangar adopts the running container without restarting it, using its container ID
+and start time rather than a Docker proxy's host PID. Start reuses a stopped
+container, or creates the configured service with Compose when it is missing.
+Stop and restart use Docker's graceful stop timeout. Model volumes are retained;
+Hangar does not run `compose down`, pull images, recreate existing containers, or
+change Compose settings. Container replacement or an external restart is detected,
+and a replacement is not stopped using an old saved identity.
+
+Readiness, model name, context, metrics, reasoning controls and the gateway use the
+Strata HTTP API. Authentication defaults to the container's `API_KEY`; `api_key` in
+the engine entry overrides it. Logs come from Docker, including when Hangar adopts
+an externally started container, and resource usage comes from Docker statistics.
+
+Each service has one discovered profile. Configure a separate service and engine
+entry for another model. Change launch settings through Compose; custom context,
+arguments and environment overrides are rejected before a running model is stopped.
+Image updates remain under Compose administration. For the moment, configure a new
+profile ID when changing a service's model so usage and learned memory estimates
+remain separate from the previous model.
+
 ### Roles and the gateway (worker, thinker, helper, backups)
 
 Give models a *role* — `worker`, `thinker`, `helper`, or any name — and point your tools at the role instead of a server. Each

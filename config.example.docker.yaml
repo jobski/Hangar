@@ -1,0 +1,32 @@
+# Strata already deployed with Docker Compose. Hangar adopts it without a restart.
+# The user running Hangar must have access to the local Docker daemon.
+manager:
+  host: 127.0.0.1
+  port: 9000
+  data_dir: data
+  logs_dir: logs
+
+updates:
+  auto_before_start: false
+  background_check_hours: 0
+
+models:
+  dir: ~/models
+
+engines:
+  strata:
+    plugin: strata
+    host: 127.0.0.1
+    port: 8080                 # published host port, not necessarily the container port
+    startup_timeout_s: 1800
+    docker:
+      container: strata
+      compose_file: /srv/strata/compose.yaml
+      service: strata
+      profile: strata-docker
+      stop_timeout_s: 120
+    # api_key: ${STRATA_API_KEY}   # optional override; otherwise reads the container's API_KEY
+
+# One discovered profile represents this service's Compose settings. A second model
+# needs its own Compose service, engine entry, published port, and profile ID.
+profiles: {}

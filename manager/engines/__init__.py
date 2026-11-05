@@ -5,6 +5,7 @@ from .llamacpp import LlamaCppEngine
 from .mlx import MlxEngine
 from .maya import MayaEngine
 from .strata import StrataEngine
+from .strata_docker import DockerStrataEngine
 
 PLUGINS: dict[str, type[Engine]] = {
     "llamacpp": LlamaCppEngine,
@@ -17,6 +18,8 @@ PLUGINS: dict[str, type[Engine]] = {
 
 def create(name: str, cfg: dict) -> Engine:
     plugin = cfg.get("plugin", name)
+    if plugin == "strata" and cfg.get("docker"):
+        return DockerStrataEngine(name, cfg)
     if plugin not in PLUGINS:
         raise ValueError(f"engine {name}: unknown plugin {plugin!r} (known: {', '.join(PLUGINS)})")
     return PLUGINS[plugin](name, cfg)

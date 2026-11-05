@@ -117,6 +117,7 @@ class Instance:
     launched_context: int | None = None
     context_checked: float = 0.0
     startup_pending: bool = False
+    runtime_id: str | None = None       # supervisor identity; never signal this instance by host PID
     last_activity: float = field(default_factory=time.time)   # last time it generated or had a request running
     totals: dict = field(default_factory=lambda: collections.defaultdict(float))   # since this start
     window: collections.deque = field(default_factory=lambda: collections.deque(maxlen=720))  # (t, delta dict)
@@ -146,7 +147,7 @@ class Instance:
                 "baseline_vram": self.baseline_vram, "started": self.started, "ready": self.ready,
                 "custom_profile": dataclasses.asdict(self.custom_profile) if self.custom_profile else None,
                 "vram_isolated": self.vram_isolated, "context": self.context, "context_source": self.context_source,
-                "launched_context": self.launched_context}
+                "launched_context": self.launched_context, "runtime_id": self.runtime_id}
 
 
 # ------------------------------------------------------------------------------------------------------ manager
@@ -232,6 +233,15 @@ class Manager:
         if name not in self.engines:
             raise KeyError(f"no engine {name!r}; engines: {', '.join(self.engines)}")
         return self.engines[name]
+
+    def _alive(self, inst: Instance) -> bool:
+        if inst.runtime_id:
+            eng = self.engines.get(inst.engine)
+            if eng is None or not getattr(eng, "external", False):
+                return False
+            current = eng.external_status()
+            return bool(current and current["identity"] == inst.runtime_id)
+        return inst.alive()
 
     # ---- lifecycle
     def start_background(self):
@@ -364,6 +374,8 @@ class Manager:
             raise KeyError(f"{engine} is not running")
         p = self.profile(inst.profile)
         eng = self.engines[p.engine]
+        if hasattr(eng, "validate_launch"):
+            eng.validate_launch(self.effective(p))
 
         def run(job):
             with self.lock:
@@ -639,6 +651,9 @@ class Manager:
             except OSError:
                 identities.append((str(path), None, None))
         value = {"profile": profile.cfg, "engine": self.engines[p.engine].cfg, "files": identities}
+        eng = self.engines[p.engine]
+        if getattr(eng, "external", False):
+            value["deployment"] = eng.profile_identity(profile)
         return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
     def needs(self, p: Profile, measurements: dict | None = None) -> dict:
@@ -735,6 +750,8 @@ class Manager:
             with self.lock:
                 self.transient[p.id] = p
         eng = self.engines[p.engine]
+        if hasattr(eng, "validate_launch"):
+            eng.validate_launch(self.effective(p))
         newer = self._superseded(job, p)
         if newer:
             raise Refused(f"a newer start of {newer} is queued and would stop {p.id} again at once")
@@ -748,7 +765,9 @@ class Manager:
             raise Refused(plan["reason"])
         owner = resources.port_owner(eng.port, fresh=True)
         current = self.instances.get(eng.name)
-        if owner is not None and (not current or not current.owns_process(owner.pid)) and not force:
+        if getattr(eng, "external", False) and owner is not None and eng.external_status() is None:
+            raise Refused(f"port {eng.port} is in use outside the configured Docker service")
+        if not getattr(eng, "external", False) and owner is not None and (not current or not current.owns_process(owner.pid)) and not force:
             raise Refused(f"port {eng.port} is in use outside this manager; stop its owner or use force")
         previous = {n: self.profiles.get(self.instances[n].profile) for n in plan["will_stop"] if n in self.instances}
         try:
@@ -780,7 +799,7 @@ class Manager:
                         job.write(f"update failed, starting the installed version: {exc}")
                         self.store.event("update", f"{eng.name}: update before start failed: {exc}", eng.name, level="warn")
             owner = resources.port_owner(eng.port, fresh=True)
-            if owner is not None:
+            if owner is not None and not getattr(eng, "external", False):
                 if not force or owner.pid is None:
                     raise Refused(f"port {eng.port} is still in use; no process was stopped")
                 _kill_tree(owner.pid)
@@ -797,6 +816,8 @@ class Manager:
         return {"profile": p.id, "engine": eng.name, "port": eng.port, "url": f"http://<this-pc>:{eng.port}"}
 
     def _spawn(self, job: Job, eng: Engine, p: Profile):
+        if getattr(eng, "external", False):
+            return self._spawn_external(job, eng, p)
         launch = eng.launch(self.effective(p))
         launched_context = eng.launch_context(launch.cmd)
         log_path = self.logs_dir / f"{eng.name}.log"
@@ -872,6 +893,52 @@ class Manager:
         finally:
             inst.startup_pending = False
 
+    def _external_instance(self, eng, runtime, *, ours=False):
+        p = self.profile(runtime["profile"])
+        sid = self.store.session_start(eng.name, p.id, adopted=not ours, config_key=self._profile_key(p))
+        inst = Instance(engine=eng.name, profile=p.id, pid=runtime["pid"], create_time=runtime["created"],
+                        session=sid, log_path=None, ours=ours, baseline_vram=0,
+                        started=runtime["created"], tracker=CounterTracker(count_first=ours),
+                        runtime_id=runtime["identity"])
+        with self.lock:
+            for other in self.instances.values():
+                other.vram_isolated = False
+            self.instances[eng.name] = inst
+            eng.active_profile = p
+        return inst
+
+    def _spawn_external(self, job, eng, p):
+        p = self.effective(p)
+        runtime = eng.start_external(p)
+        inst = self._external_instance(eng, runtime, ours=True)
+        inst.startup_pending = True
+        self._save_state()
+        self.store.event("start", f"starting {p.id} through Docker", eng.name, p.id)
+        try:
+            deadline = time.monotonic() + eng.startup_timeout_s
+            while time.monotonic() < deadline:
+                if not self._alive(inst):
+                    raise RuntimeError(f"{p.id} container exited or restarted during startup")
+                ok, detail = eng.health(p)
+                if ok:
+                    if p.cfg.get("reasoning_effort"):
+                        eng.reasoning_set(p, p.cfg["reasoning_effort"])
+                    inst.ready, inst.state = time.time(), "ready"
+                    inst.context = eng.runtime_context()
+                    inst.context_source = "runtime" if inst.context else None
+                    self.store.session_ready(inst.session)
+                    self._save_state()
+                    job.write(f"{p.id} is ready")
+                    return
+                job.write(f"waiting for Docker Strata: {detail}")
+                time.sleep(2)
+            raise RuntimeError(f"{p.id} was not ready after {eng.startup_timeout_s}s")
+        except Exception:
+            self._stop(job, eng.name, "failed during startup", expected=inst)
+            raise
+        finally:
+            inst.startup_pending = False
+
     def _stop(self, job: Job | None, engine: str, reason: str, expected: Instance | None = None):
         with self.lock:
             inst = self.instances.get(engine)
@@ -885,8 +952,16 @@ class Manager:
             return
         if job:
             job.write(f"stopping {inst.profile} ({reason})")
-        if inst.alive():
-            eng = self.engines.get(engine)
+        eng = self.engines.get(engine)
+        if inst.runtime_id:
+            if not eng or not getattr(eng, "external", False):
+                raise RuntimeError("Cannot stop a supervised instance after its engine configuration changed")
+            try:
+                eng.stop_external(inst.runtime_id, job.write if job else lambda line: None)
+            except Exception:
+                inst.state = "ready" if inst.ready else "starting"
+                raise
+        elif inst.alive():
             if not (eng and eng.stop_cleanly(inst.pid, job.write if job else lambda line: None)):
                 _kill_tree(inst.pid)
         self._forget(engine, reason, expected=inst)
@@ -936,7 +1011,7 @@ class Manager:
         eng = self.engines.get(inst.engine)
         with inst.scrape_lock:                                # the collector reads these counters too
             try:
-                cur = eng.scrape() if eng and inst.alive() else None
+                cur = eng.scrape() if eng and self._alive(inst) else None
             except Exception:  # noqa: BLE001 - an engine that cannot say is treated as idle
                 cur = None
             if cur and inst.tracker:
@@ -1084,8 +1159,11 @@ class Manager:
                                 context=d.get("context") if isinstance(d.get("context"), int) and d["context"] > 0 else None,
                                 context_source=d.get("context_source") if d.get("context_source") in ("launch", "runtime") else None,
                                 launched_context=d.get("launched_context") if isinstance(d.get("launched_context"), int) and d["launched_context"] > 0 else None)
-                if inst.alive():
-                    if not inst.launched_context:
+                inst.runtime_id = d.get("runtime_id") if isinstance(d.get("runtime_id"), str) else None
+                if getattr(self.engines[name], "external", False) and not inst.runtime_id:
+                    continue
+                if self._alive(inst):
+                    if not inst.launched_context and not inst.runtime_id:
                         try:
                             process = psutil.Process(inst.pid)
                             try:
@@ -1104,6 +1182,12 @@ class Manager:
                             self.transient[custom.id] = self.profiles[custom.id] = custom
                         self.instances[name] = inst
                         self.engines[name].active_profile = self.profiles[d["profile"]]
+                    if inst.runtime_id:
+                        ok, _ = self.engines[name].health(self.profiles[d["profile"]])
+                        inst.state = "ready" if ok else "starting"
+                        if ok:
+                            inst.ready = inst.ready or time.time()
+                            self.store.session_ready(inst.session)
                     keep.add(inst.session)
         self.store.close_dangling_sessions(keep)
         self._discover_external()
@@ -1113,6 +1197,27 @@ class Manager:
         """An engine's port is in use but not by us: if the command line matches a profile, take it over."""
         for name, eng in self.engines.items():
             if name in self.instances:
+                continue
+            if getattr(eng, "external", False):
+                try:
+                    runtime = eng.external_status()
+                    if runtime is None:
+                        continue
+                    with self.lock:
+                        if name in self.instances or self.current_job is not None:
+                            continue
+                        inst = self._external_instance(eng, runtime)
+                    p = self.profiles[inst.profile]
+                    ok, _ = eng.health(p)
+                    if ok:
+                        inst.ready, inst.state = time.time(), "ready"
+                        inst.context = eng.runtime_context()
+                        inst.context_source = "runtime" if inst.context else None
+                        self.store.session_ready(inst.session)
+                    self.store.event("adopt", f"found {inst.profile} in Docker; now managed", name, inst.profile)
+                    self._save_state()
+                except (RuntimeError, OSError, ValueError) as exc:
+                    self.store.event("adopt", f"{name}: {exc}", name, level="warn")
                 continue
             owner = resources.port_owner(eng.port, fresh=True)
             if owner is None:
@@ -1182,7 +1287,7 @@ class Manager:
         for inst in insts:
             if inst.state == "stopping" or inst.startup_pending:
                 continue
-            if not inst.alive():
+            if not self._alive(inst):
                 code = inst.popen.poll() if inst.popen else None
                 with self.lock:
                     if self._forget(inst.engine, "exited unexpectedly" + (f" (code {code})" if code is not None else ""),
@@ -1190,7 +1295,8 @@ class Manager:
                         self.store.event("crash", f"{inst.profile} exited unexpectedly", inst.engine, inst.profile, level="error")
                         self._maybe_restart(inst)
                 continue
-            u = resources.tree_usage(inst.pid)
+            eng = self.engines.get(inst.engine)
+            u = eng.external_usage() if inst.runtime_id else resources.tree_usage(inst.pid)
             inst.ram_mib, inst.cpu_percent = u["ram_mib"], u["cpu_percent"]
             inst.peak_ram = max(inst.peak_ram, inst.ram_mib)
             measured = None
@@ -1424,7 +1530,11 @@ class Manager:
     # ---- reading
     def log_path(self, engine: str) -> Path:
         inst = self.instances.get(engine)
-        return Path(inst.log_path) if inst and inst.log_path else self.logs_dir / f"{engine}.log"
+        path = Path(inst.log_path) if inst and inst.log_path else self.logs_dir / f"{engine}.log"
+        eng = self.engines.get(engine)
+        if getattr(eng, "external", False):
+            eng.sync_log(path)
+        return path
 
     def follow_log(self, engine: str, pos: int | None, ident=None, lines: int = 200) -> tuple[bytes, int, object]:
         """One step of following a log: (new bytes, new position, file identity). pos=None starts with the last lines.
@@ -1589,7 +1699,7 @@ class Manager:
             e = {**eng.public(), "version": None, "update": self._update_info(name), "running": None}
             if inst:
                 e["running"] = {"profile": inst.profile, "pid": inst.pid, "state": inst.state, "managed": inst.ours,
-                                "started": inst.started, "ready": inst.ready,
+                                "started": inst.started, "ready": inst.ready, "runtime_id": inst.runtime_id,
                                 "uptime_seconds": time.time() - inst.started, "ram_mib": inst.ram_mib,
                                 "cpu_percent": inst.cpu_percent, "vram_mib_est": self._instance_vram(inst),
                                 "vram_measured": inst.vram_measured,
@@ -1609,7 +1719,7 @@ class Manager:
                     pass
                 e["port_taken_by"] = owner
                 e["last"] = self._last_run(name)
-            e["version"] = e["update"].get("current")
+            e["version"] = e["update"].get("current") or (eng.version() if getattr(eng, "external", False) else None)
             engines.append(e)
         warn = []
         if snap["ram_percent"] >= self.cfg["resources"]["warn_ram_percent"]:
